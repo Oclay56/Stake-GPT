@@ -1,0 +1,1 @@
+"""Stake odds API wrapper."""

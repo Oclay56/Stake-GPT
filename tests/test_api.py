@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, get_stake_client
+from app.main import app, get_mlb_engine, get_stake_client
 from app.stake_client import StakeAPIError
 
 
@@ -126,9 +126,102 @@ class FakeStakeClient:
         }
 
 
+class FakeMLBEngine:
+    async def get_teams(self, season=None):
+        return {
+            "season": season,
+            "teamCount": 1,
+            "teams": [
+                {
+                    "mlbId": 117,
+                    "name": "Houston Astros",
+                    "key": "houston-astros",
+                    "abbreviation": "HOU",
+                    "clubName": "Astros",
+                    "league": "American League",
+                    "division": "AL West",
+                }
+            ],
+        }
+
+    async def get_schedule(self, game_date: str):
+        return {
+            "date": game_date,
+            "gameCount": 1,
+            "games": [{"gamePk": 824522, "awayTeam": {}, "homeTeam": {}}],
+        }
+
+    async def get_team_roster(self, team_id: int, season=None):
+        return {
+            "teamId": team_id,
+            "season": season,
+            "playerCount": 1,
+            "players": [{"mlbId": 592450, "name": "Aaron Judge"}],
+        }
+
+    async def search_players(self, query: str, limit: int = 10):
+        if query == "Jose Altuve":
+            return {
+                "query": query,
+                "playerCount": 1,
+                "players": [
+                    {
+                        "mlbId": 514888,
+                        "name": "Jose Altuve",
+                        "key": "jose-altuve",
+                        "team": {
+                            "mlbId": 117,
+                            "name": "Houston Astros",
+                            "key": "houston-astros",
+                        },
+                    }
+                ],
+            }
+        return {
+            "query": query,
+            "playerCount": 1,
+            "players": [{"mlbId": 592450, "name": "Aaron Judge", "key": "aaron-judge"}],
+        }
+
+    async def get_player_profile(
+        self,
+        player_id: int,
+        season=None,
+        group: str = "hitting",
+    ):
+        return {
+            "player": {
+                "mlbId": player_id,
+                "name": "Jose Altuve" if player_id == 514888 else "Aaron Judge",
+                "key": "jose-altuve" if player_id == 514888 else "aaron-judge",
+                "stats": {"hits": 51} if player_id == 514888 else {"homeRuns": 15},
+            },
+            "season": season,
+            "group": group,
+        }
+
+    async def get_player_recent_history(
+        self,
+        player_id: int,
+        group: str = "hitting",
+        season=None,
+        limit: int = 10,
+    ):
+        return {
+            "playerId": player_id,
+            "group": group,
+            "season": season,
+            "gamesUsed": 1,
+            "games": [{"date": "2026-05-07", "stats": {"hits": 2}}],
+            "totals": {"hits": 2.0},
+            "perGame": {"hits": 2.0},
+        }
+
+
 @pytest.fixture(autouse=True)
-def override_stake_client():
+def override_clients():
     app.dependency_overrides[get_stake_client] = lambda: FakeStakeClient()
+    app.dependency_overrides[get_mlb_engine] = lambda: FakeMLBEngine()
     yield
     app.dependency_overrides.clear()
 
@@ -407,6 +500,40 @@ def test_mlb_props_route_returns_stable_analyzer_rows():
     assert movement_response.json()["trackedPropCount"] >= 1
 
 
+def test_mlb_props_enriched_route_matches_stake_props_to_mlb_players():
+    with TestClient(app) as client:
+        response = client.get(
+            "/mlb/props/enriched?date=2026-05-08"
+            "&markets=hits&season=2026&historyLimit=5"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matchedPropCount"] == 1
+    assert body["unmatchedPropCount"] == 0
+    assert body["props"][0]["player"]["mlbId"] == 514888
+    assert body["props"][0]["player"]["matchStatus"] == "matched_exact_name_team"
+    assert body["props"][0]["mlbProfile"]["player"]["stats"] == {"hits": 51}
+    assert body["props"][0]["recentHistory"]["perGame"] == {"hits": 2.0}
+    assert body["props"][0]["statContext"]["statKey"] == "hits"
+
+
+def test_mlb_props_match_audit_route_returns_match_quality_summary():
+    with TestClient(app) as client:
+        response = client.get(
+            "/mlb/props/match-audit?date=2026-05-08"
+            "&markets=hits&season=2026&historyLimit=5"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matchedPropCount"] == 1
+    assert body["unmatchedPropCount"] == 0
+    assert body["statusCounts"] == {"matched_exact_name_team": 1}
+    assert body["rows"][0]["player"] == "Jose Altuve"
+    assert body["rows"][0]["issues"] == []
+
+
 def test_mlb_primary_line_check_route_returns_diagnostic_report():
     with TestClient(app) as client:
         response = client.get("/mlb/primary-line-check?date=2026-05-08&limit=1")
@@ -417,3 +544,26 @@ def test_mlb_primary_line_check_route_returns_diagnostic_report():
     assert body["checkedPropCount"] == 2
     assert body["checks"][0]["method"] == "closest-over-under-balance"
     assert body["checks"][0]["validLineCount"] == 1
+
+
+def test_mlb_data_routes_expose_engine_only_shapes():
+    with TestClient(app) as client:
+        teams = client.get("/mlb-data/teams?season=2026")
+        schedule = client.get("/mlb-data/schedule?date=2026-05-08")
+        roster = client.get("/mlb-data/teams/117/roster?season=2026")
+        search = client.get("/mlb-data/players/search?query=Aaron+Judge")
+        player = client.get("/mlb-data/players/592450?season=2026")
+        history = client.get("/mlb-data/players/592450/history?season=2026&limit=5")
+
+    assert teams.status_code == 200
+    assert teams.json()["teams"][0]["key"] == "houston-astros"
+    assert schedule.status_code == 200
+    assert schedule.json()["date"] == "2026-05-08"
+    assert roster.status_code == 200
+    assert roster.json()["players"][0]["name"] == "Aaron Judge"
+    assert search.status_code == 200
+    assert search.json()["players"][0]["mlbId"] == 592450
+    assert player.status_code == 200
+    assert player.json()["player"]["stats"] == {"homeRuns": 15}
+    assert history.status_code == 200
+    assert history.json()["perGame"] == {"hits": 2.0}

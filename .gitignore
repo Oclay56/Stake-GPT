@@ -3,3 +3,7 @@
 __pycache__/
 .pytest_cache/
 *.log
+data/*.sqlite
+data/*.sqlite-*
+AZP.Desktop/bin/
+AZP.Desktop/obj/

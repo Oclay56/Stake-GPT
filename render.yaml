@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: azp-gpt-action
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: STAKE_BASE_URL
+        value: https://odds-data.stake.com
+      - key: STAKE_TIMEOUT_SECONDS
+        value: "20"
+      - key: STAKE_CACHE_TTL_SECONDS
+        value: "30"
+      - key: MLB_STATS_BASE_URL
+        value: https://statsapi.mlb.com/api/v1
+      - key: MLB_STATS_TIMEOUT_SECONDS
+        value: "20"
+      - key: APP_TIMEZONE
+        value: America/New_York
+      - key: AZP_DB_PATH
+        value: /tmp/azp.sqlite

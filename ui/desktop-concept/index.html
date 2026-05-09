@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AZP Suite - Desktop Concept</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell" aria-label="AZP Suite MLB analytics dashboard">
+      <div class="stage-glow stage-glow-left"></div>
+      <div class="stage-glow stage-glow-right"></div>
+
+      <aside class="sidebar shell-panel">
+        <section class="brand">
+          <div class="brand-sigil" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+            <i></i>
+          </div>
+          <div>
+            <strong>AZP Suite</strong>
+            <small>Alpha Zero Point</small>
+          </div>
+        </section>
+
+        <nav class="nav-list" aria-label="Primary navigation">
+          <a class="nav-link active" href="#" data-view="Overview">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z" /></svg>
+            <span>Overview</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Slip Builder">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10a2 2 0 0 1 2 2v15l-3-1.5-3 1.5-3-1.5L5 20V5a2 2 0 0 1 2-2Zm2 5h6V6H9v2Zm0 4h6v-2H9v2Zm0 4h4v-2H9v2Z" /></svg>
+            <span>Slip Builder</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Player Lab">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a4 4 0 0 1 4 4c0 1.4-.7 2.7-1.8 3.4A7 7 0 0 1 20 18v2H4v-2a7 7 0 0 1 5.8-6.6A4 4 0 0 1 12 4Z" /></svg>
+            <span>Player Lab</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Correlation Map">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6a3 3 0 1 1 4.7 2.5l3.1 3.1a3 3 0 0 1 2.4 0l2.1-2.1a3 3 0 1 1 1.4 1.4l-2.1 2.1a3 3 0 1 1-5.2 0L8.3 9.9A3 3 0 0 1 5 6Zm2 11a3 3 0 1 1 3 3 3 3 0 0 1-3-3Z" /></svg>
+            <span>Correlation Map</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Odds Watch">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3Zm-1 4h2v5.2l4 2.4-1 1.7-5-3V7Z" /></svg>
+            <span>Odds Watch</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Saved Slips">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v17l-7-3-7 3V4Zm2 2v11.8l5-2.2 5 2.2V6H7Z" /></svg>
+            <span>Saved Slips</span>
+          </a>
+          <a class="nav-link" href="#" data-view="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm8.7 4a7.4 7.4 0 0 0-.1-1l1.8-1.4-2-3.5-2.2.9c-.5-.4-1-.7-1.6-1L16.3 3H7.7l-.3 3c-.6.3-1.1.6-1.6 1l-2.2-.9-2 3.5L3.4 11a7.4 7.4 0 0 0 0 2l-1.8 1.4 2 3.5 2.2-.9c.5.4 1 .7 1.6 1l.3 3h8.6l.3-3c.6-.3 1.1-.6 1.6-1l2.2.9 2-3.5-1.8-1.4c.1-.3.1-.7.1-1Z" /></svg>
+            <span>Settings</span>
+          </a>
+        </nav>
+
+        <section class="sidebar-card">
+          <div class="sync-ring" aria-hidden="true"><span></span></div>
+          <div>
+            <strong>Local Research</strong>
+            <small>Read-only mode</small>
+          </div>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7-1.4-1.4L13.2 12 7.6 6.4 9 5Z" /></svg>
+        </section>
+
+        <section class="user-card">
+          <div class="avatar-orbit" aria-hidden="true"></div>
+          <div>
+            <strong>Analyst Desk</strong>
+            <small>Manual bet review</small>
+          </div>
+          <span></span>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="select-pill">MLB <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            <button class="select-pill"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v3h6V2h2v3h3v16H4V5h3V2Zm11 8H6v9h12v-9Z" /></svg> Thu, May 9 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+          </div>
+
+          <label class="search-bar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.8 4a6.8 6.8 0 0 1 5.4 10.9l3.5 3.4-1.4 1.4-3.4-3.5A6.8 6.8 0 1 1 10.8 4Zm0 2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6Z" /></svg>
+            <input id="searchInput" type="search" placeholder="Search players, teams, props, markets..." />
+            <kbd>Ctrl K</kbd>
+          </label>
+
+          <div class="top-icons">
+            <button class="round-icon alert-dot" aria-label="Alerts">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16v-5a6 6 0 1 0-12 0v5l-2 2v1h16v-1l-2-2Zm-8 5h4a2 2 0 0 1-4 0Z" /></svg>
+            </button>
+            <button class="round-icon" aria-label="Help">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 18h2v-2h-2v2Zm1-16a7 7 0 0 0-7 7h2a5 5 0 1 1 8.7 3.3l-1.6 1.6A3.8 3.8 0 0 0 13 16h-2c0-1.3.5-2.3 1.4-3.2l1.7-1.7A3 3 0 0 0 12 6a3 3 0 0 0-3 3H7a5 5 0 1 1 5 5Z" /></svg>
+            </button>
+            <button class="round-icon" aria-label="Filters">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10v2H4V7Zm13-1a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM4 15h4v2H4v-2Zm7-1a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm6 1h3v2h-3v-2Z" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="filters">
+          <div class="segment-group">
+            <button class="filter-pill active"><span></span>Today</button>
+            <button class="filter-pill">7 Games</button>
+            <button class="filter-pill">Tomorrow</button>
+            <button class="filter-pill">10 Games</button>
+          </div>
+          <button class="filter-pill">All Markets <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+          <button class="filter-pill">Totals <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+          <button class="filter-pill">Spreads</button>
+          <button class="filter-pill">Player Props</button>
+          <button class="filter-pill more-filter">+ More Filters <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10v2H4V7Zm13-1a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM4 15h4v2H4v-2Zm7-1a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm6 1h3v2h-3v-2Z" /></svg></button>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel slate-panel">
+            <header class="panel-header">
+              <h1>Slate Overview</h1>
+              <button class="tiny-select">All Books <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            </header>
+            <div class="metric-strip">
+              <div><strong>7</strong><span>Games</span></div>
+              <div><strong>56</strong><span>Player Props</span></div>
+              <div><strong>84</strong><span>Top Score</span></div>
+              <div><strong class="cyan">+0.42</strong><span>Avg Edge</span></div>
+              <div><strong class="amber">2</strong><span>Alerts</span></div>
+            </div>
+            <div class="main-chart" aria-label="Slate line movement chart">
+              <svg viewBox="0 0 760 286" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="chartLine" x1="0" x2="1" y1="0" y2="0">
+                    <stop offset="0%" stop-color="#ff3aaf" />
+                    <stop offset="56%" stop-color="#ff3aaf" />
+                    <stop offset="100%" stop-color="#ff6f9d" />
+                  </linearGradient>
+                  <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stop-color="#ff2fae" stop-opacity=".42" />
+                    <stop offset="74%" stop-color="#ff2fae" stop-opacity=".05" />
+                    <stop offset="100%" stop-color="#ff2fae" stop-opacity="0" />
+                  </linearGradient>
+                </defs>
+                <path class="chart-grid" d="M40 34H738M40 88H738M40 142H738M40 196H738M40 250H738" />
+                <path class="chart-fill" d="M58 205 C95 184 112 215 142 174 C162 145 189 151 215 117 C248 70 286 112 318 120 C354 129 384 73 414 101 C443 127 452 62 492 81 C526 96 552 24 590 70 C626 112 632 151 671 167 C704 178 693 102 735 89 L735 250 L58 250 Z" />
+                <path class="chart-line" d="M58 205 C95 184 112 215 142 174 C162 145 189 151 215 117 C248 70 286 112 318 120 C354 129 384 73 414 101 C443 127 452 62 492 81 C526 96 552 24 590 70 C626 112 632 151 671 167 C704 178 693 102 735 89" />
+                <circle cx="590" cy="70" r="9" class="chart-dot" />
+              </svg>
+              <div class="axis-y"><span>80%</span><span>60%</span><span>40%</span><span>20%</span><span>0%</span></div>
+              <div class="axis-x"><span>12AM</span><span>4AM</span><span>8AM</span><span>12PM</span><span>4PM</span><span>8PM</span></div>
+              <div class="chart-tip"><small>2:00 PM</small><strong>52%</strong></div>
+            </div>
+          </article>
+
+          <article class="panel movers-panel">
+            <header class="panel-header">
+              <h2>Market Movers</h2>
+              <button class="tiny-select">Line Movement <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            </header>
+            <div class="mover-list">
+              <div class="mover up"><img class="player-photo" src="./assets/players/mookie-betts.png" alt="Mookie Betts" /><div><strong>Mookie Betts</strong><span>Over 1.5 Total Bases</span></div><em>+28 up</em><small>-118 to -145</small><i></i></div>
+              <div class="mover up"><img class="player-photo" src="./assets/players/juan-soto.png" alt="Juan Soto" /><div><strong>Juan Soto</strong><span>Over 0.5 Walks</span></div><em>+23 up</em><small>+105 to +128</small><i></i></div>
+              <div class="mover up"><img class="player-photo" src="./assets/players/ronald-acuna-jr.png" alt="Ronald Acuna Jr" /><div><strong>Ronald Acuna Jr</strong><span>Over 1.5 Total Bases</span></div><em>+19 up</em><small>-105 to -124</small><i></i></div>
+              <div class="mover down"><img class="player-photo" src="./assets/players/corbin-carroll.png" alt="Corbin Carroll" /><div><strong>Corbin Carroll</strong><span>Over 0.5 Hits</span></div><em>-18 down</em><small>-130 to +110</small><i></i></div>
+              <div class="mover down"><img class="player-photo" src="./assets/players/freddie-freeman.png" alt="Freddie Freeman" /><div><strong>Freddie Freeman</strong><span>Over 0.5 Runs</span></div><em>-21 down</em><small>+120 to +102</small><i></i></div>
+            </div>
+            <button class="text-link">View all movers <span>-&gt;</span></button>
+          </article>
+
+          <article class="panel props-panel">
+            <header class="panel-header">
+              <h2>Top Player Props</h2>
+              <button class="tiny-select">Popular <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            </header>
+            <div class="prop-table">
+              <div class="table-head"><span>Player</span><span>Prop</span><span>Line</span><span>Odds</span><span>Score</span></div>
+              <button class="prop-row selected">
+                <span class="player-cell"><img class="player-photo" src="./assets/players/mookie-betts.png" alt="Mookie Betts" /><span>Mookie Betts<small>LAD - OF</small></span></span>
+                <span>Over 1.5<small>Total Bases</small></span><span>1.5</span><span>-145</span><strong>+12.4%</strong>
+              </button>
+              <button class="prop-row">
+                <span class="player-cell"><img class="player-photo" src="./assets/players/juan-soto.png" alt="Juan Soto" /><span>Juan Soto<small>NYY - OF</small></span></span>
+                <span>Over 0.5<small>Walks</small></span><span>0.5</span><span>+128</span><strong>+9.7%</strong>
+              </button>
+              <button class="prop-row">
+                <span class="player-cell"><img class="player-photo" src="./assets/players/corbin-carroll.png" alt="Corbin Carroll" /><span>Corbin Carroll<small>ARI - OF</small></span></span>
+                <span>Over 0.5<small>Hits</small></span><span>0.5</span><span>-130</span><strong>+8.3%</strong>
+              </button>
+              <button class="prop-row">
+                <span class="player-cell"><img class="player-photo" src="./assets/players/tarik-skubal.png" alt="Tarik Skubal" /><span>Tarik Skubal<small>DET - P</small></span></span>
+                <span>Over 6.5<small>Strikeouts</small></span><span>6.5</span><span>-120</span><strong>+7.1%</strong>
+              </button>
+              <button class="prop-row">
+                <span class="player-cell"><img class="player-photo" src="./assets/players/freddie-freeman.png" alt="Freddie Freeman" /><span>Freddie Freeman<small>LAD - 1B</small></span></span>
+                <span>Over 0.5<small>Runs</small></span><span>0.5</span><span>+102</span><strong>+6.8%</strong>
+              </button>
+            </div>
+            <button class="text-link">View all player props <span>-&gt;</span></button>
+          </article>
+
+          <article class="panel correlation-panel">
+            <header class="panel-header">
+              <h2>Correlation Map <span>i</span></h2>
+              <button class="tiny-select">Hit Prop Correlations <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            </header>
+            <div class="correlation-grid">
+              <div class="matrix-labels top">
+                <span><img class="tiny-headshot" src="./assets/players/mookie-betts.png" alt="" />M. Betts</span>
+                <span><img class="tiny-headshot" src="./assets/players/freddie-freeman.png" alt="" />F. Freeman</span>
+                <span><img class="tiny-headshot" src="./assets/players/teoscar-hernandez.png" alt="" />T. Hernandez</span>
+                <span><img class="tiny-headshot" src="./assets/players/shohei-ohtani.png" alt="" />S. Ohtani</span>
+                <span><img class="tiny-headshot" src="./assets/players/will-smith.png" alt="" />W. Smith</span>
+              </div>
+              <div class="matrix-labels side"><span>M. Betts</span><span>F. Freeman</span><span>T. Hernandez</span><span>S. Ohtani</span><span>W. Smith</span></div>
+              <div class="matrix">
+                <span>-</span><span class="hot">0.64</span><span>0.42</span><span>0.31</span><span>0.28</span>
+                <span class="hot">0.64</span><span>-</span><span>0.41</span><span>0.29</span><span>0.33</span>
+                <span>0.42</span><span>0.41</span><span>-</span><span>0.37</span><span>0.26</span>
+                <span>0.31</span><span>0.29</span><span>0.37</span><span>-</span><span>0.32</span>
+                <span>0.28</span><span>0.33</span><span>0.26</span><span>0.32</span><span>-</span>
+              </div>
+            </div>
+            <div class="heat-legend"><span>Low</span><i></i><span>High</span></div>
+            <button class="text-link">Full correlation map <span>-&gt;</span></button>
+          </article>
+        </section>
+
+        <footer class="statusbar">
+          <span><i></i> Data synced - Just now</span>
+          <span>Odds from read-only feeds <b>-&gt;</b></span>
+          <span class="source-dots"><i>D</i><i>B</i><i>U</i><i>SB</i><i>+4</i></span>
+        </footer>
+      </section>
+
+      <aside class="right-rail">
+        <section class="panel slip-panel">
+          <header class="panel-header">
+            <h2>Slip Builder <span class="count">3</span></h2>
+            <button class="tiny-button">Clear</button>
+          </header>
+          <div class="slip-mode">
+            <button>Parlay <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5H7Z" /></svg></button>
+            <button aria-label="Copy slip"><svg viewBox="0 0 24 24"><path d="M8 8h11v12H8V8Zm-3-4h11v2H7v9H5V4Z" /></svg></button>
+            <button aria-label="Slip settings"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm8.7 4a7.4 7.4 0 0 0-.1-1l1.8-1.4-2-3.5-2.2.9c-.5-.4-1-.7-1.6-1L16.3 3H7.7l-.3 3c-.6.3-1.1.6-1.6 1l-2.2-.9-2 3.5L3.4 11a7.4 7.4 0 0 0 0 2l-1.8 1.4 2 3.5 2.2-.9c.5.4 1 .7 1.6 1l.3 3h8.6l.3-3c.6-.3 1.1-.6 1.6-1l2.2.9 2-3.5-1.8-1.4c.1-.3.1-.7.1-1Z" /></svg></button>
+          </div>
+          <div class="slip-legs">
+            <article><span>1</span><img class="player-photo" src="./assets/players/mookie-betts.png" alt="Mookie Betts" /><div><strong>Mookie Betts</strong><p>Over 1.5 Total Bases<small>LAD @ SD - Thu 9:40 PM</small></p></div><b>1.78</b><button>x</button></article>
+            <article><span>2</span><img class="player-photo" src="./assets/players/hunter-greene.png" alt="Hunter Greene" /><div><strong>Hunter Greene</strong><p>Over 6.5 Strikeouts<small>CIN @ PIT - Thu 6:40 PM</small></p></div><b>1.83</b><button>x</button></article>
+            <article><span>3</span><img class="player-photo" src="./assets/players/yordan-alvarez.png" alt="Yordan Alvarez" /><div><strong>Yordan Alvarez</strong><p>Over 0.5 Home Runs<small>HOU @ TEX - Thu 8:05 PM</small></p></div><b>2.10</b><button>x</button></article>
+          </div>
+          <button class="add-selection">+ Add selection</button>
+          <div class="odds-summary"><span>Parlay Odds</span><strong>6.82</strong><span>To Win (1u)</span><strong>5.82u</strong></div>
+          <div class="correlation-warning" hidden></div>
+          <button class="review-slip">Review Slip</button>
+        </section>
+
+        <section class="panel saved-panel">
+          <header class="panel-header">
+            <h2>Saved Slips</h2>
+            <button class="tiny-button subtle">View all</button>
+          </header>
+          <div class="saved-list">
+            <article><i></i><div><strong>Evening Edge</strong><span>3 legs - +412</span></div><em>Parlay</em><small>Today, 1:32 PM</small><button>...</button></article>
+            <article><i></i><div><strong>NRFI + Unders</strong><span>4 legs - +286</span></div><em>Parlay</em><small>Today, 11:18 AM</small><button>...</button></article>
+            <article><i></i><div><strong>Ace Strikeout Stack</strong><span>2 legs - +198</span></div><em>Parlay</em><small>Yesterday, 6:45 PM</small><button>...</button></article>
+            <article><i></i><div><strong>Live Value Play</strong><span>2 legs - +155</span></div><em class="live-tag">Live</em><small>Yesterday, 4:21 PM</small><button>...</button></article>
+          </div>
+        </section>
+      </aside>
+    </main>
+    <script>
+      const navLinks = document.querySelectorAll(".nav-link");
+      const searchInput = document.querySelector("#searchInput");
+
+      navLinks.forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          navLinks.forEach((item) => item.classList.remove("active"));
+          link.classList.add("active");
+        });
+      });
+
+      searchInput.addEventListener("input", () => {
+        const query = searchInput.value.trim().toLowerCase();
+        document.querySelectorAll(".prop-row").forEach((row) => {
+          row.hidden = query.length > 0 && !row.textContent.toLowerCase().includes(query);
+        });
+      });
+
+      document.addEventListener("click", (event) => {
+        const row = event.target.closest(".prop-row");
+        if (!row) return;
+        document.querySelectorAll(".prop-row").forEach((item) => item.classList.remove("selected"));
+        row.classList.add("selected");
+      });
+
+      const escapeHtml = (value) =>
+        String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+
+      const formatNumber = (value, digits = 2) => {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return "--";
+        return Number.isInteger(number) ? String(number) : number.toFixed(digits);
+      };
+
+      const formatSigned = (value, digits = 2) => {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return "+0";
+        return `${number >= 0 ? "+" : ""}${number.toFixed(digits)}`;
+      };
+
+      const imageOrInitial = (item) => {
+        if (item.playerImage) {
+          return `<img class="player-photo" src="${escapeHtml(item.playerImage)}" alt="${escapeHtml(item.playerName)}" />`;
+        }
+        const initial = String(item.playerName || "?").trim().slice(0, 1).toUpperCase() || "?";
+        return `<span class="player-fallback">${escapeHtml(initial)}</span>`;
+      };
+
+      const subline = (item) => {
+        const team = item.teamName || "";
+        const confidence = item.confidence ? `${item.confidence} confidence` : "";
+        return [team, confidence].filter(Boolean).join(" - ");
+      };
+
+      const renderMetrics = (summary) => {
+        const metrics = [
+          [summary.games, "Games", ""],
+          [summary.playerProps, "Player Props", ""],
+          [summary.topScore, "Top Score", ""],
+          [formatSigned(summary.avgEdge ?? 0), "Avg Edge", "cyan"],
+          [summary.alerts, "Risk Flags", "amber"],
+        ];
+        document.querySelectorAll(".metric-strip div").forEach((node, index) => {
+          const [value, label, className] = metrics[index] || ["--", "", ""];
+          node.innerHTML = `<strong class="${className}">${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span>`;
+        });
+        const gameFilter = document.querySelectorAll(".segment-group .filter-pill")[1];
+        if (gameFilter) {
+          const games = summary.games ?? "--";
+          gameFilter.textContent = `${games} ${games === 1 ? "Game" : "Games"}`;
+        }
+      };
+
+      const renderMovers = (items) => {
+        const list = document.querySelector(".mover-list");
+        if (!list) return;
+        if (!items?.length) {
+          list.innerHTML = `<div class="empty-state">No movement data yet. Capture more snapshots to track shifts.</div>`;
+          return;
+        }
+        list.innerHTML = items
+          .map((item) => `
+            <div class="mover ${item.direction === "down" ? "down" : "up"}">
+              ${imageOrInitial(item)}
+              <div><strong>${escapeHtml(item.playerName)}</strong><span>${escapeHtml(item.selection)} ${escapeHtml(item.marketLabel)}</span></div>
+              <em>${escapeHtml(formatSigned(item.move, 2))}</em>
+              <small>Score ${escapeHtml(item.score)}</small>
+              <i></i>
+            </div>
+          `)
+          .join("");
+      };
+
+      const renderProps = (items) => {
+        const table = document.querySelector(".prop-table");
+        const head = table?.querySelector(".table-head");
+        if (!table || !head) return;
+        table.querySelectorAll(".prop-row, .empty-state").forEach((node) => node.remove());
+        if (!items?.length) {
+          table.insertAdjacentHTML("beforeend", `<div class="empty-state">No player props loaded from local snapshots yet.</div>`);
+          return;
+        }
+        table.insertAdjacentHTML(
+          "beforeend",
+          items
+            .map((item, index) => `
+              <button class="prop-row ${index === 0 ? "selected" : ""}">
+                <span class="player-cell">${imageOrInitial(item)}<span>${escapeHtml(item.playerName)}<small>${escapeHtml(subline(item))}</small></span></span>
+                <span>${escapeHtml(item.selection)}<small>${escapeHtml(item.marketLabel)}</small></span>
+                <span>${escapeHtml(formatNumber(item.line, 1))}</span>
+                <span>${escapeHtml(formatNumber(item.odds, 2))}</span>
+                <strong>${escapeHtml(item.score)}</strong>
+              </button>
+            `)
+            .join("")
+        );
+      };
+
+      const renderSlip = (slip) => {
+        const count = document.querySelector(".slip-panel .count");
+        const legs = document.querySelector(".slip-legs");
+        const summary = document.querySelector(".odds-summary");
+        const correlation = document.querySelector(".correlation-warning");
+        if (count) count.textContent = slip?.legCount ?? 0;
+        if (legs) {
+          if (!slip?.legs?.length) {
+            legs.innerHTML = `<div class="empty-state">No eligible research legs yet.</div>`;
+          } else {
+            legs.innerHTML = slip.legs
+              .map((leg, index) => `
+                <article>
+                  <span>${index + 1}</span>
+                  ${imageOrInitial(leg)}
+                  <div><strong>${escapeHtml(leg.playerName)}</strong><p>${escapeHtml(leg.selection)} ${escapeHtml(leg.marketLabel)}<small>${escapeHtml(leg.game || leg.teamName || "")}</small></p></div>
+                  <b>${escapeHtml(formatNumber(leg.odds, 2))}</b>
+                  <button>x</button>
+                </article>
+              `)
+              .join("");
+          }
+        }
+        if (summary) {
+          summary.innerHTML = `
+            <span>Parlay Odds</span><strong>${escapeHtml(formatNumber(slip?.combinedOdds, 2))}</strong>
+            <span>To Win (1u)</span><strong>${escapeHtml(formatNumber(slip?.toWinUnits, 2))}u</strong>
+          `;
+        }
+        if (correlation) {
+          const risk = slip?.correlationRisk;
+          if (!risk) {
+            correlation.hidden = true;
+          } else {
+            const quoteText = risk.quoteNeeded ? "Stake quote needed" : (risk.repriceSignal || "Quote compared");
+            correlation.hidden = false;
+            correlation.innerHTML = `
+              <strong>Correlation ${escapeHtml(risk.riskLevel || "unknown")}</strong>
+              <span>${escapeHtml(quoteText)}</span>
+              <small>${escapeHtml(risk.warning || "")}</small>
+            `;
+          }
+        }
+      };
+
+      const renderSaved = (items) => {
+        const list = document.querySelector(".saved-list");
+        if (!list) return;
+        if (!items?.length) {
+          list.innerHTML = `<div class="empty-state">Generated candidates will appear after enough eligible legs exist.</div>`;
+          return;
+        }
+        list.innerHTML = items
+          .map((item) => `
+            <article>
+              <i></i>
+              <div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.legCount)} legs - ${escapeHtml(formatNumber(item.totalOdds, 2))}</span></div>
+              <em>${escapeHtml(item.tag)}</em>
+              <small>Local</small>
+              <button>...</button>
+            </article>
+          `)
+          .join("");
+      };
+
+      const renderStatus = (status) => {
+        const left = document.querySelector(".statusbar span:first-child");
+        if (!left) return;
+        const source = status?.source === "saved_analysis" ? "saved analyzer decisions" : status?.source || "local data";
+        const updated = status?.lastUpdated ? new Date(status.lastUpdated).toLocaleString() : "not synced";
+        left.innerHTML = `<i></i> ${escapeHtml(source)} - ${escapeHtml(updated)}`;
+      };
+
+      const renderDashboard = (dashboard) => {
+        renderMetrics(dashboard.summary || {});
+        renderMovers(dashboard.marketMovers || []);
+        renderProps(dashboard.topPlayerProps || []);
+        renderSlip(dashboard.slip || {});
+        renderSaved(dashboard.savedSlips || []);
+        renderStatus(dashboard.status || {});
+      };
+
+      const loadDashboard = async () => {
+        if (window.location.protocol === "file:") return;
+        const params = new URLSearchParams(window.location.search);
+        const url = new URL("/dashboard/mlb", window.location.origin);
+        if (params.get("date")) url.searchParams.set("date", params.get("date"));
+        if (params.get("snapshotPhase")) url.searchParams.set("snapshotPhase", params.get("snapshotPhase"));
+        url.searchParams.set("limit", params.get("limit") || "5");
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`Dashboard request failed: ${response.status}`);
+          renderDashboard(await response.json());
+        } catch (error) {
+          console.warn(error);
+        }
+      };
+
+      loadDashboard();
+    </script>
+  </body>
+</html>

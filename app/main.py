@@ -3,13 +3,28 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import date
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
+from .dashboard import build_mlb_dashboard
+from .gpt_action import (
+    build_gpt_action_openapi_schema,
+    build_matchup_picks,
+    require_gpt_api_key,
+)
 from .line_movement import get_line_movement_history
+from .mlb_data import (
+    MLBAPIError,
+    MLBDataEngine,
+    MLBStatsClient,
+    build_mlb_http_client,
+)
+from .mlb_bridge import build_match_audit, enrich_props_with_mlb_data
 from .mlb_props import build_stable_props_payload
 from .slate import (
     DEFAULT_TIMEZONE,
@@ -21,6 +36,7 @@ from .slate import (
     render_player_props_html,
 )
 from .stake_client import StakeAPIError, StakeClient, build_http_client
+from .storage import SnapshotStore
 
 
 app = FastAPI(
@@ -29,6 +45,10 @@ app = FastAPI(
     description="Local read-only wrapper around Stake odds data endpoints.",
 )
 
+UI_DIR = Path(__file__).resolve().parent.parent / "ui" / "desktop-concept"
+if UI_DIR.exists():
+    app.mount("/app", StaticFiles(directory=UI_DIR, html=True), name="azp-app")
+
 
 async def get_stake_client() -> AsyncIterator[StakeClient]:
     api_key = os.getenv("STAKE_API_KEY") or None
@@ -36,9 +56,112 @@ async def get_stake_client() -> AsyncIterator[StakeClient]:
         yield StakeClient(http_client=http_client, api_key=api_key)
 
 
+async def get_mlb_engine() -> AsyncIterator[MLBDataEngine]:
+    async with build_mlb_http_client() as http_client:
+        yield MLBDataEngine(MLBStatsClient(http_client))
+
+
+def get_snapshot_store() -> SnapshotStore:
+    return SnapshotStore()
+
+
+@app.get("/", include_in_schema=False)
+async def home() -> RedirectResponse:
+    return RedirectResponse(url="/app/")
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/gpt/openapi.json", include_in_schema=False)
+async def gpt_openapi_schema(request: Request) -> Any:
+    return build_gpt_action_openapi_schema(str(request.base_url).rstrip("/"))
+
+
+@app.get("/gpt/health")
+async def gpt_health(_: None = Depends(require_gpt_api_key)) -> dict[str, str]:
+    return {"status": "ok", "service": "azp-gpt-action"}
+
+
+@app.get("/gpt/privacy", include_in_schema=False)
+async def gpt_privacy_policy() -> dict[str, Any]:
+    return {
+        "name": "AZP Suite GPT Action Privacy Policy",
+        "summary": (
+            "This local read-only action retrieves MLB odds/player prop data from "
+            "the configured AZP backend and returns it to your private Custom GPT."
+        ),
+        "dataUse": [
+            "The action does not collect account passwords, Stake login sessions, or payment data.",
+            "The action does not place bets or modify any account.",
+            "Requests may include matchup names, dates, markets, and filtering preferences.",
+            "If hosted or tunneled, requests pass through that host or tunnel provider.",
+        ],
+    }
+
+
+@app.get("/gpt/mlb/matchup-picks")
+async def gpt_mlb_matchup_picks(
+    matchup: str = Query(..., min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    markets: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
+    legs: int = Query(2, ge=1, le=6),
+    mode: str = Query("sgp", pattern="^(sgp|standard)$"),
+    season: int | None = Query(None, ge=1876, le=2100),
+    history_limit: int = Query(5, alias="historyLimit", ge=1, le=10),
+    recommendation_limit: int = Query(10, alias="recommendationLimit", ge=1, le=25),
+    odds_min: float | None = Query(None, alias="oddsMin", ge=1),
+    odds_max: float | None = Query(None, alias="oddsMax", ge=1),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    return await _call_data_sources(
+        build_matchup_picks,
+        client,
+        engine,
+        matchup,
+        slate_date,
+        timezone_name,
+        limit,
+        markets,
+        side,
+        legs,
+        mode,
+        season,
+        history_limit,
+        recommendation_limit,
+        odds_min,
+        odds_max,
+    )
+
+
+@app.get("/dashboard/mlb")
+async def mlb_dashboard(
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(5, ge=1, le=25),
+    snapshot_phase: str | None = Query(None, alias="snapshotPhase"),
+    profile: str = Query("custom"),
+    store: SnapshotStore = Depends(get_snapshot_store),
+) -> Any:
+    date_text = slate_date.isoformat() if slate_date else None
+    return build_mlb_dashboard(
+        store=store,
+        date_text=date_text,
+        limit=limit,
+        snapshot_phase=snapshot_phase,
+        profile=profile,
+    )
+
+
+@app.get("/dashboard/mlb/view", include_in_schema=False)
+async def mlb_dashboard_view() -> RedirectResponse:
+    return RedirectResponse(url="/app/")
 
 
 @app.get("/sports")
@@ -183,6 +306,63 @@ async def mlb_props(
     return build_stable_props_payload(player_props_slate)
 
 
+@app.get("/mlb/props/enriched")
+async def mlb_props_enriched(
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    markets: str | None = Query(None),
+    exclude_markets: str | None = Query(None, alias="excludeMarkets"),
+    season: int | None = Query(None, ge=1876, le=2100),
+    group_mode: str = Query("auto", alias="group", pattern="^(auto|hitting|pitching)$"),
+    history_limit: int = Query(5, alias="historyLimit", ge=1, le=25),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    player_props_slate = await _mlb_player_props_response(
+        client=client,
+        slate_date=slate_date,
+        limit=limit,
+        line_mode="primary",
+        markets=markets,
+        exclude_markets=exclude_markets,
+    )
+    props_payload = build_stable_props_payload(player_props_slate)
+    return await _call_mlb(
+        enrich_props_with_mlb_data,
+        props_payload,
+        engine,
+        season,
+        group_mode,
+        history_limit,
+    )
+
+
+@app.get("/mlb/props/match-audit")
+async def mlb_props_match_audit(
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    markets: str | None = Query(None),
+    exclude_markets: str | None = Query(None, alias="excludeMarkets"),
+    season: int | None = Query(None, ge=1876, le=2100),
+    group_mode: str = Query("auto", alias="group", pattern="^(auto|hitting|pitching)$"),
+    history_limit: int = Query(5, alias="historyLimit", ge=1, le=25),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    enriched = await mlb_props_enriched(
+        slate_date=slate_date,
+        limit=limit,
+        markets=markets,
+        exclude_markets=exclude_markets,
+        season=season,
+        group_mode=group_mode,
+        history_limit=history_limit,
+        client=client,
+        engine=engine,
+    )
+    return build_match_audit(enriched)
+
+
 @app.get("/mlb/line-movement")
 async def mlb_line_movement() -> Any:
     return get_line_movement_history()
@@ -205,6 +385,67 @@ async def mlb_primary_line_check(
         limit,
         _parse_market_filter(markets),
         _parse_market_filter(exclude_markets),
+    )
+
+
+@app.get("/mlb-data/teams")
+async def mlb_data_teams(
+    season: int | None = Query(None, ge=1876, le=2100),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(engine.get_teams, season)
+
+
+@app.get("/mlb-data/schedule")
+async def mlb_data_schedule(
+    game_date: date = Query(..., alias="date"),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(engine.get_schedule, game_date.isoformat())
+
+
+@app.get("/mlb-data/teams/{team_id}/roster")
+async def mlb_data_team_roster(
+    team_id: int,
+    season: int | None = Query(None, ge=1876, le=2100),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(engine.get_team_roster, team_id, season)
+
+
+@app.get("/mlb-data/players/search")
+async def mlb_data_player_search(
+    query: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=100),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(engine.search_players, query, limit)
+
+
+@app.get("/mlb-data/players/{player_id}")
+async def mlb_data_player(
+    player_id: int,
+    season: int | None = Query(None, ge=1876, le=2100),
+    group: str = Query("hitting", pattern="^(hitting|pitching)$"),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(engine.get_player_profile, player_id, season, group)
+
+
+@app.get("/mlb-data/players/{player_id}/history")
+async def mlb_data_player_history(
+    player_id: int,
+    season: int | None = Query(None, ge=1876, le=2100),
+    group: str = Query("hitting", pattern="^(hitting|pitching)$"),
+    limit: int = Query(10, ge=1, le=100),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_mlb(
+        engine.get_player_recent_history,
+        player_id,
+        group,
+        season,
+        limit,
     )
 
 
@@ -321,5 +562,24 @@ async def _call_stake(method: Any, *args: Any) -> Any:
     try:
         return await method(*args)
     except StakeAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+
+
+async def _call_mlb(method: Any, *args: Any) -> Any:
+    try:
+        return await method(*args)
+    except MLBAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+
+
+async def _call_data_sources(method: Any, *args: Any) -> Any:
+    try:
+        return await method(*args)
+    except StakeAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+    except MLBAPIError as exc:
         status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
         raise HTTPException(status_code=status_code, detail=exc.message) from exc

@@ -4,27 +4,19 @@ import re
 import unicodedata
 from typing import Any
 
-from .line_movement import record_line_movements
 
-
-def build_stable_props_payload(
-    slate: dict[str, Any],
-    include_movement: bool = True,
-) -> dict[str, Any]:
+def build_stable_props_payload(slate: dict[str, Any]) -> dict[str, Any]:
     props = [
         _stable_prop_row(fixture, prop)
         for fixture in slate.get("fixtures") or []
         if not fixture.get("oddsError")
         for prop in fixture.get("playerProps") or []
     ]
-    if include_movement:
-        props = record_line_movements(props)
-
     return {
         "league": slate.get("league") or "MLB",
         "date": slate.get("date"),
         "timezone": slate.get("timezone"),
-        "filters": slate.get("filters") or {"markets": [], "excludeMarkets": []},
+        "filters": slate.get("filters") or {"markets": [], "lineMode": "primary"},
         "fixtureCount": slate.get("fixtureCount", 0),
         "propCount": len(props),
         "props": props,
@@ -47,10 +39,17 @@ def _stable_prop_row(
     player = _player_identity(prop.get("player"))
     team = _team_identity(prop.get("team"), game)
     market = _market_identity(prop.get("market"))
+    line = prop.get("line")
     fixture_slug = str(fixture.get("slug") or "")
 
     return {
-        "propId": _prop_id(fixture_slug, player["key"], team["key"], market["key"]),
+        "propId": _prop_id(
+            fixture_slug=fixture_slug,
+            player_key=player["key"],
+            team_key=team["key"],
+            market_key=market["key"],
+            line=line,
+        ),
         "fixtureSlug": fixture_slug,
         "game": game,
         "startTime": fixture.get("startTime"),
@@ -60,7 +59,7 @@ def _stable_prop_row(
         "team": team,
         "market": market,
         "sportStatType": prop.get("sportStatType"),
-        "line": prop.get("line"),
+        "line": line,
         "odds": {
             "over": prop.get("over"),
             "under": prop.get("under"),
@@ -107,10 +106,7 @@ def _team_identity(team_name: Any, game: str) -> dict[str, Any]:
 
 def _market_identity(market_name: Any) -> dict[str, str]:
     name = str(market_name or "")
-    return {
-        "name": name,
-        "key": slug_key(name),
-    }
+    return {"name": name, "key": slug_key(name)}
 
 
 def _fixture_teams(game: str) -> list[str]:
@@ -124,11 +120,14 @@ def _prop_id(
     player_key: str,
     team_key: str,
     market_key: str,
+    line: Any,
 ) -> str:
+    line_key = str(line if line is not None else "unknown-line").replace(".", "p")
     parts = [
         fixture_slug or "unknown-fixture",
         player_key or "unknown-player",
         team_key or "unknown-team",
         market_key or "unknown-market",
+        f"line-{line_key}",
     ]
     return ":".join(parts)

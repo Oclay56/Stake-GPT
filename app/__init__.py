@@ -1,1 +1,1 @@
-"""Stake odds API wrapper."""
+"""AZP Custom GPT data backend."""

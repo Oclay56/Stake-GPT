@@ -5,5 +5,3 @@ __pycache__/
 *.log
 data/*.sqlite
 data/*.sqlite-*
-AZP.Desktop/bin/
-AZP.Desktop/obj/

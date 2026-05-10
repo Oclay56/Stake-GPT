@@ -95,6 +95,58 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     },
                 }
             },
+            "/gpt/mlb/performance-summary": {
+                "get": {
+                    "operationId": "getMlbPerformanceSummary",
+                    "summary": "Summarize saved AZP recommendation performance",
+                    "description": (
+                        "Returns settlement-backed performance summaries for saved AZP "
+                        "MLB recommendations by market, side, confidence, risk flag, "
+                        "contextual tag, and diversity mode."
+                    ),
+                    "parameters": _performance_summary_parameters(),
+                    "responses": {
+                        "200": {
+                            "description": "Saved recommendation performance summary",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": True,
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+            "/gpt/mlb/settle-recommendations": {
+                "get": {
+                    "operationId": "settleMlbRecommendations",
+                    "summary": "Settle saved AZP MLB recommendations",
+                    "description": (
+                        "Grades saved AZP MLB recommendation legs against MLB Stats API "
+                        "results and stores the settlement ledger. Use this after games "
+                        "finish before asking for performance summaries."
+                    ),
+                    "parameters": _settlement_parameters(),
+                    "responses": {
+                        "200": {
+                            "description": "Recommendation settlement result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": True,
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
         },
     }
     if os.getenv("AZP_GPT_API_KEY"):
@@ -185,7 +237,7 @@ async def build_matchup_picks(
     mode: str = "sgp",
     diversity_mode: str = "balanced",
     season: int | None = None,
-    history_limit: int = 5,
+    history_limit: int = 10,
     recommendation_limit: int = 10,
     odds_min: float | None = None,
     odds_max: float | None = None,
@@ -352,8 +404,8 @@ def _matchup_pick_parameters() -> list[dict[str, Any]]:
             "name": "historyLimit",
             "in": "query",
             "required": False,
-            "description": "Recent game count to pull from MLB Stats API.",
-            "schema": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+            "description": "Recent game count to pull from MLB Stats API for blended form context.",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 15, "default": 10},
         },
         {
             "name": "recommendationLimit",
@@ -382,6 +434,114 @@ def _matchup_pick_parameters() -> list[dict[str, Any]]:
             "required": False,
             "description": "Maximum raw product odds for the candidate parlay.",
             "schema": {"type": "number", "minimum": 1},
+        },
+    ]
+
+
+def _performance_summary_parameters() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "date",
+            "in": "query",
+            "required": False,
+            "description": "Slate date in YYYY-MM-DD.",
+            "schema": {"type": "string", "format": "date"},
+        },
+        {
+            "name": "market",
+            "in": "query",
+            "required": False,
+            "description": "Optional market key such as hits, runs, total-bases, or strikeouts.",
+            "schema": {"type": "string"},
+        },
+        {
+            "name": "side",
+            "in": "query",
+            "required": False,
+            "description": "Optional side filter.",
+            "schema": {"type": "string", "enum": ["over", "under"]},
+        },
+        {
+            "name": "requestId",
+            "in": "query",
+            "required": False,
+            "description": "Optional saved recommendation request id.",
+            "schema": {"type": "string"},
+        },
+        {
+            "name": "diversityMode",
+            "in": "query",
+            "required": False,
+            "description": "Optional diversity mode filter.",
+            "schema": {"type": "string", "enum": list(DIVERSITY_MODES)},
+        },
+        {
+            "name": "limit",
+            "in": "query",
+            "required": False,
+            "description": "Maximum saved recommendation legs to summarize.",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
+        },
+    ]
+
+
+def _settlement_parameters() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "date",
+            "in": "query",
+            "required": False,
+            "description": "Slate date in YYYY-MM-DD for saved recommendation legs to settle.",
+            "schema": {"type": "string", "format": "date"},
+        },
+        {
+            "name": "market",
+            "in": "query",
+            "required": False,
+            "description": "Optional market key such as hits, runs, total-bases, or strikeouts.",
+            "schema": {"type": "string"},
+        },
+        {
+            "name": "side",
+            "in": "query",
+            "required": False,
+            "description": "Optional side filter.",
+            "schema": {"type": "string", "enum": ["over", "under"]},
+        },
+        {
+            "name": "requestId",
+            "in": "query",
+            "required": False,
+            "description": "Optional saved recommendation request id.",
+            "schema": {"type": "string"},
+        },
+        {
+            "name": "diversityMode",
+            "in": "query",
+            "required": False,
+            "description": "Optional diversity mode filter.",
+            "schema": {"type": "string", "enum": list(DIVERSITY_MODES)},
+        },
+        {
+            "name": "season",
+            "in": "query",
+            "required": False,
+            "description": "MLB season year used to retrieve player game logs.",
+            "schema": {"type": "integer", "minimum": 1876, "maximum": 2100},
+        },
+        {
+            "name": "limit",
+            "in": "query",
+            "required": False,
+            "description": "Maximum saved recommendation legs to settle.",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
+        },
+        {
+            "name": "historyLimit",
+            "in": "query",
+            "required": False,
+            "description": "Maximum player game logs to inspect while settling.",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
         },
     ]
 
@@ -442,6 +602,23 @@ def _visible_line_rank(prop: dict[str, Any]) -> tuple[float, float]:
     return (abs(line), abs(float(over) - float(under)))
 
 
+def _market_has_unplayable_odds(
+    prop: dict[str, Any],
+    min_playable_odds: float,
+) -> bool:
+    odds = prop.get("odds") or {}
+    over = _float_or_none(odds.get("over"))
+    under = _float_or_none(odds.get("under"))
+    return (
+        over is None
+        or under is None
+        or over <= 1.0
+        or under <= 1.0
+        or over < min_playable_odds
+        or under < min_playable_odds
+    )
+
+
 def _build_recommendations(
     enriched_payload: dict[str, Any],
     side: str,
@@ -460,6 +637,10 @@ def _build_recommendations(
         if ((prop.get("player") or {}).get("matchStatus") != "matched_exact_name_team"):
             continue
         if not _pitcher_prop_is_probable_pitcher(prop):
+            continue
+        if _market_has_unplayable_odds(prop, min_playable_odds):
+            diagnostics["discardedUnavailableMarket"] += 1
+            diagnostics["discardedInvalidOdds"] += 1
             continue
         sides = ("over", "under") if side == "any" else (side,)
         for pick_side in sides:
@@ -508,6 +689,7 @@ def _recommendation_diagnostics(
         "discardedMissingOdds": 0,
         "discardedInvalidOdds": 0,
         "discardedBelowMinOdds": 0,
+        "discardedUnavailableMarket": 0,
         "discardedByMarketDiversity": 0,
         "eligibleBeforeDiversity": 0,
         "marketDiversityApplied": enable_market_diversity,
@@ -757,6 +939,13 @@ def _recommendation_for_side(
 
     season_stats = (((prop.get("mlbProfile") or {}).get("player") or {}).get("stats") or {})
     season_per_game = _season_per_game(season_stats, context.get("seasonValue"))
+    form_context = _form_context(
+        prop=prop,
+        stat_key=str(stat_key),
+        line=line,
+        side=side,
+        season_per_game=season_per_game,
+    )
     reasons, risk_flags = _reasons_and_risks(
         side=side,
         line=line,
@@ -765,6 +954,7 @@ def _recommendation_for_side(
         profile=profile,
         games_used=_int_or_none(context.get("gamesUsed")),
         season_per_game=season_per_game,
+        form_context=form_context,
     )
     score = _score_pick(edge, threshold, reasons, risk_flags)
     confidence = "high" if not risk_flags else "medium"
@@ -819,6 +1009,7 @@ def _recommendation_for_side(
             "perGame": season_per_game,
             "stats": season_stats,
         },
+        "formContext": form_context,
         "mlbGame": prop.get("mlbGame"),
         "mlbMatch": prop.get("mlbMatch"),
         "riskFlags": risk_flags,
@@ -829,6 +1020,68 @@ def _recommendation_for_side(
     return apply_contextual_edge_layer(pick)
 
 
+def _form_context(
+    prop: dict[str, Any],
+    stat_key: str,
+    line: float,
+    side: str,
+    season_per_game: float | None,
+) -> dict[str, Any]:
+    recent_games = ((prop.get("recentHistory") or {}).get("games") or [])
+    recent5 = _recent_window_per_game(recent_games, stat_key, 5)
+    recent10 = _recent_window_per_game(recent_games, stat_key, 10)
+    recent15 = _recent_window_per_game(recent_games, stat_key, 15)
+    blended = _weighted_average(
+        [
+            (recent5, 0.5),
+            (recent10, 0.25),
+            (season_per_game, 0.25),
+        ]
+    )
+    blended_edge = None
+    if blended is not None:
+        blended_edge = line - blended if side == "under" else blended - line
+        blended_edge = round(blended_edge, 4)
+    return {
+        "recent5PerGame": recent5,
+        "recent10PerGame": recent10,
+        "recent15PerGame": recent15,
+        "seasonPerGame": season_per_game,
+        "blendedPerGame": blended,
+        "blendedEdge": blended_edge,
+        "weights": {
+            "recent5": 0.5,
+            "recent10": 0.25,
+            "season": 0.25,
+        },
+    }
+
+
+def _recent_window_per_game(
+    games: list[dict[str, Any]],
+    stat_key: str,
+    limit: int,
+) -> float | None:
+    values = []
+    for game in games[:limit]:
+        value = _float_or_none((game.get("stats") or {}).get(stat_key))
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
+
+
+def _weighted_average(values: list[tuple[float | None, float]]) -> float | None:
+    weighted = [(value, weight) for value, weight in values if value is not None]
+    if not weighted:
+        return None
+    total_weight = sum(weight for _, weight in weighted)
+    if total_weight <= 0:
+        return None
+    return round(sum(float(value) * weight for value, weight in weighted) / total_weight, 4)
+
+
 def _reasons_and_risks(
     side: str,
     line: float,
@@ -837,6 +1090,7 @@ def _reasons_and_risks(
     profile: dict[str, Any],
     games_used: int | None,
     season_per_game: float | None,
+    form_context: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     reasons = [f"recent_per_game_{'above' if side == 'over' else 'below'}_line"]
     risk_flags: list[str] = []
@@ -865,6 +1119,17 @@ def _reasons_and_risks(
     if edge >= threshold * 2:
         reasons.append("clear_recent_edge")
 
+    blended_edge = _float_or_none((form_context or {}).get("blendedEdge"))
+    if blended_edge is not None:
+        if blended_edge >= threshold:
+            reasons.append("blended_form_supports_side")
+        else:
+            risk_flags.append("blended_form_below_threshold")
+    recent5 = _float_or_none((form_context or {}).get("recent5PerGame"))
+    recent10 = _float_or_none((form_context or {}).get("recent10PerGame"))
+    if recent5 is not None and recent10 is not None and abs(recent5 - recent10) >= threshold:
+        risk_flags.append("recent_window_volatility")
+
     return reasons, risk_flags
 
 
@@ -877,6 +1142,8 @@ def _score_pick(
     score = 72 + min(20, int(round((edge / max(threshold, 0.01)) * 6)))
     if "recent_and_season_agree" in reasons:
         score += 5
+    if "blended_form_supports_side" in reasons:
+        score += 3
     score -= min(18, len(risk_flags) * 4)
     return max(0, min(100, score))
 
@@ -938,6 +1205,12 @@ def _response_notes(
                 f"{discarded_odds} Stake feed legs below playable odds "
                 f"threshold ({float(diagnostics['minPlayableOdds']):.2f}); "
                 "not backfilled with weaker picks."
+            )
+        unavailable_markets = int(diagnostics.get("discardedUnavailableMarket") or 0)
+        if unavailable_markets:
+            notes.append(
+                f"Filtered {unavailable_markets} markets with incomplete or unplayable "
+                "two-sided Stake odds; these are treated as unavailable."
             )
         discarded_diversity = int(diagnostics.get("discardedByMarketDiversity") or 0)
         if discarded_diversity:

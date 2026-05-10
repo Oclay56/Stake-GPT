@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,102 @@ class SnapshotStore:
                     ON analysis_snapshots (slate_date, snapshot_phase, captured_at);
                 CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_prop_id
                     ON analysis_snapshots (prop_id, captured_at);
+
+                CREATE TABLE IF NOT EXISTS recommendation_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL UNIQUE,
+                    captured_at TEXT NOT NULL,
+                    source TEXT,
+                    matchup TEXT,
+                    slate_date TEXT,
+                    timezone TEXT,
+                    diversity_mode TEXT,
+                    filters_json TEXT NOT NULL,
+                    request_params_json TEXT NOT NULL,
+                    diagnostics_json TEXT NOT NULL,
+                    concentration_tags_json TEXT NOT NULL,
+                    matched_fixture_count INTEGER,
+                    available_prop_count INTEGER,
+                    matched_prop_count INTEGER,
+                    unmatched_prop_count INTEGER,
+                    recommendation_count INTEGER,
+                    parlay_json TEXT NOT NULL,
+                    notes_json TEXT NOT NULL,
+                    raw_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_recommendation_requests_date
+                    ON recommendation_requests (slate_date, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_requests_diversity
+                    ON recommendation_requests (diversity_mode, captured_at);
+
+                CREATE TABLE IF NOT EXISTS recommendation_legs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    slate_date TEXT,
+                    matchup TEXT,
+                    rank INTEGER,
+                    prop_id TEXT,
+                    fixture_slug TEXT,
+                    game TEXT,
+                    mlb_game_pk INTEGER,
+                    player_name TEXT,
+                    player_key TEXT,
+                    player_mlb_id INTEGER,
+                    team_name TEXT,
+                    team_key TEXT,
+                    team_mlb_id INTEGER,
+                    market_key TEXT,
+                    stat_key TEXT,
+                    line REAL,
+                    side TEXT,
+                    lean TEXT,
+                    odds REAL,
+                    over_odds REAL,
+                    under_odds REAL,
+                    edge REAL,
+                    score INTEGER,
+                    confidence TEXT,
+                    selection TEXT,
+                    diversity_mode TEXT,
+                    risk_flags_json TEXT NOT NULL,
+                    reasons_json TEXT NOT NULL,
+                    contextual_tags_json TEXT NOT NULL,
+                    deferred_layers_json TEXT NOT NULL,
+                    concentration_tags_json TEXT NOT NULL,
+                    raw_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_recommendation_legs_date
+                    ON recommendation_legs (slate_date, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_legs_prop
+                    ON recommendation_legs (prop_id, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_legs_market
+                    ON recommendation_legs (market_key, side, captured_at);
+
+                CREATE TABLE IF NOT EXISTS recommendation_settlements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL,
+                    leg_rank INTEGER NOT NULL,
+                    prop_id TEXT,
+                    slate_date TEXT,
+                    market_key TEXT,
+                    side TEXT,
+                    actual_value REAL,
+                    actual_result TEXT,
+                    over_outcome TEXT,
+                    decision_outcome TEXT,
+                    reasons_json TEXT NOT NULL,
+                    settled_at TEXT NOT NULL,
+                    raw_json TEXT NOT NULL,
+                    UNIQUE (request_id, leg_rank)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_recommendation_settlements_date
+                    ON recommendation_settlements (slate_date, settled_at);
+                CREATE INDEX IF NOT EXISTS idx_recommendation_settlements_prop
+                    ON recommendation_settlements (prop_id, settled_at);
                 """
             )
             _ensure_column(conn, "prop_snapshots", "snapshot_phase", "TEXT NOT NULL DEFAULT 'manual'")
@@ -109,6 +206,229 @@ class SnapshotStore:
             _ensure_column(conn, "prop_snapshots", "mlb_game_pk", "INTEGER")
             _ensure_column(conn, "player_stat_snapshots", "snapshot_phase", "TEXT NOT NULL DEFAULT 'manual'")
             _ensure_column(conn, "player_stat_snapshots", "snapshot_label", "TEXT")
+
+    def save_recommendation_result(
+        self,
+        response: dict[str, Any],
+        captured_at: datetime | None = None,
+        request_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.init_db()
+        captured_text = _captured_at(captured_at)
+        request_id = str(response.get("requestId") or uuid.uuid4())
+        filters = response.get("filters") or {}
+        diagnostics = response.get("recommendationDiagnostics") or {}
+        concentration_tags = diagnostics.get("concentrationTags") or []
+        recommendations = response.get("recommendations") or []
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recommendation_requests (
+                    request_id, captured_at, source, matchup, slate_date, timezone,
+                    diversity_mode, filters_json, request_params_json,
+                    diagnostics_json, concentration_tags_json,
+                    matched_fixture_count, available_prop_count, matched_prop_count,
+                    unmatched_prop_count, recommendation_count, parlay_json,
+                    notes_json, raw_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    captured_text,
+                    response.get("source"),
+                    response.get("matchup"),
+                    response.get("date"),
+                    response.get("timezone"),
+                    filters.get("diversityMode"),
+                    _json_dumps(filters),
+                    _json_dumps(request_params or {}),
+                    _json_dumps(diagnostics),
+                    _json_dumps(concentration_tags),
+                    _int_or_none(response.get("matchedFixtureCount")),
+                    _int_or_none(response.get("availablePropCount")),
+                    _int_or_none(response.get("matchedPropCount")),
+                    _int_or_none(response.get("unmatchedPropCount")),
+                    _int_or_none(response.get("recommendationCount")),
+                    _json_dumps(response.get("parlay") or {}),
+                    _json_dumps(response.get("notes") or []),
+                    _json_dumps({**response, "requestId": request_id}),
+                ),
+            )
+            for index, recommendation in enumerate(recommendations, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO recommendation_legs (
+                        request_id, captured_at, slate_date, matchup, rank,
+                        prop_id, fixture_slug, game, mlb_game_pk,
+                        player_name, player_key, player_mlb_id,
+                        team_name, team_key, team_mlb_id,
+                        market_key, stat_key, line, side, lean, odds,
+                        over_odds, under_odds, edge, score, confidence,
+                        selection, diversity_mode, risk_flags_json, reasons_json,
+                        contextual_tags_json, deferred_layers_json,
+                        concentration_tags_json, raw_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _recommendation_leg_values(
+                        request_id=request_id,
+                        captured_at=captured_text,
+                        response=response,
+                        rank=index,
+                        recommendation=recommendation,
+                        concentration_tags=concentration_tags,
+                    ),
+                )
+
+        return {
+            "requestId": request_id,
+            "recommendationRequestsInserted": 1,
+            "recommendationLegsInserted": len(recommendations),
+        }
+
+    def list_recommendation_requests(
+        self,
+        date_text: str | None = None,
+        request_id: str | None = None,
+        diversity_mode: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        self.init_db()
+        where = []
+        params: list[Any] = []
+        if date_text:
+            where.append("slate_date = ?")
+            params.append(date_text)
+        if request_id:
+            where.append("request_id = ?")
+            params.append(request_id)
+        if diversity_mode:
+            where.append("diversity_mode = ?")
+            params.append(diversity_mode)
+
+        sql = "SELECT * FROM recommendation_requests"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY captured_at DESC, id DESC LIMIT ?"
+        params.append(_clean_limit(limit))
+
+        with self._connect() as conn:
+            return [_recommendation_request_row(row) for row in conn.execute(sql, params)]
+
+    def list_recommendation_legs(
+        self,
+        date_text: str | None = None,
+        market: str | None = None,
+        side: str | None = None,
+        request_id: str | None = None,
+        diversity_mode: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        self.init_db()
+        where = []
+        params: list[Any] = []
+        if date_text:
+            where.append("slate_date = ?")
+            params.append(date_text)
+        if market:
+            where.append("market_key = ?")
+            params.append(market)
+        if side:
+            where.append("side = ?")
+            params.append(side)
+        if request_id:
+            where.append("request_id = ?")
+            params.append(request_id)
+        if diversity_mode:
+            where.append("diversity_mode = ?")
+            params.append(diversity_mode)
+
+        sql = "SELECT * FROM recommendation_legs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY captured_at DESC, request_id DESC, rank ASC LIMIT ?"
+        params.append(_clean_limit(limit))
+
+        with self._connect() as conn:
+            return [_recommendation_leg_row(row) for row in conn.execute(sql, params)]
+
+    def save_recommendation_settlements(
+        self,
+        rows: list[dict[str, Any]],
+        settled_at: datetime | None = None,
+    ) -> dict[str, int]:
+        self.init_db()
+        settled_text = _captured_at(settled_at)
+        with self._connect() as conn:
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO recommendation_settlements (
+                        request_id, leg_rank, prop_id, slate_date, market_key,
+                        side, actual_value, actual_result, over_outcome,
+                        decision_outcome, reasons_json, settled_at, raw_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(request_id, leg_rank) DO UPDATE SET
+                        prop_id = excluded.prop_id,
+                        slate_date = excluded.slate_date,
+                        market_key = excluded.market_key,
+                        side = excluded.side,
+                        actual_value = excluded.actual_value,
+                        actual_result = excluded.actual_result,
+                        over_outcome = excluded.over_outcome,
+                        decision_outcome = excluded.decision_outcome,
+                        reasons_json = excluded.reasons_json,
+                        settled_at = excluded.settled_at,
+                        raw_json = excluded.raw_json
+                    """,
+                    (
+                        row.get("requestId"),
+                        _int_or_none(row.get("rank")) or 0,
+                        row.get("propId"),
+                        row.get("date"),
+                        row.get("marketKey"),
+                        row.get("side"),
+                        _float_or_none(row.get("actualValue")),
+                        row.get("actualResult"),
+                        row.get("overOutcome"),
+                        row.get("decisionOutcome"),
+                        _json_dumps(row.get("reasons") or []),
+                        settled_text,
+                        _json_dumps(row),
+                    ),
+                )
+        return {"recommendationSettlementsSaved": len(rows)}
+
+    def list_recommendation_settlements(
+        self,
+        date_text: str | None = None,
+        request_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        self.init_db()
+        where = []
+        params: list[Any] = []
+        if date_text:
+            where.append("slate_date = ?")
+            params.append(date_text)
+        if request_id:
+            where.append("request_id = ?")
+            params.append(request_id)
+
+        sql = "SELECT * FROM recommendation_settlements"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY settled_at DESC, request_id DESC, leg_rank ASC LIMIT ?"
+        params.append(_clean_limit(limit))
+
+        with self._connect() as conn:
+            return [
+                _recommendation_settlement_row(row)
+                for row in conn.execute(sql, params)
+            ]
 
     def save_analysis_result(
         self,
@@ -576,6 +896,57 @@ def _analysis_snapshot_values(
     )
 
 
+def _recommendation_leg_values(
+    request_id: str,
+    captured_at: str,
+    response: dict[str, Any],
+    rank: int,
+    recommendation: dict[str, Any],
+    concentration_tags: list[str],
+) -> tuple[Any, ...]:
+    player = recommendation.get("player") or {}
+    team = recommendation.get("team") or {}
+    market = recommendation.get("market") or {}
+    contextual = recommendation.get("contextualEdge") or {}
+    mlb_game = recommendation.get("mlbGame") or {}
+    return (
+        request_id,
+        captured_at,
+        response.get("date"),
+        response.get("matchup"),
+        _int_or_none(recommendation.get("rank")) or rank,
+        recommendation.get("propId"),
+        recommendation.get("fixtureSlug"),
+        recommendation.get("game"),
+        _int_or_none(mlb_game.get("gamePk")),
+        recommendation.get("playerName") or player.get("name"),
+        player.get("key"),
+        _int_or_none(player.get("mlbId")),
+        recommendation.get("teamName") or team.get("name"),
+        team.get("key"),
+        _int_or_none(team.get("mlbId")),
+        recommendation.get("marketKey") or market.get("key"),
+        recommendation.get("statKey"),
+        _float_or_none(recommendation.get("line")),
+        recommendation.get("side"),
+        recommendation.get("lean"),
+        _float_or_none(recommendation.get("odds")),
+        _float_or_none(recommendation.get("overOdds")),
+        _float_or_none(recommendation.get("underOdds")),
+        _float_or_none(recommendation.get("edge")),
+        _int_or_none(recommendation.get("score")),
+        recommendation.get("confidence"),
+        recommendation.get("selection"),
+        (response.get("filters") or {}).get("diversityMode"),
+        _json_dumps(recommendation.get("riskFlags") or []),
+        _json_dumps(recommendation.get("reasons") or []),
+        _json_dumps(contextual.get("tags") or []),
+        _json_dumps(contextual.get("deferredLayers") or []),
+        _json_dumps(concentration_tags),
+        _json_dumps(recommendation),
+    )
+
+
 def _prop_row(row: sqlite3.Row) -> dict[str, Any]:
     raw = _json_loads(row["raw_json"])
     recent_history = raw.get("recentHistory") or {}
@@ -649,6 +1020,91 @@ def _analysis_row(row: sqlite3.Row) -> dict[str, Any]:
         "seasonStats": raw.get("seasonStats") or {},
         "riskFlags": _json_loads(row["risk_flags_json"]),
         "reasons": _json_loads(row["reasons_json"]),
+    }
+
+
+def _recommendation_request_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "requestId": row["request_id"],
+        "capturedAt": row["captured_at"],
+        "source": row["source"],
+        "matchup": row["matchup"],
+        "date": row["slate_date"],
+        "timezone": row["timezone"],
+        "diversityMode": row["diversity_mode"],
+        "filters": _json_loads(row["filters_json"]),
+        "requestParams": _json_loads(row["request_params_json"]),
+        "recommendationDiagnostics": _json_loads(row["diagnostics_json"]),
+        "concentrationTags": _json_loads(row["concentration_tags_json"]),
+        "matchedFixtureCount": row["matched_fixture_count"],
+        "availablePropCount": row["available_prop_count"],
+        "matchedPropCount": row["matched_prop_count"],
+        "unmatchedPropCount": row["unmatched_prop_count"],
+        "recommendationCount": row["recommendation_count"],
+        "parlay": _json_loads(row["parlay_json"]),
+        "notes": _json_loads(row["notes_json"]),
+        "raw": _json_loads(row["raw_json"]),
+    }
+
+
+def _recommendation_leg_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "requestId": row["request_id"],
+        "capturedAt": row["captured_at"],
+        "date": row["slate_date"],
+        "matchup": row["matchup"],
+        "rank": row["rank"],
+        "propId": row["prop_id"],
+        "fixtureSlug": row["fixture_slug"],
+        "game": row["game"],
+        "mlbGamePk": row["mlb_game_pk"],
+        "playerName": row["player_name"],
+        "playerKey": row["player_key"],
+        "playerMlbId": row["player_mlb_id"],
+        "teamName": row["team_name"],
+        "teamKey": row["team_key"],
+        "teamMlbId": row["team_mlb_id"],
+        "marketKey": row["market_key"],
+        "statKey": row["stat_key"],
+        "line": row["line"],
+        "side": row["side"],
+        "lean": row["lean"],
+        "odds": row["odds"],
+        "overOdds": row["over_odds"],
+        "underOdds": row["under_odds"],
+        "edge": row["edge"],
+        "score": row["score"],
+        "confidence": row["confidence"],
+        "selection": row["selection"],
+        "diversityMode": row["diversity_mode"],
+        "riskFlags": _json_loads(row["risk_flags_json"]),
+        "reasons": _json_loads(row["reasons_json"]),
+        "contextualTags": _json_loads(row["contextual_tags_json"]),
+        "deferredLayers": _json_loads(row["deferred_layers_json"]),
+        "concentrationTags": _json_loads(row["concentration_tags_json"]),
+        "raw": _json_loads(row["raw_json"]),
+    }
+
+
+def _recommendation_settlement_row(row: sqlite3.Row) -> dict[str, Any]:
+    raw = _json_loads(row["raw_json"])
+    return {
+        "id": row["id"],
+        "requestId": row["request_id"],
+        "rank": row["leg_rank"],
+        "propId": row["prop_id"],
+        "date": row["slate_date"],
+        "marketKey": row["market_key"],
+        "side": row["side"],
+        "actualValue": row["actual_value"],
+        "actualResult": row["actual_result"],
+        "overOutcome": row["over_outcome"],
+        "decisionOutcome": row["decision_outcome"],
+        "reasons": _json_loads(row["reasons_json"]),
+        "settledAt": row["settled_at"],
+        "raw": raw,
     }
 
 

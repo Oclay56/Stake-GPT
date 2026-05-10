@@ -26,6 +26,10 @@ from .mlb_data import (
 )
 from .mlb_bridge import build_match_audit, enrich_props_with_mlb_data
 from .mlb_props import build_stable_props_payload
+from .recommendations import (
+    settle_recommendation_legs,
+    summarize_recommendation_performance,
+)
 from .slate import (
     DEFAULT_TIMEZONE,
     build_market_slate,
@@ -37,6 +41,12 @@ from .slate import (
 )
 from .stake_client import StakeAPIError, StakeClient, build_http_client
 from .storage import SnapshotStore
+from .supabase_ledger import (
+    fetch_recommendation_performance_from_supabase,
+    supabase_ledger_enabled,
+    sync_recommendation_result_to_supabase,
+    sync_recommendation_settlements_to_supabase,
+)
 
 
 app = FastAPI(
@@ -117,16 +127,17 @@ async def gpt_mlb_matchup_picks(
         pattern="^(balanced|best_available|strict_diversity|longshot)$",
     ),
     season: int | None = Query(None, ge=1876, le=2100),
-    history_limit: int = Query(5, alias="historyLimit", ge=1, le=10),
+    history_limit: int = Query(10, alias="historyLimit", ge=1, le=15),
     recommendation_limit: int = Query(10, alias="recommendationLimit", ge=1, le=25),
     odds_min: float | None = Query(None, alias="oddsMin", ge=1),
     odds_max: float | None = Query(None, alias="oddsMax", ge=1),
     _: None = Depends(require_gpt_api_key),
     client: StakeClient = Depends(get_stake_client),
     engine: MLBDataEngine = Depends(get_mlb_engine),
+    store: SnapshotStore = Depends(get_snapshot_store),
 ) -> Any:
     timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
-    return await _call_data_sources(
+    response = await _call_data_sources(
         build_matchup_picks,
         client,
         engine,
@@ -145,6 +156,180 @@ async def gpt_mlb_matchup_picks(
         odds_min,
         odds_max,
     )
+    if _save_gpt_recommendations_enabled():
+        request_params = {
+            "matchup": matchup,
+            "date": slate_date.isoformat() if slate_date else None,
+            "limit": limit,
+            "markets": markets,
+            "side": side,
+            "legs": legs,
+            "mode": mode,
+            "diversityMode": diversity_mode,
+            "season": season,
+            "historyLimit": history_limit,
+            "recommendationLimit": recommendation_limit,
+            "oddsMin": odds_min,
+            "oddsMax": odds_max,
+        }
+        saved = store.save_recommendation_result(
+            response,
+            request_params=request_params,
+        )
+        response["recommendationLedger"] = {
+            "saved": True,
+            "requestId": saved["requestId"],
+            "legsSaved": saved["recommendationLegsInserted"],
+            "supabaseSynced": False,
+        }
+        if supabase_ledger_enabled():
+            try:
+                supabase_result = await sync_recommendation_result_to_supabase(
+                    response,
+                    request_id=saved["requestId"],
+                    request_params=request_params,
+                )
+                response["recommendationLedger"]["supabaseSynced"] = bool(
+                    supabase_result.get("synced")
+                )
+            except Exception:
+                if os.getenv("AZP_FAIL_ON_SUPABASE_LEDGER_ERROR", "").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }:
+                    raise
+                response["recommendationLedger"]["supabaseSynced"] = False
+                response["recommendationLedger"]["supabaseWarning"] = (
+                    "Supabase ledger sync failed; local ledger save still completed."
+                )
+    return response
+
+
+@app.get("/gpt/mlb/performance-summary")
+async def gpt_mlb_performance_summary(
+    slate_date: date | None = Query(None, alias="date"),
+    market: str | None = Query(None),
+    side: str | None = Query(None, pattern="^(over|under)$"),
+    request_id: str | None = Query(None, alias="requestId"),
+    diversity_mode: str | None = Query(
+        None,
+        alias="diversityMode",
+        pattern="^(balanced|best_available|strict_diversity|longshot)$",
+    ),
+    limit: int = Query(500, ge=1, le=500),
+    _: None = Depends(require_gpt_api_key),
+    store: SnapshotStore = Depends(get_snapshot_store),
+) -> Any:
+    date_text = slate_date.isoformat() if slate_date else None
+    if supabase_ledger_enabled():
+        try:
+            return await fetch_recommendation_performance_from_supabase(
+                date_text=date_text,
+                market=market,
+                side=side,
+                request_id=request_id,
+                diversity_mode=diversity_mode,
+                limit=limit,
+            )
+        except Exception:
+            if os.getenv("AZP_FAIL_ON_SUPABASE_LEDGER_ERROR", "").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                raise
+
+    summary = summarize_recommendation_performance(
+        store,
+        date_text=date_text,
+        market=market,
+        side=side,
+        request_id=request_id,
+        diversity_mode=diversity_mode,
+        limit=limit,
+    )
+    return {
+        "source": "local_sqlite",
+        **summary,
+        "supabaseWarning": (
+            "Supabase is not configured or could not be reached; returned local ledger only."
+        )
+        if supabase_ledger_enabled()
+        else None,
+    }
+
+
+@app.get("/gpt/mlb/settle-recommendations")
+async def gpt_mlb_settle_recommendations(
+    slate_date: date | None = Query(None, alias="date"),
+    market: str | None = Query(None),
+    side: str | None = Query(None, pattern="^(over|under)$"),
+    request_id: str | None = Query(None, alias="requestId"),
+    diversity_mode: str | None = Query(
+        None,
+        alias="diversityMode",
+        pattern="^(balanced|best_available|strict_diversity|longshot)$",
+    ),
+    season: int | None = Query(None, ge=1876, le=2100),
+    limit: int = Query(500, ge=1, le=500),
+    history_limit: int = Query(30, alias="historyLimit", ge=1, le=100),
+    _: None = Depends(require_gpt_api_key),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+    store: SnapshotStore = Depends(get_snapshot_store),
+) -> Any:
+    date_text = slate_date.isoformat() if slate_date else None
+    try:
+        result = await settle_recommendation_legs(
+            store,
+            engine,
+            date_text=date_text,
+            market=market,
+            side=side,
+            request_id=request_id,
+            diversity_mode=diversity_mode,
+            season=season,
+            limit=limit,
+            history_limit=history_limit,
+        )
+    except MLBAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+
+    result = {
+        "source": "local_sqlite_plus_mlb_stats",
+        **result,
+        "settlementLedger": {
+            "saved": True,
+            "supabaseSynced": False,
+        },
+    }
+    if supabase_ledger_enabled():
+        try:
+            supabase_result = await sync_recommendation_settlements_to_supabase(
+                result.get("rows") or []
+            )
+            result["settlementLedger"]["supabaseSynced"] = bool(
+                supabase_result.get("synced")
+            )
+            result["settlementLedger"]["settlementsSynced"] = supabase_result.get(
+                "settlementsSynced",
+                0,
+            )
+        except Exception:
+            if os.getenv("AZP_FAIL_ON_SUPABASE_LEDGER_ERROR", "").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                raise
+            result["settlementLedger"]["supabaseWarning"] = (
+                "Supabase settlement sync failed; local settlement save still completed."
+            )
+    return result
 
 
 @app.get("/dashboard/mlb")
@@ -562,6 +747,11 @@ def _parse_market_filter(value: str | None) -> set[str]:
         return set()
 
     return {part.strip() for part in value.split(",") if part.strip()}
+
+
+def _save_gpt_recommendations_enabled() -> bool:
+    value = os.getenv("AZP_SAVE_GPT_RECOMMENDATIONS", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 async def _call_stake(method: Any, *args: Any) -> Any:

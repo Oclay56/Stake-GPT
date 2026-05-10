@@ -9,6 +9,8 @@ The backend routes added for the GPT are read-only. They can pull Stake-offered 
 - `GET /gpt/openapi.json`
 - `GET /gpt/health`
 - `GET /gpt/mlb/matchup-picks`
+- `GET /gpt/mlb/settle-recommendations`
+- `GET /gpt/mlb/performance-summary`
 
 The important action is:
 
@@ -22,7 +24,12 @@ It does this flow:
 2. Filters to the matchup you requested.
 3. Enriches only those Stake-returned players with MLB Stats API history.
 4. Scores over/under recommendations from available Stake props only.
-5. Returns a candidate parlay with raw product odds and correlation warnings from the current engine.
+5. Saves the exact recommendation response to the recommendation ledger.
+6. Returns a candidate parlay with raw product odds and correlation warnings from the current engine.
+
+After games finish, `settle-recommendations` grades saved legs against MLB game logs.
+`performance-summary` summarizes what has actually worked or failed by market, side,
+confidence, risk flag, context tag, and diversity mode.
 
 ## What You Need To Do
 
@@ -98,4 +105,20 @@ If you keep this local, your PC must be running both:
 - the AZP FastAPI server
 - the tunnel
 
-If either stops, the Custom GPT cannot reach AZP. Later, we can deploy the read-only API so your PC does not have to stay on.
+If either stops, the Custom GPT cannot reach AZP.
+
+The current hosted shape is:
+
+- Render runs the FastAPI action endpoint.
+- Supabase stores the durable recommendation and settlement ledger.
+- The Custom GPT imports `https://azp-gpt-action.onrender.com/gpt/openapi.json`.
+
+Render still needs these secret environment variables set in the dashboard:
+
+```text
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+```
+
+Run `supabase/recommendation_ledger.sql` in Supabase SQL Editor before enabling
+the Supabase ledger on Render.

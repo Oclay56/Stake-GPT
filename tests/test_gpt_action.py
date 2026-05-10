@@ -9,8 +9,9 @@ from app.gpt_action import (
     build_matchup_picks,
     require_gpt_api_key_value,
 )
-from app.main import app, get_mlb_engine, get_stake_client
+from app.main import app, get_mlb_engine, get_snapshot_store, get_stake_client
 from app.mlb_bridge import clear_mlb_bridge_cache
+from app.storage import SnapshotStore
 
 
 class FakeStakeClient:
@@ -599,6 +600,63 @@ def test_build_matchup_picks_rejects_unplayable_feed_odds(monkeypatch):
     assert any("playable odds" in note for note in result["notes"])
 
 
+def test_build_matchup_picks_rejects_whole_market_when_one_side_has_unplayable_odds(monkeypatch):
+    monkeypatch.setenv("AZP_MIN_PLAYABLE_ODDS", "1.10")
+
+    result = asyncio.run(
+        build_matchup_picks(
+            stake_client=FakeStakeClientWithSuspiciousOdds(),
+            mlb_engine=FakeMLBEngineWithStrongRuns(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="runs",
+            side="over",
+            legs=2,
+            mode="sgp",
+            season=2026,
+            history_limit=5,
+        )
+    )
+
+    assert result["recommendationCount"] == 0
+    assert result["recommendationDiagnostics"]["discardedUnavailableMarket"] == 1
+    assert "Bo Bichette" not in {
+        pick["player"]["name"] for pick in result["recommendations"]
+    }
+
+
+def test_build_matchup_picks_includes_blended_form_context():
+    result = asyncio.run(
+        build_matchup_picks(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+            legs=2,
+            mode="sgp",
+            season=2026,
+            history_limit=10,
+        )
+    )
+
+    springer = next(
+        pick
+        for pick in result["recommendations"]
+        if pick["player"]["name"] == "George Springer"
+    )
+    assert springer["formContext"]["recent5PerGame"] == 0.2
+    assert springer["formContext"]["recent10PerGame"] == 0.2
+    assert springer["formContext"]["seasonPerGame"] == 0.35
+    assert springer["formContext"]["blendedPerGame"] == 0.2375
+    assert springer["formContext"]["blendedEdge"] == 0.2625
+
+
 def test_build_matchup_picks_soft_diversity_prefers_close_market_spread(monkeypatch):
     monkeypatch.setenv("AZP_MIN_PLAYABLE_ODDS", "1.10")
     monkeypatch.setenv("AZP_MAX_RECOMMENDATIONS_PER_MARKET", "2")
@@ -739,6 +797,127 @@ def test_gpt_route_returns_only_stake_backed_picks():
     assert {pick["player"]["name"] for pick in body["recommendations"]} == {
         "Vladimir Guerrero Jr."
     }
+
+
+def test_gpt_route_saves_exact_recommendation_response(tmp_path):
+    store = SnapshotStore(tmp_path / "azp.sqlite")
+    app.dependency_overrides[get_snapshot_store] = lambda: store
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/gpt/mlb/matchup-picks",
+            params={
+                "matchup": "Blue Jays vs Angels",
+                "date": "2026-05-08",
+                "markets": "hits",
+                "side": "under",
+                "legs": 2,
+                "mode": "sgp",
+            },
+        )
+
+    assert response.status_code == 200
+    legs = store.list_recommendation_legs(date_text="2026-05-08")
+    assert len(legs) == response.json()["recommendationCount"]
+    assert legs[0]["matchup"] == "Blue Jays vs Angels"
+    assert legs[0]["selection"].endswith("hits")
+    assert legs[0]["odds"] >= 1.1
+
+
+def test_gpt_schema_exposes_performance_summary_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    assert "/gpt/mlb/performance-summary" in schema["paths"]
+    operation = schema["paths"]["/gpt/mlb/performance-summary"]["get"]
+    assert operation["operationId"] == "getMlbPerformanceSummary"
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+    assert "date" in parameters
+    assert "market" in parameters
+    assert "diversityMode" in parameters
+
+
+def test_gpt_schema_exposes_settlement_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    assert "/gpt/mlb/settle-recommendations" in schema["paths"]
+    operation = schema["paths"]["/gpt/mlb/settle-recommendations"]["get"]
+    assert operation["operationId"] == "settleMlbRecommendations"
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+    assert "date" in parameters
+    assert "requestId" in parameters
+    assert "diversityMode" in parameters
+
+
+def test_gpt_performance_summary_prefers_supabase_when_configured(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "secret")
+
+    async def fake_fetch(**kwargs):
+        return {
+            "source": "supabase",
+            "date": kwargs["date_text"],
+            "counts": {"legs": 3, "correct": 2},
+            "rows": [],
+        }
+
+    monkeypatch.setattr(
+        "app.main.fetch_recommendation_performance_from_supabase",
+        fake_fetch,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/gpt/mlb/performance-summary",
+            params={"date": "2026-05-08", "market": "hits"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "supabase"
+    assert body["date"] == "2026-05-08"
+    assert body["counts"]["legs"] == 3
+
+
+def test_gpt_settlement_route_saves_and_syncs_recommendation_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "secret")
+    store = SnapshotStore(tmp_path / "azp.sqlite")
+    app.dependency_overrides[get_snapshot_store] = lambda: store
+    synced = {}
+
+    async def fake_sync(rows):
+        synced["rows"] = rows
+        return {"enabled": True, "synced": True, "settlementsSynced": len(rows)}
+
+    monkeypatch.setattr(
+        "app.main.sync_recommendation_settlements_to_supabase",
+        fake_sync,
+    )
+
+    with TestClient(app) as client:
+        saved_response = client.get(
+            "/gpt/mlb/matchup-picks",
+            params={
+                "matchup": "Blue Jays vs Angels",
+                "date": "2026-05-08",
+                "markets": "hits",
+                "side": "under",
+                "legs": 2,
+                "mode": "sgp",
+            },
+        )
+        assert saved_response.status_code == 200
+
+        response = client.get(
+            "/gpt/mlb/settle-recommendations",
+            params={"date": "2026-05-08"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "local_sqlite_plus_mlb_stats"
+    assert body["settlementLedger"]["supabaseSynced"] is True
+    assert body["legCount"] == len(synced["rows"])
 
 
 def test_gpt_privacy_route_gives_action_privacy_policy_url_target():

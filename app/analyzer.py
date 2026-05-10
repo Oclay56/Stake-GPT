@@ -55,6 +55,55 @@ MARKET_PROFILES = {
         "sparse": False,
         "highLine": 8.5,
     },
+    "earned-runs": {
+        "name": "pitcher_damage_count",
+        "minEdge": 0.4,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 3.5,
+    },
+    "pitcher-earned-runs": {
+        "name": "pitcher_damage_count",
+        "minEdge": 0.4,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 3.5,
+    },
+    "first-earned-run": {
+        "name": "pitcher_damage_count",
+        "minEdge": 0.35,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 1.5,
+    },
+    "hits-allowed": {
+        "name": "pitcher_contact_allowed",
+        "minEdge": 0.75,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 7.5,
+    },
+    "walks-allowed": {
+        "name": "pitcher_control_count",
+        "minEdge": 0.45,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 3.5,
+    },
+    "outs-recorded": {
+        "name": "pitcher_workload_count",
+        "minEdge": 1.5,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 18.5,
+    },
+    "pitcher-outs": {
+        "name": "pitcher_workload_count",
+        "minEdge": 1.5,
+        "minGames": 3,
+        "sparse": False,
+        "highLine": 18.5,
+    },
 }
 
 
@@ -220,6 +269,8 @@ def _market_profile(market_key: Any) -> dict[str, Any]:
 def _positive_edge_reason(profile: dict[str, Any]) -> str:
     if profile["name"] == "pitching_count":
         return "pitching_recent_average_clears_strikeout_line"
+    if profile["name"].startswith("pitcher_"):
+        return "pitcher_recent_average_clears_market_line"
     if profile["name"] == "standard_count":
         return "recent_per_game_above_line"
     return "recent_per_game_above_market_threshold"

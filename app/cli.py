@@ -14,6 +14,10 @@ from .mlb_bridge import build_match_audit, enrich_props_with_mlb_data
 from .mlb_data import MLBDataEngine, MLBStatsClient, build_mlb_http_client
 from .mlb_props import build_stable_props_payload
 from .parlay import PROFILE_PRESETS, build_parlay_candidates, build_pick_board
+from .recommendations import (
+    settle_recommendation_legs,
+    summarize_recommendation_performance,
+)
 from .settlement import settle_stored_props
 from .slate import (
     DEFAULT_TIMEZONE,
@@ -42,6 +46,8 @@ MENU_OPTIONS = (
     ("15", "Build parlays"),
     ("16", "Pick board"),
     ("17", "Daily slate workflow"),
+    ("18", "Settle GPT recommendations"),
+    ("19", "GPT recommendation performance"),
     ("0", "Exit"),
 )
 
@@ -363,6 +369,74 @@ def format_backtest(payload: dict[str, Any], max_rows: int = 20) -> str:
     return "\n".join(lines).rstrip()
 
 
+def format_recommendation_settlement(payload: dict[str, Any], max_rows: int = 20) -> str:
+    counts = payload.get("counts") or {}
+    lines = [
+        (
+            "GPT Recommendation Settlement | "
+            f"date {payload.get('date') or 'all'} | "
+            f"market {payload.get('market') or 'all'} | "
+            f"side {payload.get('side') or 'all'}"
+        ),
+        (
+            f"Counts: legs={counts.get('legs', 0)} | "
+            f"settled={counts.get('settled', 0)} | "
+            f"correct={counts.get('correct', 0)} | "
+            f"incorrect={counts.get('incorrect', 0)} | "
+            f"pending={counts.get('pending', 0)} | "
+            f"ungraded={counts.get('ungraded', 0)}"
+        ),
+        "",
+    ]
+    for row in (payload.get("rows") or [])[:max_rows]:
+        lines.append(
+            f"{row.get('playerName')} | {row.get('teamName')} | "
+            f"{row.get('marketKey')} {row.get('line')} | "
+            f"{row.get('side')} | actual {row.get('actualValue')} | "
+            f"decision {row.get('decisionOutcome')}"
+        )
+        if row.get("reasons"):
+            lines.append(f"  reasons: {', '.join(row.get('reasons') or [])}")
+    return "\n".join(lines).rstrip()
+
+
+def format_recommendation_performance(payload: dict[str, Any], max_rows: int = 20) -> str:
+    counts = payload.get("counts") or {}
+    lines = [
+        (
+            "GPT Recommendation Performance | "
+            f"date {payload.get('date') or 'all'} | "
+            f"market {payload.get('market') or 'all'} | "
+            f"side {payload.get('side') or 'all'}"
+        ),
+        (
+            f"Counts: legs={counts.get('legs', 0)} | "
+            f"settled={counts.get('settled', 0)} | "
+            f"decisions={counts.get('decisions', 0)} | "
+            f"correct={counts.get('correct', 0)} | "
+            f"incorrect={counts.get('incorrect', 0)}"
+        ),
+        "",
+        "By market:",
+    ]
+    for market, values in (payload.get("byMarket") or {}).items():
+        lines.append(f"  {market}: {_format_recommendation_group(values)}")
+    lines.append("")
+    lines.append("By side:")
+    for side, values in (payload.get("bySide") or {}).items():
+        lines.append(f"  {side}: {_format_recommendation_group(values)}")
+    lines.append("")
+    lines.append("Rows:")
+    for row in (payload.get("rows") or [])[:max_rows]:
+        lines.append(
+            f"{row.get('playerName')} | {row.get('marketKey')} {row.get('line')} | "
+            f"{row.get('side')} @ {_format_number(row.get('odds'))} | "
+            f"score {row.get('score')} | {row.get('confidence')} | "
+            f"decision {row.get('decisionOutcome')}"
+        )
+    return "\n".join(lines).rstrip()
+
+
 def format_slate_run(payload: dict[str, Any], max_rows: int = 10) -> str:
     refresh = payload.get("refresh") or {}
     analysis_saved = payload.get("analysisSaved") or {}
@@ -590,6 +664,16 @@ def _format_prop_row(prop: dict[str, Any]) -> str:
 def _format_backtest_group(values: dict[str, Any]) -> str:
     return (
         f"total {values.get('total', 0)} | "
+        f"decisions {values.get('decisions', 0)} | "
+        f"correct {values.get('correct', 0)} | "
+        f"incorrect {values.get('incorrect', 0)} | "
+        f"accuracy {_format_accuracy(values.get('accuracy'))}"
+    )
+
+
+def _format_recommendation_group(values: dict[str, Any]) -> str:
+    return (
+        f"legs {values.get('legs', 0)} | "
         f"decisions {values.get('decisions', 0)} | "
         f"correct {values.get('correct', 0)} | "
         f"incorrect {values.get('incorrect', 0)} | "
@@ -963,6 +1047,35 @@ async def run_command(args: argparse.Namespace) -> str:
             )
         return format_backtest(result, max_rows=args.limit)
 
+    if args.command == "settle-recommendations":
+        store = _snapshot_store(args)
+        async with _mlb_engine() as engine:
+            result = await settle_recommendation_legs(
+                store,
+                engine,
+                date_text=args.date,
+                market=args.market,
+                side=args.side,
+                request_id=args.request_id,
+                diversity_mode=args.diversity_mode,
+                season=args.season,
+                limit=args.limit,
+            )
+        return format_recommendation_settlement(result, max_rows=args.limit)
+
+    if args.command == "recommendation-performance":
+        store = _snapshot_store(args)
+        result = summarize_recommendation_performance(
+            store,
+            date_text=args.date,
+            market=args.market,
+            side=args.side,
+            request_id=args.request_id,
+            diversity_mode=args.diversity_mode,
+            limit=args.limit,
+        )
+        return format_recommendation_performance(result, max_rows=args.limit)
+
     raise ValueError(f"Unknown command: {args.command}")
 
 
@@ -1106,6 +1219,39 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--min-edge", type=float, default=0.25)
     backtest.add_argument("--limit", type=int, default=20)
     _add_db_arg(backtest)
+
+    settle_recs = subparsers.add_parser(
+        "settle-recommendations",
+        help="Grade saved GPT recommendation legs against MLB game logs",
+    )
+    settle_recs.add_argument("--date", default=None)
+    settle_recs.add_argument("--market", default=None)
+    settle_recs.add_argument("--side", choices=("over", "under"), default=None)
+    settle_recs.add_argument("--request-id", default=None)
+    settle_recs.add_argument(
+        "--diversity-mode",
+        choices=("balanced", "best_available", "strict_diversity", "longshot"),
+        default=None,
+    )
+    settle_recs.add_argument("--season", type=int, default=None)
+    settle_recs.add_argument("--limit", type=int, default=100)
+    _add_db_arg(settle_recs)
+
+    rec_perf = subparsers.add_parser(
+        "recommendation-performance",
+        help="Summarize saved GPT recommendation performance",
+    )
+    rec_perf.add_argument("--date", default=None)
+    rec_perf.add_argument("--market", default=None)
+    rec_perf.add_argument("--side", choices=("over", "under"), default=None)
+    rec_perf.add_argument("--request-id", default=None)
+    rec_perf.add_argument(
+        "--diversity-mode",
+        choices=("balanced", "best_available", "strict_diversity", "longshot"),
+        default=None,
+    )
+    rec_perf.add_argument("--limit", type=int, default=100)
+    _add_db_arg(rec_perf)
 
     search = subparsers.add_parser("search", help="Search MLB players")
     search.add_argument("query")
@@ -1294,6 +1440,29 @@ async def _run_interactive_choice(choice: str) -> str:
         args.report_path = _prompt("Report path blank for none", "") or None
         if args.snapshot_phase == "manual":
             args.snapshot_phase = "pregame"
+    elif choice == "18":
+        args = argparse.Namespace(
+            command="settle-recommendations",
+            date=_prompt("Date blank for all", ""),
+            market=_prompt("Market key blank for all", ""),
+            side=_prompt("Side over/under blank for all", "") or None,
+            request_id=_prompt("Request ID blank for all", "") or None,
+            diversity_mode=_prompt("Diversity mode blank for all", "") or None,
+            season=_optional_int(_prompt("Season blank for date year", "")),
+            limit=int(_prompt("Limit", "100")),
+            db_path=_prompt("DB path blank for default", ""),
+        )
+    elif choice == "19":
+        args = argparse.Namespace(
+            command="recommendation-performance",
+            date=_prompt("Date blank for all", ""),
+            market=_prompt("Market key blank for all", ""),
+            side=_prompt("Side over/under blank for all", "") or None,
+            request_id=_prompt("Request ID blank for all", "") or None,
+            diversity_mode=_prompt("Diversity mode blank for all", "") or None,
+            limit=int(_prompt("Limit", "100")),
+            db_path=_prompt("DB path blank for default", ""),
+        )
     else:
         return "Unknown menu option."
     return await run_command(args)

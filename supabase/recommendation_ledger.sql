@@ -98,10 +98,68 @@ create index if not exists idx_recommendation_settlements_slate_date
 create index if not exists idx_recommendation_settlements_decision
     on public.recommendation_settlements (decision_outcome, settled_at desc);
 
+create table if not exists public.gpt_decision_requests (
+    decision_id text primary key,
+    captured_at timestamptz not null,
+    source text,
+    matchup text,
+    slate_date date,
+    timezone text,
+    prompt text,
+    request_body jsonb not null default '{}'::jsonb,
+    validation jsonb not null default '{}'::jsonb,
+    notes jsonb not null default '[]'::jsonb,
+    raw jsonb not null default '{}'::jsonb
+);
+
+create index if not exists idx_gpt_decision_requests_slate_date
+    on public.gpt_decision_requests (slate_date, captured_at desc);
+
+create table if not exists public.gpt_decision_legs (
+    decision_leg_id text primary key,
+    decision_id text not null references public.gpt_decision_requests(decision_id) on delete cascade,
+    captured_at timestamptz not null,
+    source text,
+    slate_date date,
+    matchup text,
+    rank integer not null,
+    prop_id text,
+    selection_id text,
+    fixture_slug text,
+    game text,
+    player_name text,
+    player_key text,
+    player_mlb_id integer,
+    team_name text,
+    team_key text,
+    team_mlb_id integer,
+    market_key text,
+    line numeric,
+    side text,
+    odds numeric,
+    over_odds numeric,
+    under_odds numeric,
+    selection text,
+    valid boolean,
+    validation_issues jsonb not null default '[]'::jsonb,
+    rationale text,
+    raw jsonb not null default '{}'::jsonb
+);
+
+create index if not exists idx_gpt_decision_legs_slate_date
+    on public.gpt_decision_legs (slate_date, captured_at desc);
+
+create index if not exists idx_gpt_decision_legs_decision
+    on public.gpt_decision_legs (decision_id, rank);
+
 alter table public.recommendation_requests enable row level security;
 alter table public.recommendation_legs enable row level security;
 alter table public.recommendation_settlements enable row level security;
+alter table public.gpt_decision_requests enable row level security;
+alter table public.gpt_decision_legs enable row level security;
 
 revoke all on public.recommendation_requests from anon, authenticated;
 revoke all on public.recommendation_legs from anon, authenticated;
 revoke all on public.recommendation_settlements from anon, authenticated;
+revoke all on public.gpt_decision_requests from anon, authenticated;
+revoke all on public.gpt_decision_legs from anon, authenticated;

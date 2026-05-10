@@ -64,6 +64,29 @@ async def sync_recommendation_settlements_to_supabase(
     }
 
 
+async def sync_gpt_decision_to_supabase(
+    response: dict[str, Any],
+    decision_id: str,
+    request_body: dict[str, Any],
+) -> dict[str, Any]:
+    url = _supabase_url()
+    key = _supabase_service_key()
+    if not url or not key:
+        return {"enabled": False, "synced": False, "reason": "missing_supabase_env"}
+
+    payload = _gpt_decision_payloads(response, decision_id, request_body)
+    async with httpx.AsyncClient(timeout=10) as client:
+        await _post_rows(client, url, key, "gpt_decision_requests", [payload["request"]])
+        if payload["legs"]:
+            await _post_rows(client, url, key, "gpt_decision_legs", payload["legs"])
+    return {
+        "enabled": True,
+        "synced": True,
+        "decisionId": decision_id,
+        "legsSynced": len(payload["legs"]),
+    }
+
+
 async def fetch_recommendation_performance_from_supabase(
     date_text: str | None = None,
     market: str | None = None,
@@ -254,6 +277,81 @@ def _payloads(
     return {"request": request, "legs": legs}
 
 
+def _gpt_decision_payloads(
+    response: dict[str, Any],
+    decision_id: str,
+    request_body: dict[str, Any],
+) -> dict[str, Any]:
+    captured_at = _utc_now()
+    request = {
+        "decision_id": decision_id,
+        "captured_at": captured_at,
+        "source": response.get("source"),
+        "matchup": response.get("matchup"),
+        "slate_date": response.get("date"),
+        "timezone": response.get("timezone"),
+        "prompt": response.get("prompt"),
+        "request_body": request_body,
+        "validation": response.get("validation") or {},
+        "notes": response.get("notes") or [],
+        "raw": {**response, "decisionId": decision_id},
+    }
+    legs = [
+        _gpt_decision_leg_payload(
+            selection,
+            decision_id=decision_id,
+            captured_at=captured_at,
+            response=response,
+            rank=index,
+        )
+        for index, selection in enumerate(response.get("selections") or [], start=1)
+    ]
+    return {"request": request, "legs": legs}
+
+
+def _gpt_decision_leg_payload(
+    selection: dict[str, Any],
+    decision_id: str,
+    captured_at: str,
+    response: dict[str, Any],
+    rank: int,
+) -> dict[str, Any]:
+    player = selection.get("player") or {}
+    team = selection.get("team") or {}
+    market = selection.get("market") or {}
+    clean_rank = _int_or_none(selection.get("rank")) or rank
+    return {
+        "decision_leg_id": f"{decision_id}:{clean_rank}",
+        "decision_id": decision_id,
+        "captured_at": captured_at,
+        "source": response.get("source"),
+        "slate_date": response.get("date"),
+        "matchup": response.get("matchup"),
+        "rank": clean_rank,
+        "prop_id": selection.get("propId"),
+        "selection_id": selection.get("selectionId"),
+        "fixture_slug": selection.get("fixtureSlug"),
+        "game": selection.get("game"),
+        "player_name": player.get("name"),
+        "player_key": player.get("key"),
+        "player_mlb_id": _int_or_none(player.get("mlbId")),
+        "team_name": team.get("name"),
+        "team_key": team.get("key"),
+        "team_mlb_id": _int_or_none(team.get("mlbId")),
+        "market_key": market.get("key"),
+        "line": _float_or_none(selection.get("line")),
+        "side": selection.get("side"),
+        "odds": _float_or_none(selection.get("odds")),
+        "over_odds": _float_or_none(selection.get("overOdds")),
+        "under_odds": _float_or_none(selection.get("underOdds")),
+        "selection": selection.get("selection"),
+        "valid": bool(selection.get("valid")),
+        "validation_issues": selection.get("validationIssues") or [],
+        "rationale": selection.get("rationale"),
+        "raw": selection,
+    }
+
+
 def _leg_payload(
     recommendation: dict[str, Any],
     request_id: str,
@@ -308,6 +406,10 @@ def _leg_payload(
 
 
 def _conflict_key(table: str) -> str:
+    if table == "gpt_decision_requests":
+        return "decision_id"
+    if table == "gpt_decision_legs":
+        return "decision_leg_id"
     if table == "recommendation_requests":
         return "request_id"
     if table == "recommendation_legs":

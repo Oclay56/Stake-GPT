@@ -199,6 +199,60 @@ class SnapshotStore:
                     ON recommendation_settlements (slate_date, settled_at);
                 CREATE INDEX IF NOT EXISTS idx_recommendation_settlements_prop
                     ON recommendation_settlements (prop_id, settled_at);
+
+                CREATE TABLE IF NOT EXISTS gpt_decision_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    captured_at TEXT NOT NULL,
+                    source TEXT,
+                    matchup TEXT,
+                    slate_date TEXT,
+                    timezone TEXT,
+                    prompt TEXT,
+                    request_body_json TEXT NOT NULL,
+                    validation_json TEXT NOT NULL,
+                    notes_json TEXT NOT NULL,
+                    raw_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_gpt_decision_requests_date
+                    ON gpt_decision_requests (slate_date, captured_at);
+
+                CREATE TABLE IF NOT EXISTS gpt_decision_legs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_id TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    source TEXT,
+                    slate_date TEXT,
+                    matchup TEXT,
+                    rank INTEGER,
+                    prop_id TEXT,
+                    selection_id TEXT,
+                    fixture_slug TEXT,
+                    game TEXT,
+                    player_name TEXT,
+                    player_key TEXT,
+                    player_mlb_id INTEGER,
+                    team_name TEXT,
+                    team_key TEXT,
+                    team_mlb_id INTEGER,
+                    market_key TEXT,
+                    line REAL,
+                    side TEXT,
+                    odds REAL,
+                    over_odds REAL,
+                    under_odds REAL,
+                    selection TEXT,
+                    valid INTEGER,
+                    validation_issues_json TEXT NOT NULL,
+                    rationale TEXT,
+                    raw_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_gpt_decision_legs_date
+                    ON gpt_decision_legs (slate_date, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_gpt_decision_legs_decision
+                    ON gpt_decision_legs (decision_id, rank);
                 """
             )
             _ensure_column(conn, "prop_snapshots", "snapshot_phase", "TEXT NOT NULL DEFAULT 'manual'")
@@ -206,6 +260,93 @@ class SnapshotStore:
             _ensure_column(conn, "prop_snapshots", "mlb_game_pk", "INTEGER")
             _ensure_column(conn, "player_stat_snapshots", "snapshot_phase", "TEXT NOT NULL DEFAULT 'manual'")
             _ensure_column(conn, "player_stat_snapshots", "snapshot_label", "TEXT")
+
+    def save_gpt_decision_result(
+        self,
+        response: dict[str, Any],
+        request_body: dict[str, Any] | None = None,
+        captured_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        self.init_db()
+        captured_text = _captured_at(captured_at)
+        decision_id = str(response.get("decisionId") or uuid.uuid4())
+        selections = response.get("selections") or []
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO gpt_decision_requests (
+                    decision_id, captured_at, source, matchup, slate_date, timezone,
+                    prompt, request_body_json, validation_json, notes_json, raw_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    captured_text,
+                    response.get("source"),
+                    response.get("matchup"),
+                    response.get("date"),
+                    response.get("timezone"),
+                    response.get("prompt"),
+                    _json_dumps(request_body or {}),
+                    _json_dumps(response.get("validation") or {}),
+                    _json_dumps(response.get("notes") or []),
+                    _json_dumps({**response, "decisionId": decision_id}),
+                ),
+            )
+            for index, selection in enumerate(selections, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO gpt_decision_legs (
+                        decision_id, captured_at, source, slate_date, matchup, rank,
+                        prop_id, selection_id, fixture_slug, game,
+                        player_name, player_key, player_mlb_id,
+                        team_name, team_key, team_mlb_id,
+                        market_key, line, side, odds, over_odds, under_odds,
+                        selection, valid, validation_issues_json, rationale, raw_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _gpt_decision_leg_values(
+                        decision_id=decision_id,
+                        captured_at=captured_text,
+                        response=response,
+                        rank=index,
+                        selection=selection,
+                    ),
+                )
+
+        return {
+            "decisionId": decision_id,
+            "gptDecisionRequestsInserted": 1,
+            "gptDecisionLegsInserted": len(selections),
+        }
+
+    def list_gpt_decision_legs(
+        self,
+        date_text: str | None = None,
+        decision_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        self.init_db()
+        where = []
+        params: list[Any] = []
+        if date_text:
+            where.append("slate_date = ?")
+            params.append(date_text)
+        if decision_id:
+            where.append("decision_id = ?")
+            params.append(decision_id)
+
+        sql = "SELECT * FROM gpt_decision_legs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY captured_at DESC, decision_id DESC, rank ASC LIMIT ?"
+        params.append(_clean_limit(limit))
+
+        with self._connect() as conn:
+            return [_gpt_decision_leg_row(row) for row in conn.execute(sql, params)]
 
     def save_recommendation_result(
         self,
@@ -947,6 +1088,47 @@ def _recommendation_leg_values(
     )
 
 
+def _gpt_decision_leg_values(
+    decision_id: str,
+    captured_at: str,
+    response: dict[str, Any],
+    rank: int,
+    selection: dict[str, Any],
+) -> tuple[Any, ...]:
+    player = selection.get("player") or {}
+    team = selection.get("team") or {}
+    market = selection.get("market") or {}
+    return (
+        decision_id,
+        captured_at,
+        response.get("source"),
+        response.get("date"),
+        response.get("matchup"),
+        _int_or_none(selection.get("rank")) or rank,
+        selection.get("propId"),
+        selection.get("selectionId"),
+        selection.get("fixtureSlug"),
+        selection.get("game"),
+        player.get("name"),
+        player.get("key"),
+        _int_or_none(player.get("mlbId")),
+        team.get("name"),
+        team.get("key"),
+        _int_or_none(team.get("mlbId")),
+        market.get("key"),
+        _float_or_none(selection.get("line")),
+        selection.get("side"),
+        _float_or_none(selection.get("odds")),
+        _float_or_none(selection.get("overOdds")),
+        _float_or_none(selection.get("underOdds")),
+        selection.get("selection"),
+        1 if selection.get("valid") else 0,
+        _json_dumps(selection.get("validationIssues") or []),
+        selection.get("rationale"),
+        _json_dumps(selection),
+    )
+
+
 def _prop_row(row: sqlite3.Row) -> dict[str, Any]:
     raw = _json_loads(row["raw_json"])
     recent_history = raw.get("recentHistory") or {}
@@ -1105,6 +1287,39 @@ def _recommendation_settlement_row(row: sqlite3.Row) -> dict[str, Any]:
         "reasons": _json_loads(row["reasons_json"]),
         "settledAt": row["settled_at"],
         "raw": raw,
+    }
+
+
+def _gpt_decision_leg_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "decisionId": row["decision_id"],
+        "capturedAt": row["captured_at"],
+        "source": row["source"],
+        "date": row["slate_date"],
+        "matchup": row["matchup"],
+        "rank": row["rank"],
+        "propId": row["prop_id"],
+        "selectionId": row["selection_id"],
+        "fixtureSlug": row["fixture_slug"],
+        "game": row["game"],
+        "playerName": row["player_name"],
+        "playerKey": row["player_key"],
+        "playerMlbId": row["player_mlb_id"],
+        "teamName": row["team_name"],
+        "teamKey": row["team_key"],
+        "teamMlbId": row["team_mlb_id"],
+        "marketKey": row["market_key"],
+        "line": row["line"],
+        "side": row["side"],
+        "odds": row["odds"],
+        "overOdds": row["over_odds"],
+        "underOdds": row["under_odds"],
+        "selection": row["selection"],
+        "valid": bool(row["valid"]),
+        "validationIssues": _json_loads(row["validation_issues_json"]),
+        "rationale": row["rationale"],
+        "raw": _json_loads(row["raw_json"]),
     }
 
 

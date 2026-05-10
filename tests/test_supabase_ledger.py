@@ -4,6 +4,7 @@ import json
 import httpx
 
 from app.supabase_ledger import (
+    _gpt_decision_payloads,
     fetch_recommendation_performance_from_supabase,
     settlement_payloads,
 )
@@ -47,6 +48,67 @@ def test_settlement_payloads_use_stable_ids_and_json_fields():
             "raw": rows[0],
         }
     ]
+
+
+def test_gpt_decision_payloads_match_supabase_table_shape():
+    response = {
+        "source": "chatgpt_decision",
+        "matchup": "Blue Jays vs Angels",
+        "date": "2026-05-08",
+        "timezone": "America/New_York",
+        "prompt": "Choose two unders from the board.",
+        "validation": {"valid": True},
+        "notes": ["GPT-authored decision."],
+        "selections": [
+            {
+                "rank": 1,
+                "propId": "blue-jays-angels:george-springer:toronto-blue-jays:hits",
+                "selectionId": "blue-jays-angels:george-springer:toronto-blue-jays:hits:under",
+                "fixtureSlug": "blue-jays-angels",
+                "game": "Toronto Blue Jays - Los Angeles Angels",
+                "player": {
+                    "name": "George Springer",
+                    "key": "george-springer",
+                    "mlbId": 543807,
+                },
+                "team": {
+                    "name": "Toronto Blue Jays",
+                    "key": "toronto-blue-jays",
+                    "mlbId": 141,
+                },
+                "market": {"key": "hits", "name": "hits"},
+                "line": 0.5,
+                "side": "under",
+                "odds": 2.9,
+                "overOdds": 1.34,
+                "underOdds": 2.9,
+                "selection": "George Springer under 0.5 hits",
+                "valid": True,
+                "validationIssues": [],
+                "rationale": "GPT preferred the low hit line.",
+            }
+        ],
+    }
+
+    payloads = _gpt_decision_payloads(
+        response,
+        decision_id="decision-1",
+        request_body={"matchup": "Blue Jays vs Angels"},
+    )
+
+    assert payloads["request"]["decision_id"] == "decision-1"
+    assert payloads["request"]["source"] == "chatgpt_decision"
+    assert payloads["request"]["validation"] == {"valid": True}
+    assert len(payloads["legs"]) == 1
+    leg = payloads["legs"][0]
+    assert leg["decision_leg_id"] == "decision-1:1"
+    assert leg["decision_id"] == "decision-1"
+    assert leg["player_name"] == "George Springer"
+    assert leg["market_key"] == "hits"
+    assert leg["line"] == 0.5
+    assert leg["side"] == "under"
+    assert leg["valid"] is True
+    assert leg["rationale"] == "GPT preferred the low hit line."
 
 
 def test_fetch_recommendation_performance_from_supabase_summarizes_remote_rows(monkeypatch):

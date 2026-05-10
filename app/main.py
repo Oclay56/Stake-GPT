@@ -7,15 +7,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .dashboard import build_mlb_dashboard
 from .gpt_action import (
+    build_gpt_decision_result,
     build_gpt_action_openapi_schema,
     build_matchup_picks,
+    build_matchup_prop_board,
+    build_player_mlb_context,
     require_gpt_api_key,
+    validate_gpt_selections,
 )
 from .line_movement import get_line_movement_history
 from .mlb_data import (
@@ -44,6 +48,7 @@ from .storage import SnapshotStore
 from .supabase_ledger import (
     fetch_recommendation_performance_from_supabase,
     supabase_ledger_enabled,
+    sync_gpt_decision_to_supabase,
     sync_recommendation_result_to_supabase,
     sync_recommendation_settlements_to_supabase,
 )
@@ -203,6 +208,131 @@ async def gpt_mlb_matchup_picks(
                 response["recommendationLedger"]["supabaseSynced"] = False
                 response["recommendationLedger"]["supabaseWarning"] = (
                     "Supabase ledger sync failed; local ledger save still completed."
+                )
+    return response
+
+
+@app.get("/gpt/mlb/matchup-prop-board")
+async def gpt_mlb_matchup_prop_board(
+    matchup: str = Query(..., min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    markets: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+) -> Any:
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    return await _call_data_sources(
+        build_matchup_prop_board,
+        client,
+        matchup,
+        slate_date,
+        timezone_name,
+        limit,
+        markets,
+        side,
+    )
+
+
+@app.get("/gpt/mlb/player-context")
+async def gpt_mlb_player_context(
+    matchup: str = Query(..., min_length=2),
+    prop_id: str = Query(..., alias="propId", min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    markets: str | None = Query(None),
+    season: int | None = Query(None, ge=1876, le=2100),
+    history_limit: int = Query(15, alias="historyLimit", ge=1, le=15),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    return await _call_data_sources(
+        build_player_mlb_context,
+        client,
+        engine,
+        matchup,
+        prop_id,
+        slate_date,
+        timezone_name,
+        limit,
+        markets,
+        season,
+        history_limit,
+    )
+
+
+@app.post("/gpt/mlb/validate-selections")
+async def gpt_mlb_validate_selections(
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+) -> Any:
+    matchup = _required_body_text(payload, "matchup")
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    return await _call_data_sources(
+        validate_gpt_selections,
+        client,
+        matchup,
+        _body_selections(payload),
+        _body_date(payload),
+        timezone_name,
+        _body_limit(payload),
+        payload.get("markets"),
+    )
+
+
+@app.post("/gpt/mlb/gpt-decisions")
+async def gpt_mlb_save_gpt_decision(
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    store: SnapshotStore = Depends(get_snapshot_store),
+) -> Any:
+    matchup = _required_body_text(payload, "matchup")
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    response = await _call_data_sources(
+        build_gpt_decision_result,
+        client,
+        matchup,
+        _body_selections(payload),
+        _body_date(payload),
+        timezone_name,
+        _body_limit(payload),
+        payload.get("markets"),
+        payload.get("prompt"),
+        payload.get("notes") if isinstance(payload.get("notes"), list) else None,
+    )
+    if _save_gpt_decisions_enabled():
+        saved = store.save_gpt_decision_result(response, request_body=payload)
+        response["gptDecisionLedger"] = {
+            "saved": True,
+            "decisionId": saved["decisionId"],
+            "legsSaved": saved["gptDecisionLegsInserted"],
+            "supabaseSynced": False,
+        }
+        if supabase_ledger_enabled():
+            try:
+                supabase_result = await sync_gpt_decision_to_supabase(
+                    response,
+                    decision_id=saved["decisionId"],
+                    request_body=payload,
+                )
+                response["gptDecisionLedger"]["supabaseSynced"] = bool(
+                    supabase_result.get("synced")
+                )
+            except Exception:
+                if os.getenv("AZP_FAIL_ON_SUPABASE_LEDGER_ERROR", "").lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }:
+                    raise
+                response["gptDecisionLedger"]["supabaseWarning"] = (
+                    "Supabase GPT decision sync failed; local ledger save still completed."
                 )
     return response
 
@@ -752,6 +882,48 @@ def _parse_market_filter(value: str | None) -> set[str]:
 def _save_gpt_recommendations_enabled() -> bool:
     value = os.getenv("AZP_SAVE_GPT_RECOMMENDATIONS", "1").strip().lower()
     return value not in {"0", "false", "no", "off"}
+
+
+def _save_gpt_decisions_enabled() -> bool:
+    value = os.getenv("AZP_SAVE_GPT_DECISIONS", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _required_body_text(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or len(value.strip()) < 2:
+        raise HTTPException(status_code=422, detail=f"Missing required field: {key}")
+    return value.strip()
+
+
+def _body_selections(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    selections = payload.get("selections")
+    if not isinstance(selections, list) or not selections:
+        raise HTTPException(status_code=422, detail="Missing required field: selections")
+    clean = [selection for selection in selections if isinstance(selection, dict)]
+    if not clean:
+        raise HTTPException(status_code=422, detail="Selections must be objects.")
+    return clean
+
+
+def _body_date(payload: dict[str, Any]) -> date | None:
+    value = payload.get("date")
+    if value in {None, ""}:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD.") from exc
+
+
+def _body_limit(payload: dict[str, Any]) -> int:
+    try:
+        value = int(payload.get("limit", 25))
+    except (TypeError, ValueError):
+        value = 25
+    return max(1, min(value, 100))
 
 
 async def _call_stake(method: Any, *args: Any) -> Any:

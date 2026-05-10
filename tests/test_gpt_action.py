@@ -5,9 +5,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.gpt_action import (
+    build_gpt_decision_result,
     build_gpt_action_openapi_schema,
     build_matchup_picks,
+    build_matchup_prop_board,
+    build_player_mlb_context,
     require_gpt_api_key_value,
+    validate_gpt_selections,
 )
 from app.main import app, get_mlb_engine, get_snapshot_store, get_stake_client
 from app.mlb_bridge import clear_mlb_bridge_cache
@@ -846,6 +850,184 @@ def test_gpt_schema_exposes_settlement_action():
     assert "date" in parameters
     assert "requestId" in parameters
     assert "diversityMode" in parameters
+
+
+def test_gpt_schema_exposes_board_context_validation_and_decision_actions():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    assert schema["paths"]["/gpt/mlb/matchup-prop-board"]["get"]["operationId"] == (
+        "getMatchupPropBoard"
+    )
+    assert schema["paths"]["/gpt/mlb/player-context"]["get"]["operationId"] == (
+        "getPlayerMlbContext"
+    )
+    assert schema["paths"]["/gpt/mlb/validate-selections"]["post"]["operationId"] == (
+        "validateSelections"
+    )
+    assert schema["paths"]["/gpt/mlb/gpt-decisions"]["post"]["operationId"] == (
+        "saveGptDecision"
+    )
+
+
+def test_build_matchup_prop_board_returns_stake_options_without_azp_scores():
+    result = asyncio.run(
+        build_matchup_prop_board(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+        )
+    )
+
+    assert result["source"] == "live_stake_prop_board"
+    assert result["decisionOwner"] == "chatgpt"
+    assert result["matchedFixtureCount"] == 1
+    assert result["propCount"] == 3
+    assert result["selectionCount"] == 3
+    springer = next(
+        selection
+        for selection in result["selections"]
+        if selection["player"]["name"] == "George Springer"
+    )
+    assert springer["selection"] == "George Springer under 0.5 hits"
+    assert springer["propId"] == "blue-jays-angels:george-springer:toronto-blue-jays:hits"
+    assert springer["selectionId"].endswith(":under")
+    assert springer["line"] == 0.5
+    assert springer["odds"] == 2.9
+    assert springer["availability"]["stakeReturned"] is True
+    assert springer["availability"]["playable"] is True
+    assert "score" not in springer
+    assert "recommendations" not in result
+
+
+def test_build_player_mlb_context_enriches_selected_board_prop():
+    result = asyncio.run(
+        build_player_mlb_context(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            prop_id="blue-jays-angels:george-springer:toronto-blue-jays:hits",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            season=2026,
+            history_limit=15,
+        )
+    )
+
+    assert result["source"] == "stake_prop_plus_mlb_context"
+    assert result["player"]["name"] == "George Springer"
+    assert result["stakeProp"]["line"] == 0.5
+    assert result["stakeProp"]["odds"]["under"] == 2.9
+    assert result["statContext"]["statKey"] == "hits"
+    assert result["recent"]["last5"]["perGame"] == 0.2
+    assert result["recent"]["last10"]["perGame"] == 0.2
+    assert result["season"]["perGame"] == 0.35
+    assert result["matchupGame"]["gamePk"] == 1
+    assert result["matchupGame"]["homeTeam"]["probablePitcher"]["name"] == (
+        "Jack Kochanowicz"
+    )
+
+
+def test_validate_gpt_selections_checks_current_stake_line_and_odds():
+    result = asyncio.run(
+        validate_gpt_selections(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "propId": "blue-jays-angels:george-springer:toronto-blue-jays:hits",
+                    "side": "under",
+                    "line": 0.5,
+                    "odds": 2.9,
+                },
+                {
+                    "propId": "blue-jays-angels:george-springer:toronto-blue-jays:hits",
+                    "side": "under",
+                    "line": 1.5,
+                    "odds": 1.35,
+                },
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+        )
+    )
+
+    assert result["valid"] is False
+    assert result["validCount"] == 1
+    assert result["invalidCount"] == 1
+    assert result["results"][0]["valid"] is True
+    assert result["results"][1]["valid"] is False
+    assert "line_mismatch" in result["results"][1]["issues"]
+
+
+def test_build_gpt_decision_result_keeps_chatgpt_choices_separate_from_azp():
+    result = asyncio.run(
+        build_gpt_decision_result(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "propId": "blue-jays-angels:george-springer:toronto-blue-jays:hits",
+                    "side": "under",
+                    "line": 0.5,
+                    "odds": 2.9,
+                    "rationale": "GPT preferred the low hit line after checking context.",
+                }
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            prompt="Pick two players yourself.",
+            notes=["GPT made the final choice."],
+        )
+    )
+
+    assert result["source"] == "chatgpt_decision"
+    assert result["decisionOwner"] == "chatgpt"
+    assert result["azpRecommendation"] is False
+    assert result["validation"]["valid"] is True
+    assert result["selections"][0]["selection"] == "George Springer under 0.5 hits"
+    assert result["selections"][0]["rationale"] == (
+        "GPT preferred the low hit line after checking context."
+    )
+
+
+def test_gpt_decision_route_saves_separate_decision_ledger(tmp_path):
+    store = SnapshotStore(tmp_path / "azp.sqlite")
+    app.dependency_overrides[get_snapshot_store] = lambda: store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/gpt/mlb/gpt-decisions",
+            json={
+                "matchup": "Blue Jays vs Angels",
+                "date": "2026-05-08",
+                "prompt": "Pick two players yourself.",
+                "selections": [
+                    {
+                        "propId": "blue-jays-angels:george-springer:toronto-blue-jays:hits",
+                        "side": "under",
+                        "line": 0.5,
+                        "odds": 2.9,
+                        "rationale": "GPT preferred the low hit line.",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gptDecisionLedger"]["saved"] is True
+    assert body["gptDecisionLedger"]["legsSaved"] == 1
+    saved = store.list_gpt_decision_legs(date_text="2026-05-08")
+    assert len(saved) == 1
+    assert saved[0]["selection"] == "George Springer under 0.5 hits"
+    assert saved[0]["source"] == "chatgpt_decision"
 
 
 def test_gpt_performance_summary_prefers_supabase_when_configured(monkeypatch):

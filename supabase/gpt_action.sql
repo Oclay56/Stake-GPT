@@ -10,6 +10,29 @@ create table if not exists public.gpt_decision_requests (
     validation_json jsonb not null
 );
 
+alter table public.gpt_decision_requests
+    add column if not exists request_json jsonb;
+
+alter table public.gpt_decision_requests
+    add column if not exists response_json jsonb;
+
+alter table public.gpt_decision_requests
+    add column if not exists validation_json jsonb;
+
+update public.gpt_decision_requests
+set
+    request_json = coalesce(request_json, '{}'::jsonb),
+    response_json = coalesce(response_json, '{}'::jsonb),
+    validation_json = coalesce(validation_json, '{}'::jsonb)
+where request_json is null
+   or response_json is null
+   or validation_json is null;
+
+alter table public.gpt_decision_requests
+    alter column request_json set not null,
+    alter column response_json set not null,
+    alter column validation_json set not null;
+
 create table if not exists public.gpt_decision_legs (
     leg_id text primary key,
     decision_id text not null references public.gpt_decision_requests(decision_id) on delete cascade,
@@ -55,3 +78,5 @@ create index if not exists gpt_decision_legs_market_idx
 
 create index if not exists market_mappings_active_idx
     on public.market_mappings (sport, active);
+
+notify pgrst, 'reload schema';

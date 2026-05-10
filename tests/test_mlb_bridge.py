@@ -283,6 +283,7 @@ def test_market_mapping_selects_group_and_stat_key():
         "statKey": "hits",
         "label": "Hits",
         "supported": True,
+        "contextQuality": "strong",
     }
     assert stat_mapping_for_market("total-bases") == {
         "marketKey": "total-bases",
@@ -290,6 +291,7 @@ def test_market_mapping_selects_group_and_stat_key():
         "statKey": "totalBases",
         "label": "Total Bases",
         "supported": True,
+        "contextQuality": "strong",
     }
     assert stat_mapping_for_market("mystery-market") == {
         "marketKey": "mystery-market",
@@ -297,6 +299,15 @@ def test_market_mapping_selects_group_and_stat_key():
         "statKey": None,
         "label": "mystery-market",
         "supported": False,
+        "contextQuality": "unsupported",
+    }
+    assert stat_mapping_for_market("batter-strikeouts") == {
+        "marketKey": "batter-strikeouts",
+        "group": "hitting",
+        "statKey": "strikeOuts",
+        "label": "Batter Strikeouts",
+        "supported": True,
+        "contextQuality": "partial",
     }
 
 
@@ -362,10 +373,11 @@ def test_enrich_props_matches_by_player_and_team_then_attaches_stats():
     assert payload["props"][0]["statContext"] == {
         "marketKey": "hits",
         "group": "hitting",
-        "statKey": "hits",
-        "label": "Hits",
-        "supported": True,
-        "line": 0.5,
+            "statKey": "hits",
+            "label": "Hits",
+            "supported": True,
+            "contextQuality": "strong",
+            "line": 0.5,
         "seasonValue": 51,
         "recentTotal": 5.0,
         "recentPerGame": 1.6667,

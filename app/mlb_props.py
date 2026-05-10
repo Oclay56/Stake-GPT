@@ -6,12 +6,14 @@ from typing import Any
 
 
 def build_stable_props_payload(slate: dict[str, Any]) -> dict[str, Any]:
-    props = [
-        _stable_prop_row(fixture, prop)
-        for fixture in slate.get("fixtures") or []
-        if not fixture.get("oddsError")
-        for prop in fixture.get("playerProps") or []
-    ]
+    props = _dedupe_stable_props(
+        [
+            _stable_prop_row(fixture, prop)
+            for fixture in slate.get("fixtures") or []
+            if not fixture.get("oddsError")
+            for prop in fixture.get("playerProps") or []
+        ]
+    )
     return {
         "league": slate.get("league") or "MLB",
         "date": slate.get("date"),
@@ -60,11 +62,51 @@ def _stable_prop_row(
         "market": market,
         "sportStatType": prop.get("sportStatType"),
         "line": line,
+        "lineSource": prop.get("lineSource") or "unknown",
+        "isPrimaryLine": bool(prop.get("isPrimaryLine")),
         "odds": {
             "over": prop.get("over"),
             "under": prop.get("under"),
         },
     }
+
+
+def _dedupe_stable_props(props: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+    order: list[tuple[Any, ...]] = []
+    for prop in props:
+        player = prop.get("player") or {}
+        market = prop.get("market") or {}
+        odds = prop.get("odds") or {}
+        key = (
+            prop.get("fixtureSlug"),
+            player.get("key"),
+            market.get("key"),
+            prop.get("line"),
+            odds.get("over"),
+            odds.get("under"),
+        )
+        if key not in rows:
+            rows[key] = prop
+            order.append(key)
+            continue
+        if _prop_preferred_over(prop, rows[key]):
+            rows[key] = prop
+    return [rows[key] for key in order]
+
+
+def _prop_preferred_over(candidate: dict[str, Any], current: dict[str, Any]) -> bool:
+    candidate_team = candidate.get("team") or {}
+    current_team = current.get("team") or {}
+    candidate_matched = bool(candidate_team.get("fixtureTeamMatched"))
+    current_matched = bool(current_team.get("fixtureTeamMatched"))
+    if candidate_matched != current_matched:
+        return candidate_matched
+    candidate_name = str(candidate_team.get("fixtureTeamName") or "")
+    current_name = str(current_team.get("fixtureTeamName") or "")
+    if candidate_name and not current_name:
+        return True
+    return False
 
 
 def _player_identity(player_name: Any) -> dict[str, Any]:

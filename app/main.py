@@ -9,6 +9,8 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Path, Query, Request
 
 from .gpt_action import (
     build_available_markets,
+    build_board_summary,
+    build_comparison_board,
     build_gpt_action_openapi_schema,
     build_gpt_decision_result,
     build_market_map,
@@ -18,6 +20,8 @@ from .gpt_action import (
     build_player_mlb_context,
     build_player_recent_logs,
     build_player_season_stats,
+    build_prop_context_batch,
+    build_prop_page,
     build_probable_pitchers,
     require_gpt_api_key,
     validate_gpt_selections,
@@ -153,6 +157,104 @@ async def mlb_matchup_props(
     )
 
 
+@app.get("/mlb/matchup/{matchup}/board-summary")
+async def mlb_matchup_board_summary(
+    matchup: str = Path(..., min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    market: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
+    line_mode: str = Query("primary", alias="lineMode", pattern="^(primary|all)$"),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+) -> Any:
+    return await _call_data_sources(
+        build_board_summary,
+        client,
+        matchup,
+        slate_date,
+        _timezone_name(),
+        limit,
+        market,
+        side,
+        line_mode,
+    )
+
+
+@app.get("/mlb/matchup/{matchup}/prop-page")
+async def mlb_matchup_prop_page(
+    matchup: str = Path(..., min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    market: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
+    line_mode: str = Query("primary", alias="lineMode", pattern="^(primary|all)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, alias="pageSize", ge=1, le=100),
+    primary_only: bool = Query(False, alias="primaryOnly"),
+    playable_only: bool = Query(True, alias="playableOnly"),
+    context_quality: str = Query("any", alias="contextQuality"),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+) -> Any:
+    return await _call_data_sources(
+        build_prop_page,
+        client,
+        matchup,
+        slate_date,
+        _timezone_name(),
+        limit,
+        market,
+        side,
+        line_mode,
+        page,
+        page_size,
+        primary_only,
+        playable_only,
+        context_quality,
+    )
+
+
+@app.get("/mlb/matchup/{matchup}/comparison-board")
+async def mlb_matchup_comparison_board(
+    matchup: str = Path(..., min_length=2),
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(25, ge=1, le=100),
+    market: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
+    line_mode: str = Query("primary", alias="lineMode", pattern="^(primary|all)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, alias="pageSize", ge=1, le=50),
+    primary_only: bool = Query(False, alias="primaryOnly"),
+    playable_only: bool = Query(True, alias="playableOnly"),
+    context_quality: str = Query("supported", alias="contextQuality"),
+    season: int | None = Query(None, ge=1876, le=2100),
+    history_limit: int = Query(15, alias="historyLimit", ge=1, le=15),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_data_sources(
+        build_comparison_board,
+        client,
+        engine,
+        matchup,
+        slate_date,
+        _timezone_name(),
+        limit,
+        market,
+        side,
+        line_mode,
+        page,
+        page_size,
+        primary_only,
+        playable_only,
+        context_quality,
+        season or (slate_date.year if slate_date else None),
+        history_limit,
+    )
+
+
 @app.get("/mlb/matchup/{matchup}/probable-pitchers")
 async def mlb_matchup_probable_pitchers(
     matchup: str = Path(..., min_length=2),
@@ -266,6 +368,7 @@ async def mlb_prop_context(
     slate_date: date | None = Query(None, alias="date"),
     limit: int = Query(25, ge=1, le=100),
     market: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
     season: int | None = Query(None, ge=1876, le=2100),
     history_limit: int = Query(15, alias="historyLimit", ge=1, le=15),
     _: None = Depends(require_gpt_api_key),
@@ -278,12 +381,37 @@ async def mlb_prop_context(
         engine,
         matchup,
         prop_id,
+        side,
         slate_date,
         _timezone_name(),
         limit,
         market,
         season or (slate_date.year if slate_date else None),
         history_limit,
+    )
+
+
+@app.post("/mlb/prop-context-batch")
+async def mlb_prop_context_batch(
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    matchup = _required_body_text(payload, "matchup")
+    slate_date = _date_from_body(payload)
+    return await _call_data_sources(
+        build_prop_context_batch,
+        client,
+        engine,
+        matchup,
+        list(payload.get("selections") or payload.get("props") or []),
+        slate_date,
+        _timezone_name(),
+        int(payload.get("limit") or 25),
+        payload.get("market") or payload.get("markets"),
+        payload.get("season") or (slate_date.year if slate_date else None),
+        int(payload.get("historyLimit") or payload.get("history_limit") or 15),
     )
 
 
@@ -304,6 +432,9 @@ async def mlb_validate_selections(
         _timezone_name(),
         int(payload.get("limit") or 25),
         payload.get("market") or payload.get("markets"),
+        payload.get("validationMode") or payload.get("validation_mode") or "strict",
+        payload.get("oddsPolicy") or payload.get("odds_policy"),
+        payload.get("oddsTolerance") or payload.get("odds_tolerance"),
     )
 
 
@@ -328,6 +459,9 @@ async def mlb_save_gpt_decision(
         payload.get("prompt"),
         list(payload.get("reasoning") or []),
         list(payload.get("riskFlags") or []),
+        payload.get("validationMode") or payload.get("validation_mode") or "strict",
+        payload.get("oddsPolicy") or payload.get("odds_policy"),
+        payload.get("oddsTolerance") or payload.get("odds_tolerance"),
     )
     saved = store.save_gpt_decision_result(response, request_body=payload)
     response["gptDecisionLedger"] = {
@@ -382,6 +516,7 @@ async def legacy_gpt_mlb_player_context(
     slate_date: date | None = Query(None, alias="date"),
     limit: int = Query(25, ge=1, le=100),
     markets: str | None = Query(None),
+    side: str = Query("any", pattern="^(any|over|under)$"),
     season: int | None = Query(None, ge=1876, le=2100),
     history_limit: int = Query(15, alias="historyLimit", ge=1, le=15),
     _: None = Depends(require_gpt_api_key),
@@ -394,6 +529,7 @@ async def legacy_gpt_mlb_player_context(
         slate_date=slate_date,
         limit=limit,
         market=markets,
+        side=side,
         season=season,
         history_limit=history_limit,
         _=_,

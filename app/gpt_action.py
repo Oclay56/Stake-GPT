@@ -64,7 +64,7 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                 "get": _operation(
                     "getMatchupPropBoard",
                     "Get Stake props for a matchup",
-                    "Returns line-specific Stake selections for one matchup. This does not rank or choose picks.",
+                    "Returns line-specific Stake selections for one matchup. Use focused board-summary, prop-page, and comparison-board calls for broad scans.",
                     parameters=[
                         _matchup_path_param(),
                         _date_param(),
@@ -72,6 +72,63 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                         _market_query_param(),
                         _side_query_param(),
                         _line_mode_param(),
+                    ],
+                )
+            },
+            "/mlb/matchup/{matchup}/board-summary": {
+                "get": _operation(
+                    "getBoardSummary",
+                    "Get compact board summary",
+                    "Returns counts, market coverage, context coverage, and warnings without dumping the full prop feed.",
+                    parameters=[
+                        _matchup_path_param(),
+                        _date_param(),
+                        _limit_param(),
+                        _market_query_param(),
+                        _side_query_param(),
+                        _line_mode_param(),
+                    ],
+                )
+            },
+            "/mlb/matchup/{matchup}/prop-page": {
+                "get": _operation(
+                    "getPropPage",
+                    "Get a filtered page of Stake props",
+                    "Returns compact paginated rows for GPT navigation. This is not a recommendation endpoint.",
+                    parameters=[
+                        _matchup_path_param(),
+                        _date_param(),
+                        _limit_param(),
+                        _market_query_param(),
+                        _side_query_param(),
+                        _line_mode_param(),
+                        _page_param(),
+                        _page_size_param(),
+                        _primary_only_param(),
+                        _playable_only_param(),
+                        _context_quality_param(),
+                    ],
+                )
+            },
+            "/mlb/matchup/{matchup}/comparison-board": {
+                "get": _operation(
+                    "getComparisonBoard",
+                    "Get compact prop comparison rows",
+                    "Returns filtered Stake props with compact MLB helper metrics for comparison. The GPT still owns the final decision.",
+                    parameters=[
+                        _matchup_path_param(),
+                        _date_param(),
+                        _limit_param(),
+                        _market_query_param(),
+                        _side_query_param(),
+                        _line_mode_param(),
+                        _page_param(),
+                        _page_size_param(maximum=50),
+                        _primary_only_param(),
+                        _playable_only_param(),
+                        _context_quality_param(),
+                        _season_param(),
+                        _history_limit_param(),
                     ],
                 )
             },
@@ -141,9 +198,18 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                         _date_param(),
                         _limit_param(),
                         _market_query_param(required=False),
+                        _side_query_param(),
                         _season_param(),
                         _history_limit_param(),
                     ],
+                )
+            },
+            "/mlb/prop-context-batch": {
+                "post": _operation(
+                    "getPropContextBatch",
+                    "Get MLB context for selected Stake props",
+                    "Returns exact-side MLB context for up to 20 selected Stake prop IDs in one call.",
+                    request_body=_prop_context_batch_request_body(),
                 )
             },
             "/mlb/validate-selections": {
@@ -283,11 +349,205 @@ async def build_matchup_prop_board(
     }
 
 
-async def build_player_mlb_context(
+async def build_board_summary(
+    stake_client: Any,
+    matchup: str,
+    slate_date: date | None = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    limit: int = DEFAULT_BOARD_LIMIT,
+    markets: str | None = None,
+    side: str = "any",
+    line_mode: str = "primary",
+) -> dict[str, Any]:
+    props_payload = await _build_matchup_props_payload(
+        stake_client=stake_client,
+        matchup=matchup,
+        slate_date=slate_date,
+        timezone_name=timezone_name,
+        limit=limit,
+        markets=markets,
+        line_mode=line_mode,
+    )
+    clean_side = _clean_side(side)
+    selections = _side_level_selections(props_payload.get("props") or [], clean_side)
+    filtered = _filter_selections(
+        selections,
+        primary_only=False,
+        playable_only=False,
+        context_quality="any",
+    )
+
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_odds_api",
+        "purpose": "board_navigation_summary",
+        "matchup": matchup,
+        "date": props_payload.get("date"),
+        "timezone": props_payload.get("timezone"),
+        "filters": {
+            "markets": sorted(_clean_market_csv(markets)),
+            "side": clean_side,
+            "lineMode": line_mode,
+            "minPlayableOdds": _minimum_playable_odds(),
+        },
+        "matchedFixtureCount": props_payload.get("fixtureCount", 0),
+        "totalPropsScanned": props_payload.get("propCount", 0),
+        "totalSelectionsScanned": len(filtered),
+        "playableSelections": sum(1 for row in filtered if row.get("playable")),
+        "markets": _summary_markets(filtered),
+        "sides": _count_by(filtered, "side"),
+        "lineSources": _count_by(filtered, "lineSource"),
+        "contextCoverage": _context_coverage(filtered),
+        "warningCounts": _warning_counts(filtered),
+        "warnings": _summary_warnings(props_payload, filtered),
+        "nextSteps": [
+            "Use getPropPage for focused market/side pages.",
+            "Use getComparisonBoard for compact MLB helper metrics on filtered candidates.",
+            "Use getPropContextBatch for finalists, then validateSelections before answering.",
+        ],
+        "generatedAt": _utc_now(),
+    }
+
+
+async def build_prop_page(
+    stake_client: Any,
+    matchup: str,
+    slate_date: date | None = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    limit: int = DEFAULT_BOARD_LIMIT,
+    markets: str | None = None,
+    side: str = "any",
+    line_mode: str = "primary",
+    page: int = 1,
+    page_size: int = 30,
+    primary_only: bool = False,
+    playable_only: bool = True,
+    context_quality: str = "any",
+) -> dict[str, Any]:
+    props_payload = await _build_matchup_props_payload(
+        stake_client=stake_client,
+        matchup=matchup,
+        slate_date=slate_date,
+        timezone_name=timezone_name,
+        limit=limit,
+        markets=markets,
+        line_mode=line_mode,
+    )
+    selections = _filtered_selection_rows(
+        props_payload.get("props") or [],
+        side=side,
+        primary_only=primary_only,
+        playable_only=playable_only,
+        context_quality=context_quality,
+    )
+    pagination = _paginate(selections, page=page, page_size=page_size)
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_odds_api",
+        "purpose": "board_navigation_page",
+        "matchup": matchup,
+        "date": props_payload.get("date"),
+        "timezone": props_payload.get("timezone"),
+        "filters": _navigation_filters(
+            markets=markets,
+            side=side,
+            line_mode=line_mode,
+            primary_only=primary_only,
+            playable_only=playable_only,
+            context_quality=context_quality,
+        ),
+        **pagination["meta"],
+        "rows": [_compact_selection_row(row) for row in pagination["items"]],
+        "generatedAt": _utc_now(),
+    }
+
+
+async def build_comparison_board(
     stake_client: Any,
     mlb_engine: Any,
     matchup: str,
-    prop_id: str,
+    slate_date: date | None = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    limit: int = DEFAULT_BOARD_LIMIT,
+    markets: str | None = None,
+    side: str = "any",
+    line_mode: str = "primary",
+    page: int = 1,
+    page_size: int = 30,
+    primary_only: bool = False,
+    playable_only: bool = True,
+    context_quality: str = "supported",
+    season: int | None = None,
+    history_limit: int = 15,
+) -> dict[str, Any]:
+    props_payload = await _build_matchup_props_payload(
+        stake_client=stake_client,
+        matchup=matchup,
+        slate_date=slate_date,
+        timezone_name=timezone_name,
+        limit=limit,
+        markets=markets,
+        line_mode=line_mode,
+    )
+    selections = _filtered_selection_rows(
+        props_payload.get("props") or [],
+        side=side,
+        primary_only=primary_only,
+        playable_only=playable_only,
+        context_quality=context_quality,
+    )
+    selected_prop_ids = {row.get("propId") for row in selections}
+    selected_props = [
+        prop
+        for prop in props_payload.get("props") or []
+        if prop.get("propId") in selected_prop_ids
+    ]
+    enriched = await enrich_props_with_mlb_data(
+        {**props_payload, "props": selected_props, "propCount": len(selected_props)},
+        mlb_engine,
+        season=season,
+        history_limit=min(_clean_int(history_limit, 1, 15), 15),
+    )
+    props_by_id = {prop.get("propId"): prop for prop in enriched.get("props") or []}
+    rows = sorted(
+        [
+            _comparison_selection_row(row, props_by_id.get(row.get("propId")) or {})
+            for row in selections
+        ],
+        key=_comparison_sort_key,
+        reverse=True,
+    )
+    pagination = _paginate(rows, page=page, page_size=min(page_size, 50))
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_odds_api+mlb_stats_api",
+        "purpose": "compact_comparison_board",
+        "matchup": matchup,
+        "date": props_payload.get("date"),
+        "timezone": props_payload.get("timezone"),
+        "filters": _navigation_filters(
+            markets=markets,
+            side=side,
+            line_mode=line_mode,
+            primary_only=primary_only,
+            playable_only=playable_only,
+            context_quality=context_quality,
+        ),
+        **pagination["meta"],
+        "rows": pagination["items"],
+        "notes": [
+            "Rows are compact helper metrics, not AZP picks.",
+            "Use getPropContextBatch for full finalist context before validateSelections.",
+        ],
+        "generatedAt": _utc_now(),
+    }
+
+
+async def build_prop_context_batch(
+    stake_client: Any,
+    mlb_engine: Any,
+    matchup: str,
+    selections: list[dict[str, Any]],
     slate_date: date | None = None,
     timezone_name: str = DEFAULT_TIMEZONE,
     limit: int = DEFAULT_BOARD_LIMIT,
@@ -304,9 +564,92 @@ async def build_player_mlb_context(
         markets=markets,
         line_mode="primary",
     )
+    all_selections = _side_level_selections(props_payload.get("props") or [], "any")
+    requested = selections[:20]
+    found: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    missing = []
+
+    for index, request in enumerate(requested, start=1):
+        identifier = request.get("selectionId") or request.get("propId")
+        requested_side = _clean_side(request.get("side") or "any")
+        selection = _find_selection(all_selections, identifier, side=requested_side)
+        if not selection:
+            missing.append({"index": index, "requested": request, "status": "missing_selection"})
+            continue
+        prop = _find_prop(props_payload.get("props") or [], selection.get("propId"))
+        if not prop:
+            missing.append({"index": index, "requested": request, "status": "missing_prop"})
+            continue
+        found.append((selection, prop, requested_side))
+
+    selected_prop_ids = {prop.get("propId") for _, prop, _ in found}
+    selected_props = [
+        prop
+        for prop in props_payload.get("props") or []
+        if prop.get("propId") in selected_prop_ids
+    ]
+    enriched = await enrich_props_with_mlb_data(
+        {**props_payload, "props": selected_props, "propCount": len(selected_props)},
+        mlb_engine,
+        season=season,
+        history_limit=min(_clean_int(history_limit, 1, 15), 15),
+    )
+    props_by_id = {prop.get("propId"): prop for prop in enriched.get("props") or []}
+    contexts = [
+        await _prop_context_response(
+            selection=selection,
+            prop=props_by_id.get(prop.get("propId")) or prop,
+            mlb_engine=mlb_engine,
+            season=season,
+            history_limit=history_limit,
+            requested_side=requested_side,
+        )
+        for selection, prop, requested_side in found
+    ]
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_odds_api+mlb_stats_api",
+        "purpose": "finalist_context_batch",
+        "matchup": matchup,
+        "date": props_payload.get("date"),
+        "timezone": props_payload.get("timezone"),
+        "requestedCount": len(selections),
+        "processedCount": len(requested),
+        "contextCount": len(contexts),
+        "truncated": len(selections) > len(requested),
+        "missing": missing,
+        "contexts": contexts,
+        "generatedAt": _utc_now(),
+    }
+
+
+async def build_player_mlb_context(
+    stake_client: Any,
+    mlb_engine: Any,
+    matchup: str,
+    prop_id: str,
+    side: str = "any",
+    slate_date: date | None = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    limit: int = DEFAULT_BOARD_LIMIT,
+    markets: str | None = None,
+    season: int | None = None,
+    history_limit: int = 15,
+) -> dict[str, Any]:
+    props_payload = await _build_matchup_props_payload(
+        stake_client=stake_client,
+        matchup=matchup,
+        slate_date=slate_date,
+        timezone_name=timezone_name,
+        limit=limit,
+        markets=markets,
+        line_mode="primary",
+    )
+    requested_side = _clean_side(side)
     selection = _find_selection(
         _side_level_selections(props_payload.get("props") or [], "any"),
         prop_id,
+        side=requested_side,
     )
     if not selection:
         raise HTTPException(status_code=404, detail="Stake prop selection was not found.")
@@ -328,6 +671,7 @@ async def build_player_mlb_context(
         mlb_engine=mlb_engine,
         season=season,
         history_limit=history_limit,
+        requested_side=requested_side,
     )
 
 
@@ -409,12 +753,17 @@ async def build_probable_pitchers(
         ),
         None,
     )
+    probable_pitchers = await _probable_pitchers_with_context(
+        game,
+        mlb_engine=mlb_engine,
+        season=target_date.year,
+    )
     return {
         "decisionOwner": "custom_gpt",
         "matchup": matchup,
         "date": target_date.isoformat(),
         "game": game,
-        "probablePitchers": _probable_pitchers_from_game(game),
+        "probablePitchers": probable_pitchers,
         "generatedAt": _utc_now(),
     }
 
@@ -450,6 +799,9 @@ async def validate_gpt_selections(
     timezone_name: str = DEFAULT_TIMEZONE,
     limit: int = DEFAULT_BOARD_LIMIT,
     markets: str | None = None,
+    validation_mode: str = "strict",
+    odds_policy: str | None = None,
+    odds_tolerance: float | None = None,
 ) -> dict[str, Any]:
     board = await build_matchup_prop_board(
         stake_client=stake_client,
@@ -461,8 +813,18 @@ async def validate_gpt_selections(
         side="any",
     )
     current_selections = board.get("selections") or []
+    clean_mode = _clean_validation_mode(validation_mode)
+    clean_policy = _clean_odds_policy(odds_policy, clean_mode)
+    clean_tolerance = _clean_odds_tolerance(odds_tolerance, clean_mode)
     results = [
-        _validate_selection(selection, current_selections, index)
+        _validate_selection(
+            selection,
+            current_selections,
+            index,
+            validation_mode=clean_mode,
+            odds_policy=clean_policy,
+            odds_tolerance=clean_tolerance,
+        )
         for index, selection in enumerate(selections, start=1)
     ]
     return {
@@ -471,6 +833,11 @@ async def validate_gpt_selections(
         "date": board.get("date"),
         "timezone": board.get("timezone"),
         "valid": all(result["valid"] for result in results),
+        "validationMode": clean_mode,
+        "oddsPolicy": clean_policy,
+        "oddsTolerance": clean_tolerance,
+        "executionReady": clean_mode == "execution_ready"
+        and all(result.get("executionReady") for result in results),
         "results": results,
         "notes": _validation_notes(results),
         "validatedAt": _utc_now(),
@@ -488,6 +855,9 @@ async def build_gpt_decision_result(
     prompt: str | None = None,
     reasoning: list[str] | None = None,
     risk_flags: list[str] | None = None,
+    validation_mode: str = "strict",
+    odds_policy: str | None = None,
+    odds_tolerance: float | None = None,
 ) -> dict[str, Any]:
     validation = await validate_gpt_selections(
         stake_client=stake_client,
@@ -497,6 +867,9 @@ async def build_gpt_decision_result(
         timezone_name=timezone_name,
         limit=limit,
         markets=markets,
+        validation_mode=validation_mode,
+        odds_policy=odds_policy,
+        odds_tolerance=odds_tolerance,
     )
     accepted = [
         result["current"]
@@ -574,6 +947,8 @@ def _selection_from_prop(prop: dict[str, Any], side: str, odds: float) -> dict[s
         "market": market,
         "side": side,
         "line": line,
+        "lineSource": prop.get("lineSource") or "unknown",
+        "isPrimaryLine": bool(prop.get("isPrimaryLine")),
         "odds": odds,
         "playable": availability["playable"],
         "availability": availability,
@@ -600,11 +975,19 @@ def _availability_flags(prop: dict[str, Any], side: str | None = None) -> dict[s
         flags.append("missing_line")
     if not side_offered:
         flags.append("side_not_offered")
+    line_source = str(prop.get("lineSource") or "unknown")
+    is_primary_line = bool(prop.get("isPrimaryLine"))
+    if line_source == "alternate" or not is_primary_line:
+        flags.append("alternate_or_unconfirmed_primary_line")
 
     return {
         "source": "stake_odds_api",
         "status": prop.get("status"),
         "playable": playable,
+        "executionConfirmed": False,
+        "playableConfidence": "feed_primary" if is_primary_line else "feed_only",
+        "lineSource": line_source,
+        "isPrimaryLine": is_primary_line,
         "sideOffered": side_offered,
         "linePresent": prop.get("line") is not None,
         "minPlayableOdds": min_playable_odds,
@@ -624,6 +1007,8 @@ def _board_prop(prop: dict[str, Any]) -> dict[str, Any]:
         "team": prop.get("team"),
         "market": prop.get("market"),
         "line": _float_or_none(prop.get("line")),
+        "lineSource": prop.get("lineSource") or "unknown",
+        "isPrimaryLine": bool(prop.get("isPrimaryLine")),
         "odds": {
             "over": _float_or_none((prop.get("odds") or {}).get("over")),
             "under": _float_or_none((prop.get("odds") or {}).get("under")),
@@ -638,6 +1023,7 @@ async def _prop_context_response(
     mlb_engine: Any,
     season: int | None,
     history_limit: int,
+    requested_side: str,
 ) -> dict[str, Any]:
     stat_context = prop.get("statContext") or stat_mapping_for_market(
         ((prop.get("market") or {}).get("key") or "")
@@ -658,6 +1044,7 @@ async def _prop_context_response(
         "decisionOwner": "custom_gpt",
         "source": "stake_odds_api+mlb_stats_api",
         "selection": selection,
+        "requestedSide": requested_side,
         "player": player,
         "team": prop.get("team"),
         "market": prop.get("market"),
@@ -700,22 +1087,46 @@ def _validate_selection(
     requested: dict[str, Any],
     current_selections: list[dict[str, Any]],
     index: int,
+    validation_mode: str,
+    odds_policy: str,
+    odds_tolerance: float,
 ) -> dict[str, Any]:
     selection_id = requested.get("selectionId")
     prop_id = requested.get("propId")
     side = _clean_side(requested.get("side") or "any")
     current = _find_selection(current_selections, selection_id or prop_id, side=side)
-    base = {"index": index, "requested": requested, "current": current}
+    base = {
+        "index": index,
+        "requested": requested,
+        "current": current,
+        "validationMode": validation_mode,
+        "oddsPolicy": odds_policy,
+        "oddsTolerance": odds_tolerance,
+        "executionReady": False,
+    }
     if current is None:
         return {**base, "valid": False, "status": "missing_selection"}
     if side != "any" and current.get("side") != side:
         return {**base, "valid": False, "status": "side_mismatch"}
     if not _numbers_match(requested.get("line"), current.get("line")):
         return {**base, "valid": False, "status": "line_mismatch"}
-    if not _numbers_match(requested.get("odds"), current.get("odds"), tolerance=0.01):
+    if not _odds_acceptable(
+        requested.get("odds"),
+        current.get("odds"),
+        policy=odds_policy,
+        tolerance=odds_tolerance,
+    ):
         return {**base, "valid": False, "status": "odds_mismatch"}
     if not current.get("playable"):
         return {**base, "valid": False, "status": "unplayable"}
+    if validation_mode == "execution_ready":
+        return {
+            **base,
+            "valid": False,
+            "status": "quote_required",
+            "quoteRequired": True,
+            "message": "Stake feed matched, but no final bet-slip quote was confirmed.",
+        }
     return {**base, "valid": True, "status": "valid"}
 
 
@@ -780,6 +1191,7 @@ def _market_map_from_props(props: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "statKey": mapping.get("statKey"),
                 "group": mapping.get("group"),
                 "supported": mapping.get("supported"),
+                "contextQuality": mapping.get("contextQuality"),
                 "active": True,
                 "examples": [],
             },
@@ -793,6 +1205,358 @@ def _market_map_from_props(props: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
     return sorted(rows.values(), key=lambda row: str(row.get("internalMarketKey") or ""))
+
+
+def _filtered_selection_rows(
+    props: list[dict[str, Any]],
+    side: str,
+    primary_only: bool,
+    playable_only: bool,
+    context_quality: str,
+) -> list[dict[str, Any]]:
+    return _filter_selections(
+        _side_level_selections(props, _clean_side(side)),
+        primary_only=primary_only,
+        playable_only=playable_only,
+        context_quality=context_quality,
+    )
+
+
+def _filter_selections(
+    selections: list[dict[str, Any]],
+    primary_only: bool,
+    playable_only: bool,
+    context_quality: str,
+) -> list[dict[str, Any]]:
+    clean_quality = _clean_context_quality(context_quality)
+    rows = []
+    for selection in selections:
+        if primary_only and not selection.get("isPrimaryLine"):
+            continue
+        if playable_only and not selection.get("playable"):
+            continue
+        quality = _selection_context_quality(selection)
+        if clean_quality == "supported" and quality == "unsupported":
+            continue
+        if clean_quality in {"strong", "partial", "unsupported"} and quality != clean_quality:
+            continue
+        rows.append(selection)
+    return sorted(
+        rows,
+        key=lambda row: (
+            str((row.get("market") or {}).get("key") or ""),
+            str((row.get("player") or {}).get("name") or ""),
+            str(row.get("side") or ""),
+            float(row.get("line") or 0),
+        ),
+    )
+
+
+def _compact_selection_row(selection: dict[str, Any]) -> dict[str, Any]:
+    mapping = stat_mapping_for_market(((selection.get("market") or {}).get("key") or ""))
+    return {
+        "selectionId": selection.get("selectionId"),
+        "propId": selection.get("propId"),
+        "player": selection.get("player"),
+        "team": selection.get("team"),
+        "fixtureSlug": selection.get("fixtureSlug"),
+        "game": selection.get("game"),
+        "market": selection.get("market"),
+        "side": selection.get("side"),
+        "line": selection.get("line"),
+        "odds": selection.get("odds"),
+        "lineSource": selection.get("lineSource"),
+        "isPrimaryLine": selection.get("isPrimaryLine"),
+        "playable": selection.get("playable"),
+        "playableConfidence": (selection.get("availability") or {}).get("playableConfidence"),
+        "availabilityFlags": (selection.get("availability") or {}).get("flags") or [],
+        "statContext": {
+            "marketKey": mapping.get("marketKey"),
+            "statKey": mapping.get("statKey"),
+            "group": mapping.get("group"),
+            "supported": mapping.get("supported"),
+            "contextQuality": mapping.get("contextQuality"),
+        },
+    }
+
+
+def _comparison_selection_row(
+    selection: dict[str, Any],
+    prop: dict[str, Any],
+) -> dict[str, Any]:
+    prop = prop or {}
+    stat_context = prop.get("statContext") or stat_mapping_for_market(
+        ((selection.get("market") or {}).get("key") or "")
+    )
+    metrics = _selection_metrics(selection, prop, stat_context)
+    flags = _comparison_flags(selection, prop, stat_context)
+    return {
+        **_compact_selection_row(selection),
+        "mlbMatch": prop.get("mlbMatch"),
+        "matchupGame": _compact_game(prop.get("mlbGame")),
+        "metrics": metrics,
+        "flags": flags,
+        "helperStrength": metrics.get("agreementScore"),
+    }
+
+
+def _comparison_sort_key(row: dict[str, Any]) -> tuple[float, float, float]:
+    metrics = row.get("metrics") or {}
+    return (
+        _float_or_none(metrics.get("agreementScore")) or 0.0,
+        _float_or_none(metrics.get("recentSideMargin")) or -999.0,
+        _float_or_none(row.get("odds")) or 0.0,
+    )
+
+
+def _selection_metrics(
+    selection: dict[str, Any],
+    prop: dict[str, Any],
+    stat_context: dict[str, Any],
+) -> dict[str, Any]:
+    stat_key = stat_context.get("statKey")
+    line = _float_or_none(selection.get("line"))
+    side = str(selection.get("side") or "")
+    recent = prop.get("recentHistory") or {}
+    recent_average = _recent_average(recent, stat_key)
+    season_average = _season_average(prop.get("mlbProfile"), stat_key)
+    hit_rates = _recent_hit_rates(recent, stat_key, line)
+    recent_margin = _side_margin(recent_average, line, side)
+    season_margin = _side_margin(season_average, line, side)
+    agreement = _agreement_score(recent_margin, season_margin, hit_rates, side)
+    return {
+        "statKey": stat_key,
+        "recentGamesUsed": recent.get("gamesUsed"),
+        "recentAverage": recent_average,
+        "seasonAverage": season_average,
+        "recentHitRateOver": hit_rates.get("over"),
+        "recentHitRateUnder": hit_rates.get("under"),
+        "recentSideMargin": recent_margin,
+        "seasonSideMargin": season_margin,
+        "agreementScore": agreement,
+    }
+
+
+def _comparison_flags(
+    selection: dict[str, Any],
+    prop: dict[str, Any],
+    stat_context: dict[str, Any],
+) -> list[str]:
+    flags = list((selection.get("availability") or {}).get("flags") or [])
+    if not stat_context.get("supported"):
+        flags.append("context_unsupported")
+    elif stat_context.get("contextQuality") == "partial":
+        flags.append("context_partial")
+    match = prop.get("mlbMatch") or {}
+    if match.get("status") == "unmatched":
+        flags.append("mlb_player_unmatched")
+    if match.get("status") == "name_match_team_unconfirmed":
+        flags.append("team_unconfirmed")
+    return sorted(set(flags))
+
+
+def _compact_game(game: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not game:
+        return None
+    return {
+        "gamePk": game.get("gamePk"),
+        "gameDate": game.get("gameDate"),
+        "status": game.get("status"),
+        "awayTeam": (game.get("awayTeam") or {}).get("name"),
+        "homeTeam": (game.get("homeTeam") or {}).get("name"),
+    }
+
+
+def _recent_average(recent: dict[str, Any], stat_key: Any) -> float | None:
+    if not stat_key:
+        return None
+    per_game = recent.get("perGame") or {}
+    direct = _float_or_none(per_game.get(str(stat_key)))
+    if direct is not None:
+        return direct
+    totals = recent.get("totals") or {}
+    total = _float_or_none(totals.get(str(stat_key)))
+    games_used = _float_or_none(recent.get("gamesUsed"))
+    if total is None or not games_used:
+        return None
+    return round(total / games_used, 4)
+
+
+def _season_average(profile: dict[str, Any] | None, stat_key: Any) -> float | None:
+    if not stat_key:
+        return None
+    stats = (((profile or {}).get("player") or {}).get("stats") or {})
+    total = _float_or_none(stats.get(str(stat_key)))
+    denominator = (
+        _float_or_none(stats.get("gamesPlayed"))
+        or _float_or_none(stats.get("gamesPitched"))
+        or _float_or_none(stats.get("gamesStarted"))
+    )
+    if total is None or not denominator:
+        return None
+    return round(total / denominator, 4)
+
+
+def _recent_hit_rates(
+    recent: dict[str, Any],
+    stat_key: Any,
+    line: float | None,
+) -> dict[str, float | None]:
+    if not stat_key or line is None:
+        return {"over": None, "under": None}
+    values = [
+        _float_or_none((game.get("stats") or {}).get(str(stat_key)))
+        for game in recent.get("games") or []
+    ]
+    values = [value for value in values if value is not None]
+    if not values:
+        return {"over": None, "under": None}
+    over = sum(1 for value in values if value > line) / len(values)
+    under = sum(1 for value in values if value < line) / len(values)
+    return {"over": round(over, 4), "under": round(under, 4)}
+
+
+def _side_margin(value: float | None, line: float | None, side: str) -> float | None:
+    if value is None or line is None:
+        return None
+    margin = value - line if side == "over" else line - value
+    return round(margin, 4)
+
+
+def _agreement_score(
+    recent_margin: float | None,
+    season_margin: float | None,
+    hit_rates: dict[str, float | None],
+    side: str,
+) -> float | None:
+    signals = []
+    if recent_margin is not None:
+        signals.append(50 + max(-25, min(25, recent_margin * 20)))
+    if season_margin is not None:
+        signals.append(50 + max(-25, min(25, season_margin * 15)))
+    side_rate = hit_rates.get(side)
+    if side_rate is not None:
+        signals.append(side_rate * 100)
+    if not signals:
+        return None
+    return round(sum(signals) / len(signals), 2)
+
+
+def _paginate(
+    items: list[dict[str, Any]],
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    clean_page = _clean_int(page, 1, 10_000)
+    clean_page_size = _clean_int(page_size, 1, 100)
+    start = (clean_page - 1) * clean_page_size
+    end = start + clean_page_size
+    return {
+        "items": items[start:end],
+        "meta": {
+            "page": clean_page,
+            "pageSize": clean_page_size,
+            "totalItems": len(items),
+            "totalPages": ((len(items) - 1) // clean_page_size) + 1 if items else 0,
+            "hasNextPage": end < len(items),
+        },
+    }
+
+
+def _navigation_filters(
+    markets: str | None,
+    side: str,
+    line_mode: str,
+    primary_only: bool,
+    playable_only: bool,
+    context_quality: str,
+) -> dict[str, Any]:
+    return {
+        "markets": sorted(_clean_market_csv(markets)),
+        "side": _clean_side(side),
+        "lineMode": _clean_line_mode(line_mode),
+        "primaryOnly": bool(primary_only),
+        "playableOnly": bool(playable_only),
+        "contextQuality": _clean_context_quality(context_quality),
+        "minPlayableOdds": _minimum_playable_odds(),
+    }
+
+
+def _summary_markets(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for selection in selections:
+        market = selection.get("market") or {}
+        key = str(market.get("key") or "")
+        row = rows.setdefault(
+            key,
+            {
+                "key": key,
+                "name": market.get("name"),
+                "selectionCount": 0,
+                "playableSelectionCount": 0,
+                "sideCounts": {"over": 0, "under": 0},
+                "contextQuality": _selection_context_quality(selection),
+            },
+        )
+        row["selectionCount"] += 1
+        if selection.get("playable"):
+            row["playableSelectionCount"] += 1
+        if selection.get("side") in row["sideCounts"]:
+            row["sideCounts"][selection["side"]] += 1
+    return sorted(rows.values(), key=lambda row: str(row.get("key") or ""))
+
+
+def _context_coverage(selections: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"strong": 0, "partial": 0, "unsupported": 0}
+    for selection in selections:
+        quality = _selection_context_quality(selection)
+        counts[quality] = counts.get(quality, 0) + 1
+    counts["supported"] = counts.get("strong", 0) + counts.get("partial", 0)
+    return counts
+
+
+def _warning_counts(selections: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for selection in selections:
+        for flag in (selection.get("availability") or {}).get("flags") or []:
+            counts[flag] = counts.get(flag, 0) + 1
+        quality = _selection_context_quality(selection)
+        if quality == "partial":
+            counts["context_partial"] = counts.get("context_partial", 0) + 1
+        if quality == "unsupported":
+            counts["context_unsupported"] = counts.get("context_unsupported", 0) + 1
+    return counts
+
+
+def _summary_warnings(
+    props_payload: dict[str, Any],
+    selections: list[dict[str, Any]],
+) -> list[str]:
+    warnings = []
+    if props_payload.get("propCount", 0) == 0:
+        warnings.append("No Stake props matched the matchup/filter.")
+    warning_counts = _warning_counts(selections)
+    if warning_counts.get("alternate_or_unconfirmed_primary_line"):
+        warnings.append("Some rows are alternate or unconfirmed primary lines.")
+    if warning_counts.get("context_unsupported"):
+        warnings.append("Some markets have no direct MLB stat context.")
+    if warning_counts.get("unplayable_current_odds"):
+        warnings.append("Some rows were removed from playable consideration because odds are below the minimum threshold.")
+    return warnings
+
+
+def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key) or "unknown")
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _selection_context_quality(selection: dict[str, Any]) -> str:
+    market_key = ((selection.get("market") or {}).get("key") or "")
+    quality = str(stat_mapping_for_market(market_key).get("contextQuality") or "unsupported")
+    return quality if quality in {"strong", "partial", "unsupported"} else "unsupported"
 
 
 def _filter_payload_to_matchup(
@@ -866,6 +1630,83 @@ def _probable_pitchers_from_game(game: dict[str, Any] | None) -> list[dict[str, 
     return pitchers
 
 
+async def _probable_pitchers_with_context(
+    game: dict[str, Any] | None,
+    mlb_engine: Any,
+    season: int,
+) -> list[dict[str, Any]]:
+    rows = _probable_pitchers_from_game(game)
+    for row in rows:
+        pitcher = row.get("pitcher") or {}
+        pitcher_id = pitcher.get("mlbId")
+        if pitcher_id is None:
+            row["roleSanity"] = _pitcher_role_sanity(None, None)
+            continue
+        try:
+            profile = await mlb_engine.get_player_profile(
+                int(pitcher_id),
+                season=season,
+                group="pitching",
+            )
+            recent = await mlb_engine.get_player_recent_history(
+                int(pitcher_id),
+                group="pitching",
+                season=season,
+                limit=5,
+            )
+        except Exception as exc:
+            row["roleSanity"] = {
+                "volumePropRisk": "unknown",
+                "flags": ["pitcher_role_context_unavailable"],
+                "message": str(exc),
+            }
+            continue
+        row["season"] = _season_context(profile)
+        row["recent"] = recent
+        row["roleSanity"] = _pitcher_role_sanity(profile, recent)
+    return rows
+
+
+def _pitcher_role_sanity(
+    profile: dict[str, Any] | None,
+    recent: dict[str, Any] | None,
+) -> dict[str, Any]:
+    stats = (((profile or {}).get("player") or {}).get("stats") or {})
+    games_started = _int_or_none(stats.get("gamesStarted"))
+    games_played = (
+        _int_or_none(stats.get("gamesPlayed"))
+        or _int_or_none(stats.get("gamesPitched"))
+        or games_started
+    )
+    flags = []
+    start_share = None
+    if games_started is None:
+        flags.append("probable_pitcher_start_count_unknown")
+    if games_played and games_started is not None:
+        start_share = games_started / games_played if games_played else None
+        if games_started == 0 or start_share < 0.5:
+            flags.append("probable_pitcher_low_start_share")
+
+    recent_games_used = _int_or_none((recent or {}).get("gamesUsed"))
+    if recent_games_used == 0:
+        flags.append("probable_pitcher_no_recent_logs")
+
+    if "probable_pitcher_low_start_share" in flags:
+        risk = "high"
+    elif flags:
+        risk = "medium"
+    else:
+        risk = "low"
+
+    return {
+        "volumePropRisk": risk,
+        "flags": flags,
+        "gamesStarted": games_started,
+        "gamesPlayed": games_played,
+        "startShare": start_share,
+    }
+
+
 def _matchup_tokens(value: str) -> set[str]:
     text = str(value or "").lower()
     text = re.sub(r"\b(vs|at|and|the|mlb)\b", " ", text)
@@ -893,10 +1734,13 @@ def _board_notes(
 def _player_context_notes(prop: dict[str, Any]) -> list[str]:
     notes = []
     match = prop.get("mlbMatch") or {}
+    stat_context = prop.get("statContext") or {}
     if match.get("status") == "unmatched":
         notes.append("MLB player match was not confirmed.")
-    if not (prop.get("statContext") or {}).get("supported", True):
+    if not stat_context.get("supported", True):
         notes.append("Market has no direct MLB stat mapping yet.")
+    elif stat_context.get("contextQuality") == "partial":
+        notes.append("Market has partial MLB context support; use extra caution.")
     return notes
 
 
@@ -933,6 +1777,23 @@ def _numbers_match(a: Any, b: Any, tolerance: float = 0.0001) -> bool:
     return abs(left - right) <= tolerance
 
 
+def _odds_acceptable(
+    requested: Any,
+    current: Any,
+    policy: str,
+    tolerance: float,
+) -> bool:
+    requested_odds = _float_or_none(requested)
+    current_odds = _float_or_none(current)
+    if requested_odds is None or current_odds is None:
+        return requested_odds is current_odds
+    if policy == "within_tolerance":
+        return abs(requested_odds - current_odds) <= tolerance
+    if policy == "accept_better":
+        return current_odds + 0.0001 >= requested_odds
+    return abs(requested_odds - current_odds) <= 0.0001
+
+
 def _clean_market_csv(value: str | None) -> set[str]:
     if not value:
         return set()
@@ -948,8 +1809,37 @@ def _clean_side(value: Any) -> str:
     return side if side in {"any", "over", "under"} else "any"
 
 
+def _clean_validation_mode(value: Any) -> str:
+    mode = str(value or "strict").strip().lower().replace("-", "_")
+    return mode if mode in {"recommendation", "strict", "execution_ready"} else "strict"
+
+
+def _clean_odds_policy(value: Any, validation_mode: str) -> str:
+    policy = str(value or "").strip().lower().replace("-", "_")
+    if policy in {"exact", "accept_better", "within_tolerance"}:
+        return policy
+    if validation_mode == "recommendation":
+        return "within_tolerance"
+    return "exact"
+
+
+def _clean_odds_tolerance(value: Any, validation_mode: str) -> float:
+    default = 0.01 if validation_mode == "recommendation" else 0.0001
+    tolerance = _float_or_none(value)
+    if tolerance is None:
+        return default
+    return max(0.0, min(tolerance, 1.0))
+
+
 def _clean_line_mode(value: Any) -> str:
     return "all" if str(value or "").strip().lower() == "all" else "primary"
+
+
+def _clean_context_quality(value: Any) -> str:
+    quality = str(value or "any").strip().lower().replace("-", "_")
+    if quality in {"any", "supported", "strong", "partial", "unsupported"}:
+        return quality
+    return "any"
 
 
 def _minimum_playable_odds() -> float:
@@ -968,6 +1858,13 @@ def _clear_mlb_cache_per_gpt_request() -> bool:
 def _float_or_none(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -1118,11 +2015,102 @@ def _history_limit_param() -> dict[str, Any]:
     }
 
 
+def _page_param() -> dict[str, Any]:
+    return {
+        "name": "page",
+        "in": "query",
+        "required": False,
+        "schema": {"type": "integer", "minimum": 1},
+    }
+
+
+def _page_size_param(maximum: int = 100) -> dict[str, Any]:
+    return {
+        "name": "pageSize",
+        "in": "query",
+        "required": False,
+        "schema": {"type": "integer", "minimum": 1, "maximum": maximum},
+    }
+
+
+def _primary_only_param() -> dict[str, Any]:
+    return {
+        "name": "primaryOnly",
+        "in": "query",
+        "required": False,
+        "schema": {"type": "boolean"},
+    }
+
+
+def _playable_only_param() -> dict[str, Any]:
+    return {
+        "name": "playableOnly",
+        "in": "query",
+        "required": False,
+        "schema": {"type": "boolean"},
+    }
+
+
+def _context_quality_param() -> dict[str, Any]:
+    return {
+        "name": "contextQuality",
+        "in": "query",
+        "required": False,
+        "schema": {
+            "type": "string",
+            "enum": ["any", "supported", "strong", "partial", "unsupported"],
+        },
+    }
+
+
+def _prop_context_batch_request_body() -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "matchup": {"type": "string"},
+                        "date": {"type": "string", "format": "date"},
+                        "market": {"type": "string"},
+                        "historyLimit": {"type": "integer", "minimum": 1, "maximum": 15},
+                        "selections": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "selectionId": {"type": "string"},
+                                    "propId": {"type": "string"},
+                                    "side": {"type": "string", "enum": ["over", "under"]},
+                                },
+                                "additionalProperties": True,
+                            },
+                        },
+                    },
+                    "required": ["matchup", "selections"],
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
 def _selection_request_body(include_prompt: bool = False) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "matchup": {"type": "string"},
         "date": {"type": "string", "format": "date"},
         "market": {"type": "string"},
+        "validationMode": {
+            "type": "string",
+            "enum": ["recommendation", "strict", "execution_ready"],
+        },
+        "oddsPolicy": {
+            "type": "string",
+            "enum": ["exact", "accept_better", "within_tolerance"],
+        },
+        "oddsTolerance": {"type": "number", "minimum": 0, "maximum": 1},
         "selections": {
             "type": "array",
             "items": {

@@ -53,6 +53,18 @@ MARKET_STAT_MAP = {
         "statKey": "outs",
         "label": "Outs Recorded",
     },
+    "batter-strikeouts": {
+        "group": "hitting",
+        "statKey": "strikeOuts",
+        "label": "Batter Strikeouts",
+        "contextQuality": "partial",
+    },
+    "hitter-strikeouts": {
+        "group": "hitting",
+        "statKey": "strikeOuts",
+        "label": "Batter Strikeouts",
+        "contextQuality": "partial",
+    },
 }
 
 PITCHING_MARKET_KEYS = {
@@ -125,6 +137,7 @@ def stat_mapping_for_market(market_key: str) -> dict[str, Any]:
             "statKey": mapping["statKey"],
             "label": mapping["label"],
             "supported": True,
+            "contextQuality": mapping.get("contextQuality", "strong"),
         }
 
     return {
@@ -133,6 +146,7 @@ def stat_mapping_for_market(market_key: str) -> dict[str, Any]:
         "statKey": None,
         "label": str(market_key or normalized),
         "supported": False,
+        "contextQuality": "unsupported",
     }
 
 
@@ -605,6 +619,7 @@ def _stat_context(
         "statKey": stat_key,
         "label": market_mapping["label"],
         "supported": market_mapping["supported"],
+        "contextQuality": market_mapping["contextQuality"],
         "line": prop.get("line"),
         "seasonValue": season_stats.get(stat_key) if stat_key else None,
         "recentTotal": totals.get(stat_key) if stat_key else None,

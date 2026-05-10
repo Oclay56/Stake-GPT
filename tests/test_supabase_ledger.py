@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.supabase_ledger import _gpt_decision_payloads, supabase_ledger_enabled
 
 
@@ -46,3 +48,12 @@ def test_gpt_decision_payloads_match_supabase_tables():
     assert legs[0]["selection_id"] == "prop-1:under"
     assert legs[0]["market_key"] == "hits"
     assert legs[0]["playable"] is True
+
+
+def test_supabase_schema_can_upgrade_existing_decision_tables():
+    sql = Path("supabase/gpt_action.sql").read_text(encoding="utf-8").lower()
+
+    assert "alter table public.gpt_decision_requests" in sql
+    assert "add column if not exists request_json" in sql
+    assert "add column if not exists response_json" in sql
+    assert "add column if not exists validation_json" in sql

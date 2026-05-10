@@ -94,12 +94,14 @@ def flatten_player_prop_rows(
 
     for prop in _player_props_from_swish_markets(odds.get("swishMarkets")):
         market_name = repair_mojibake(prop.get("marketName"))
+        primary = select_primary_player_prop_outcome(prop, market_name=market_name)
         outcomes = _player_prop_outcomes_for_mode(prop, line_mode, market_name)
         for outcome in outcomes:
             over = outcome.get("over")
             under = outcome.get("under")
             if not over and not under:
                 continue
+            is_primary = _same_outcome(primary, outcome)
 
             row = {
                 "player": repair_mojibake(prop.get("competitorName")),
@@ -109,6 +111,8 @@ def flatten_player_prop_rows(
                 "line": outcome.get("line"),
                 "over": over,
                 "under": under,
+                "lineSource": "primary" if is_primary else "alternate",
+                "isPrimaryLine": is_primary,
             }
             key = (
                 row["player"],
@@ -330,6 +334,16 @@ def _valid_decimal_odd(value: Any) -> bool:
         return float(value) > 1
     except (TypeError, ValueError):
         return False
+
+
+def _same_outcome(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+    if not left or not right:
+        return False
+    return (
+        left.get("line") == right.get("line")
+        and left.get("over") == right.get("over")
+        and left.get("under") == right.get("under")
+    )
 
 
 def _repair_mojibake_text(value: str) -> str:

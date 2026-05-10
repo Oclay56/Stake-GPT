@@ -7,9 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.gpt_action import (
+    build_board_summary,
+    build_comparison_board,
     build_gpt_action_openapi_schema,
     build_matchup_prop_board,
     build_player_mlb_context,
+    build_prop_context_batch,
+    build_prop_page,
+    build_probable_pitchers,
     require_gpt_api_key_value,
     validate_gpt_selections,
 )
@@ -177,12 +182,14 @@ class FakeMLBEngine:
         stats = {
             543807: {"gamesPlayed": 20, "hits": 15},
             545361: {"gamesPlayed": 18, "hits": 20},
-            686799: {"gamesStarted": 5, "strikeOuts": 24},
+            686799: {"gamesPlayed": 18, "gamesStarted": 1, "strikeOuts": 24},
+            702056: {"gamesPlayed": 6, "gamesStarted": 6, "strikeOuts": 31},
         }
         names = {
             543807: "George Springer",
             545361: "Mike Trout",
             686799: "Jack Kochanowicz",
+            702056: "Trey Yesavage",
         }
         return {
             "player": {
@@ -203,6 +210,9 @@ class FakeMLBEngine:
     ):
         stat_key = "strikeOuts" if player_id == 686799 else "hits"
         value = 4.8 if player_id == 686799 else 0.4
+        if player_id == 702056:
+            stat_key = "strikeOuts"
+            value = 5.8
         games = [
             {
                 "gamePk": index,
@@ -244,7 +254,11 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert schema["servers"] == [{"url": "https://azp-test.example"}]
     assert "/mlb/matchup/{matchup}/props" in schema["paths"]
     assert path_ids["/mlb/matchup/{matchup}/props"] == "getMatchupPropBoard"
+    assert path_ids["/mlb/matchup/{matchup}/board-summary"] == "getBoardSummary"
+    assert path_ids["/mlb/matchup/{matchup}/prop-page"] == "getPropPage"
+    assert path_ids["/mlb/matchup/{matchup}/comparison-board"] == "getComparisonBoard"
     assert path_ids["/mlb/player/{playerId}/context"] == "getPlayerMlbContext"
+    assert path_ids["/mlb/prop-context-batch"] == "getPropContextBatch"
     assert path_ids["/mlb/validate-selections"] == "validateSelections"
     assert path_ids["/mlb/save-gpt-decision"] == "saveGptDecision"
     assert "/gpt/mlb/matchup-picks" not in schema["paths"]
@@ -289,6 +303,123 @@ def test_matchup_prop_board_returns_stake_backed_primary_lines_without_scores():
     assert "recommendations" not in result
 
 
+def test_board_summary_compresses_feed_without_dumping_raw_props():
+    result = asyncio.run(
+        build_board_summary(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+        )
+    )
+
+    assert result["purpose"] == "board_navigation_summary"
+    assert result["totalPropsScanned"] == 3
+    assert result["totalSelectionsScanned"] == 6
+    assert result["contextCoverage"]["supported"] == 6
+    assert result["markets"][0]["selectionCount"] >= 1
+    assert "props" not in result
+    assert "selections" not in result
+
+
+def test_prop_page_returns_filtered_paginated_compact_rows():
+    result = asyncio.run(
+        build_prop_page(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+            page=1,
+            page_size=1,
+        )
+    )
+
+    assert result["purpose"] == "board_navigation_page"
+    assert result["page"] == 1
+    assert result["pageSize"] == 1
+    assert result["totalItems"] == 2
+    assert result["hasNextPage"] is True
+    assert result["rows"][0]["side"] == "under"
+    assert result["rows"][0]["statContext"]["statKey"] == "hits"
+    assert "recent" not in result["rows"][0]
+
+
+def test_comparison_board_adds_compact_mlb_metrics_without_final_picks():
+    result = asyncio.run(
+        build_comparison_board(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+            page=1,
+            page_size=10,
+            season=2026,
+            history_limit=15,
+        )
+    )
+
+    springer = next(
+        row for row in result["rows"] if row["player"]["name"] == "George Springer"
+    )
+    assert result["purpose"] == "compact_comparison_board"
+    assert springer["metrics"]["recentAverage"] == 0.4
+    assert springer["metrics"]["seasonAverage"] == 0.75
+    assert springer["metrics"]["recentHitRateUnder"] == 1.0
+    assert springer["helperStrength"] is not None
+    assert "recommendations" not in result
+
+
+def test_prop_context_batch_returns_exact_side_context_for_finalists():
+    board = asyncio.run(
+        build_matchup_prop_board(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+        )
+    )
+    selections = [
+        {
+            "selectionId": board["selections"][0]["selectionId"],
+            "side": board["selections"][0]["side"],
+        },
+        {"selectionId": "missing", "side": "under"},
+    ]
+
+    result = asyncio.run(
+        build_prop_context_batch(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            selections=selections,
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            season=2026,
+            history_limit=15,
+        )
+    )
+
+    assert result["purpose"] == "finalist_context_batch"
+    assert result["requestedCount"] == 2
+    assert result["contextCount"] == 1
+    assert result["missing"][0]["status"] == "missing_selection"
+    assert result["contexts"][0]["requestedSide"] == "under"
+    assert result["contexts"][0]["recent"]["windows"]["5"]["gamesUsed"] == 5
+
+
 def test_player_prop_context_adds_mlb_recent_and_season_context():
     board = asyncio.run(
         build_matchup_prop_board(
@@ -324,6 +455,47 @@ def test_player_prop_context_adds_mlb_recent_and_season_context():
     assert result["recent"]["windows"]["5"]["gamesUsed"] == 5
     assert result["season"]["stats"]
     assert result["matchupGame"]["gamePk"] == 1
+
+
+def test_prop_context_uses_requested_side_when_prop_id_is_ambiguous():
+    board = asyncio.run(
+        build_matchup_prop_board(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="any",
+        )
+    )
+    springer_under = next(
+        selection
+        for selection in board["selections"]
+        if selection["player"]["name"] == "George Springer"
+        and selection["side"] == "under"
+    )
+
+    result = asyncio.run(
+        build_player_mlb_context(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            prop_id=springer_under["propId"],
+            side="under",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            season=2026,
+            history_limit=15,
+        )
+    )
+
+    assert result["selection"]["selectionId"] == springer_under["selectionId"]
+    assert result["side"] == "under"
+    assert result["odds"] == springer_under["odds"]
+    assert result["requestedSide"] == "under"
 
 
 def test_validate_gpt_selections_checks_current_stake_line_side_and_odds():
@@ -366,6 +538,110 @@ def test_validate_gpt_selections_checks_current_stake_line_side_and_odds():
     assert result["valid"] is False
     assert result["results"][0]["status"] == "line_mismatch"
     assert result["results"][0]["current"]["line"] == 0.5
+
+
+def test_validate_gpt_selections_defaults_to_strict_odds_and_supports_policies():
+    board = asyncio.run(
+        build_matchup_prop_board(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            side="under",
+        )
+    )
+    springer = next(
+        selection
+        for selection in board["selections"]
+        if selection["player"]["name"] == "George Springer"
+    )
+
+    strict = asyncio.run(
+        validate_gpt_selections(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "selectionId": springer["selectionId"],
+                    "side": "under",
+                    "line": springer["line"],
+                    "odds": springer["odds"] - 0.005,
+                }
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+        )
+    )
+    recommendation = asyncio.run(
+        validate_gpt_selections(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "selectionId": springer["selectionId"],
+                    "side": "under",
+                    "line": springer["line"],
+                    "odds": springer["odds"] - 0.005,
+                }
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            validation_mode="recommendation",
+        )
+    )
+    better_only = asyncio.run(
+        validate_gpt_selections(
+            stake_client=FakeStakeClient(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "selectionId": springer["selectionId"],
+                    "side": "under",
+                    "line": springer["line"],
+                    "odds": springer["odds"] - 0.1,
+                }
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            validation_mode="strict",
+            odds_policy="accept_better",
+        )
+    )
+
+    assert strict["valid"] is False
+    assert strict["results"][0]["status"] == "odds_mismatch"
+    assert strict["validationMode"] == "strict"
+    assert recommendation["valid"] is True
+    assert recommendation["results"][0]["status"] == "valid"
+    assert better_only["valid"] is True
+    assert better_only["results"][0]["oddsPolicy"] == "accept_better"
+
+
+def test_probable_pitchers_flags_short_relief_usage_for_volume_props():
+    result = asyncio.run(
+        build_probable_pitchers(
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+        )
+    )
+
+    pitchers = {
+        row["pitcher"]["name"]: row["roleSanity"]
+        for row in result["probablePitchers"]
+    }
+    assert pitchers["Trey Yesavage"]["volumePropRisk"] == "low"
+    assert pitchers["Jack Kochanowicz"]["volumePropRisk"] == "high"
+    assert "probable_pitcher_low_start_share" in pitchers["Jack Kochanowicz"]["flags"]
 
 
 def test_save_gpt_decision_route_persists_gpt_choice_without_azp_ledger():

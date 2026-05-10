@@ -17,6 +17,8 @@ from .slate import DEFAULT_TIMEZONE, build_mlb_player_props_slate
 
 
 CORE_GPT_MARKETS = "hits,runs,rbi,total-bases,home-runs,strikeouts,earned-runs"
+DEFAULT_MIN_PLAYABLE_ODDS = 1.10
+DEFAULT_MAX_RECOMMENDATIONS_PER_MARKET = 2
 PITCHER_ONLY_MARKETS = {
     "strikeouts",
     "pitcher-strikeouts",
@@ -124,6 +126,11 @@ def _matchup_pick_response_schema() -> dict[str, Any]:
             "matchedPropCount": {"type": "integer"},
             "unmatchedPropCount": {"type": "integer"},
             "recommendationCount": {"type": "integer"},
+            "recommendationDiagnostics": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
             "recommendations": {
                 "type": "array",
                 "items": {
@@ -180,7 +187,9 @@ async def build_matchup_picks(
     odds_max: float | None = None,
 ) -> dict[str, Any]:
     clean_side = _clean_side(side)
-    clean_markets = _clean_market_csv(markets) or _clean_market_csv(CORE_GPT_MARKETS)
+    explicit_markets = _clean_market_csv(markets)
+    clean_markets = explicit_markets or _clean_market_csv(CORE_GPT_MARKETS)
+    should_diversify_markets = len(explicit_markets) != 1
     target_date = slate_date or _today(timezone_name)
     matchup_tokens = _matchup_tokens(matchup)
     if _clear_mlb_cache_per_gpt_request():
@@ -206,8 +215,16 @@ async def build_matchup_picks(
         group_mode="auto",
         history_limit=history_limit,
     )
-    recommendations = _build_recommendations(enriched, clean_side)
-    recommendations = recommendations[: _clean_int(recommendation_limit, 1, 25)]
+    recommendations, recommendation_diagnostics = _build_recommendations(
+        enriched,
+        clean_side,
+        enable_market_diversity=should_diversify_markets,
+    )
+    recommendation_limit_value = _clean_int(recommendation_limit, 1, 25)
+    recommendations = recommendations[:recommendation_limit_value]
+    recommendation_diagnostics["recommendationLimit"] = recommendation_limit_value
+    recommendation_diagnostics["returnedCount"] = len(recommendations)
+    recommendation_diagnostics["marketCounts"] = _market_counts(recommendations)
     parlay = build_parlay_candidates(
         recommendations,
         legs=legs,
@@ -240,12 +257,19 @@ async def build_matchup_picks(
         "matchedPropCount": enriched.get("matchedPropCount", 0),
         "unmatchedPropCount": enriched.get("unmatchedPropCount", 0),
         "recommendationCount": len(recommendations),
+        "recommendationDiagnostics": recommendation_diagnostics,
         "recommendations": [
             {**pick, "rank": index + 1}
             for index, pick in enumerate(recommendations)
         ],
         "parlay": parlay,
-        "notes": _response_notes(matchup_payload, recommendations, parlay),
+        "notes": _response_notes(
+            matchup_payload,
+            recommendations,
+            parlay,
+            recommendation_diagnostics,
+            _clean_int(legs, 1, 12),
+        ),
     }
 
 
@@ -397,8 +421,14 @@ def _visible_line_rank(prop: dict[str, Any]) -> tuple[float, float]:
 def _build_recommendations(
     enriched_payload: dict[str, Any],
     side: str,
-) -> list[dict[str, Any]]:
+    enable_market_diversity: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     picks = []
+    diagnostics = _recommendation_diagnostics(
+        enable_market_diversity=enable_market_diversity
+    )
+    min_playable_odds = _minimum_playable_odds()
+    diagnostics["minPlayableOdds"] = min_playable_odds
     for prop in enriched_payload.get("props") or []:
         if ((prop.get("player") or {}).get("matchStatus") != "matched_exact_name_team"):
             continue
@@ -406,10 +436,21 @@ def _build_recommendations(
             continue
         sides = ("over", "under") if side == "any" else (side,)
         for pick_side in sides:
+            diagnostics["consideredSides"] += 1
+            odds_value = _float_or_none((prop.get("odds") or {}).get(pick_side))
+            if odds_value is None:
+                diagnostics["discardedMissingOdds"] += 1
+                continue
+            if odds_value <= 1.0:
+                diagnostics["discardedInvalidOdds"] += 1
+                continue
+            if odds_value < min_playable_odds:
+                diagnostics["discardedBelowMinOdds"] += 1
+                continue
             pick = _recommendation_for_side(prop, pick_side)
             if pick:
                 picks.append(pick)
-    return sorted(
+    sorted_picks = sorted(
         picks,
         key=lambda pick: (
             -int(pick["score"]),
@@ -418,6 +459,55 @@ def _build_recommendations(
             str((pick.get("player") or {}).get("name") or ""),
         ),
     )
+    if enable_market_diversity:
+        diagnostics["maxRecommendationsPerMarket"] = _max_recommendations_per_market()
+        sorted_picks = _apply_market_diversity(sorted_picks, diagnostics)
+    diagnostics["eligibleBeforeDiversity"] = len(picks)
+    diagnostics["marketCounts"] = _market_counts(sorted_picks)
+    return sorted_picks, diagnostics
+
+
+def _recommendation_diagnostics(enable_market_diversity: bool) -> dict[str, Any]:
+    return {
+        "minPlayableOdds": DEFAULT_MIN_PLAYABLE_ODDS,
+        "consideredSides": 0,
+        "discardedMissingOdds": 0,
+        "discardedInvalidOdds": 0,
+        "discardedBelowMinOdds": 0,
+        "discardedByMarketDiversity": 0,
+        "eligibleBeforeDiversity": 0,
+        "marketDiversityApplied": enable_market_diversity,
+        "maxRecommendationsPerMarket": None,
+        "marketCounts": {},
+    }
+
+
+def _apply_market_diversity(
+    picks: list[dict[str, Any]],
+    diagnostics: dict[str, Any],
+) -> list[dict[str, Any]]:
+    max_per_market = int(diagnostics["maxRecommendationsPerMarket"])
+    kept: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    discarded = 0
+    for pick in picks:
+        market = str(pick.get("marketKey") or "unknown")
+        if counts.get(market, 0) >= max_per_market:
+            discarded += 1
+            continue
+        kept.append(pick)
+        counts[market] = counts.get(market, 0) + 1
+
+    diagnostics["discardedByMarketDiversity"] = discarded
+    return kept
+
+
+def _market_counts(picks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for pick in picks:
+        market = str(pick.get("marketKey") or "unknown")
+        counts[market] = counts.get(market, 0) + 1
+    return {market: counts[market] for market in sorted(counts)}
 
 
 def _pitcher_prop_is_probable_pitcher(prop: dict[str, Any]) -> bool:
@@ -632,12 +722,41 @@ def _response_notes(
     matchup_payload: dict[str, Any],
     recommendations: list[dict[str, Any]],
     parlay: dict[str, Any],
+    diagnostics: dict[str, Any] | None = None,
+    requested_legs: int | None = None,
 ) -> list[str]:
     notes = []
     if matchup_payload["propCount"] == 0:
         notes.append("No Stake props matched the requested matchup text.")
     if not recommendations and matchup_payload["propCount"] > 0:
         notes.append("Stake had props for the matchup, but none cleared the current recommendation threshold.")
+    if diagnostics:
+        discarded_odds = int(diagnostics.get("discardedInvalidOdds") or 0) + int(
+            diagnostics.get("discardedBelowMinOdds") or 0
+        )
+        if discarded_odds:
+            notes.append(
+                "Filtered "
+                f"{discarded_odds} Stake feed legs below playable odds "
+                f"threshold ({float(diagnostics['minPlayableOdds']):.2f}); "
+                "not backfilled with weaker picks."
+            )
+        discarded_diversity = int(diagnostics.get("discardedByMarketDiversity") or 0)
+        if discarded_diversity:
+            notes.append(
+                "Market diversity capped repeated markets at "
+                f"{diagnostics.get('maxRecommendationsPerMarket')} per market; "
+                f"removed {discarded_diversity} lower-ranked repeated-market legs."
+            )
+    if (
+        requested_legs is not None
+        and len(recommendations) < requested_legs
+        and matchup_payload["propCount"] > 0
+    ):
+        notes.append(
+            f"Only {len(recommendations)} playable recommendations cleared filters "
+            f"for the requested {requested_legs} legs; not force-filling weaker legs."
+        )
     if parlay.get("warnings"):
         notes.extend(str(warning) for warning in parlay["warnings"])
     return notes
@@ -747,6 +866,20 @@ def _today(timezone_name: str) -> date:
 def _clear_mlb_cache_per_gpt_request() -> bool:
     value = os.getenv("AZP_CLEAR_MLB_CACHE_PER_GPT_REQUEST", "")
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _minimum_playable_odds() -> float:
+    value = _float_or_none(os.getenv("AZP_MIN_PLAYABLE_ODDS"))
+    if value is None:
+        return DEFAULT_MIN_PLAYABLE_ODDS
+    return max(1.01, min(value, 100.0))
+
+
+def _max_recommendations_per_market() -> int:
+    value = _int_or_none(os.getenv("AZP_MAX_RECOMMENDATIONS_PER_MARKET"))
+    if value is None:
+        return DEFAULT_MAX_RECOMMENDATIONS_PER_MARKET
+    return max(1, min(value, 25))
 
 
 def _clean_int(value: Any, minimum: int, maximum: int) -> int:

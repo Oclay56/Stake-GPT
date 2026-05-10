@@ -109,6 +109,67 @@ class FakeStakeClient:
         }
 
 
+class FakeStakeClientWithSuspiciousOdds(FakeStakeClient):
+    async def get_odds(self, fixture_slug: str):
+        payload = await super().get_odds(fixture_slug)
+        if fixture_slug == "blue-jays-angels":
+            payload["swishMarkets"]["playerProps"].append(
+                {
+                    "competitorName": "Bo Bichette",
+                    "teamName": "Toronto Blue Jays",
+                    "marketName": "runs",
+                    "sportStatType": "player",
+                    "outcomes": [
+                        {
+                            "line": 0.5,
+                            "over": 2.3,
+                            "under": 0.9804882831650161,
+                        }
+                    ],
+                }
+            )
+        return payload
+
+
+class FakeStakeClientWithRunFlood(FakeStakeClient):
+    async def get_odds(self, fixture_slug: str):
+        payload = await super().get_odds(fixture_slug)
+        if fixture_slug == "blue-jays-angels":
+            payload["swishMarkets"]["playerProps"].extend(
+                [
+                    {
+                        "competitorName": "Bo Bichette",
+                        "teamName": "Toronto Blue Jays",
+                        "marketName": "runs",
+                        "sportStatType": "player",
+                        "outcomes": [{"line": 0.5, "over": 2.2, "under": 1.78}],
+                    },
+                    {
+                        "competitorName": "Anthony Santander",
+                        "teamName": "Toronto Blue Jays",
+                        "marketName": "runs",
+                        "sportStatType": "player",
+                        "outcomes": [{"line": 0.5, "over": 2.15, "under": 1.8}],
+                    },
+                    {
+                        "competitorName": "Luis Rengifo",
+                        "teamName": "Los Angeles Angels",
+                        "marketName": "runs",
+                        "sportStatType": "player",
+                        "outcomes": [{"line": 0.5, "over": 2.1, "under": 1.77}],
+                    },
+                    {
+                        "competitorName": "Nolan Schanuel",
+                        "teamName": "Los Angeles Angels",
+                        "marketName": "total-bases",
+                        "sportStatType": "player",
+                        "outcomes": [{"line": 1.5, "over": 2.05, "under": 1.85}],
+                    },
+                ]
+            )
+        return payload
+
+
 class FakeMLBEngine:
     async def search_players(self, query: str, limit: int = 10):
         players = {
@@ -172,6 +233,46 @@ class FakeMLBEngine:
                     "key": "houston-astros",
                 },
             },
+            "Bo Bichette": {
+                "mlbId": 666182,
+                "name": "Bo Bichette",
+                "key": "bo-bichette",
+                "team": {
+                    "mlbId": 141,
+                    "name": "Toronto Blue Jays",
+                    "key": "toronto-blue-jays",
+                },
+            },
+            "Anthony Santander": {
+                "mlbId": 623993,
+                "name": "Anthony Santander",
+                "key": "anthony-santander",
+                "team": {
+                    "mlbId": 141,
+                    "name": "Toronto Blue Jays",
+                    "key": "toronto-blue-jays",
+                },
+            },
+            "Luis Rengifo": {
+                "mlbId": 650859,
+                "name": "Luis Rengifo",
+                "key": "luis-rengifo",
+                "team": {
+                    "mlbId": 108,
+                    "name": "Los Angeles Angels",
+                    "key": "los-angeles-angels",
+                },
+            },
+            "Nolan Schanuel": {
+                "mlbId": 694384,
+                "name": "Nolan Schanuel",
+                "key": "nolan-schanuel",
+                "team": {
+                    "mlbId": 108,
+                    "name": "Los Angeles Angels",
+                    "key": "los-angeles-angels",
+                },
+            },
         }
         return {"query": query, "playerCount": 1, "players": [players[query]]}
 
@@ -230,6 +331,10 @@ class FakeMLBEngine:
             700712: {"strikeOuts": 22, "gamesStarted": 4},
             686799: {"strikeOuts": 24, "gamesStarted": 5},
             514888: {"hits": 22, "gamesPlayed": 20},
+            666182: {"runs": 3, "gamesPlayed": 20},
+            623993: {"runs": 2, "gamesPlayed": 20},
+            650859: {"runs": 4, "gamesPlayed": 20},
+            694384: {"totalBases": 8, "gamesPlayed": 20},
         }
         names = {
             543807: "George Springer",
@@ -238,6 +343,10 @@ class FakeMLBEngine:
             700712: "Walbert Urena",
             686799: "Jack Kochanowicz",
             514888: "Jose Altuve",
+            666182: "Bo Bichette",
+            623993: "Anthony Santander",
+            650859: "Luis Rengifo",
+            694384: "Nolan Schanuel",
         }
         return {
             "player": {
@@ -263,8 +372,19 @@ class FakeMLBEngine:
             700712: 4.2,
             686799: 4.8,
             514888: 1.2,
+            666182: 0.0,
+            623993: 0.0,
+            650859: 0.0,
+            694384: 0.0,
         }[player_id]
-        stat_key = "strikeOuts" if player_id in {700712, 686799} else "hits"
+        stat_key = {
+            700712: "strikeOuts",
+            686799: "strikeOuts",
+            666182: "runs",
+            623993: "runs",
+            650859: "runs",
+            694384: "totalBases",
+        }.get(player_id, "hits")
         return {
             "playerId": player_id,
             "group": group,
@@ -365,6 +485,89 @@ def test_build_matchup_picks_filters_pitcher_props_to_probable_pitchers():
     players = {pick["player"]["name"] for pick in result["recommendations"]}
     assert "Jack Kochanowicz" in players
     assert "Walbert Urena" not in players
+
+
+def test_build_matchup_picks_rejects_unplayable_feed_odds(monkeypatch):
+    monkeypatch.setenv("AZP_MIN_PLAYABLE_ODDS", "1.10")
+
+    result = asyncio.run(
+        build_matchup_picks(
+            stake_client=FakeStakeClientWithSuspiciousOdds(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="runs",
+            side="under",
+            legs=2,
+            mode="sgp",
+            season=2026,
+            history_limit=5,
+        )
+    )
+
+    assert result["recommendationCount"] == 0
+    assert result["recommendationDiagnostics"]["discardedInvalidOdds"] == 1
+    assert "Bo Bichette" not in {
+        pick["player"]["name"] for pick in result["recommendations"]
+    }
+    assert any("playable odds" in note for note in result["notes"])
+
+
+def test_build_matchup_picks_caps_repeated_markets_for_broad_queries(monkeypatch):
+    monkeypatch.setenv("AZP_MIN_PLAYABLE_ODDS", "1.10")
+    monkeypatch.setenv("AZP_MAX_RECOMMENDATIONS_PER_MARKET", "2")
+
+    result = asyncio.run(
+        build_matchup_picks(
+            stake_client=FakeStakeClientWithRunFlood(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets=None,
+            side="under",
+            legs=2,
+            mode="sgp",
+            season=2026,
+            history_limit=5,
+            recommendation_limit=10,
+        )
+    )
+
+    market_counts = result["recommendationDiagnostics"]["marketCounts"]
+    assert market_counts["runs"] == 2
+    assert result["recommendationDiagnostics"]["discardedByMarketDiversity"] == 1
+    assert any("Market diversity capped" in note for note in result["notes"])
+
+
+def test_build_matchup_picks_does_not_cap_explicit_single_market(monkeypatch):
+    monkeypatch.setenv("AZP_MIN_PLAYABLE_ODDS", "1.10")
+    monkeypatch.setenv("AZP_MAX_RECOMMENDATIONS_PER_MARKET", "2")
+
+    result = asyncio.run(
+        build_matchup_picks(
+            stake_client=FakeStakeClientWithRunFlood(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="runs",
+            side="under",
+            legs=2,
+            mode="sgp",
+            season=2026,
+            history_limit=5,
+            recommendation_limit=10,
+        )
+    )
+
+    market_counts = result["recommendationDiagnostics"]["marketCounts"]
+    assert market_counts["runs"] == 3
+    assert result["recommendationDiagnostics"]["discardedByMarketDiversity"] == 0
 
 
 def test_gpt_route_returns_only_stake_backed_picks():

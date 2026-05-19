@@ -128,6 +128,127 @@ class GptActionStore:
             conn.commit()
         return {"marketMappingsSaved": len(mappings), "capturedAt": now}
 
+    def create_slip_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(uuid.uuid4())
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO slip_jobs (
+                    job_id, created_at, updated_at, status, source, bridge_id,
+                    claimed_at, completed_at, matchup, slate_date, slip_type,
+                    mode, prompt, target_json, selections_json, request_json,
+                    result_json, message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    now,
+                    now,
+                    "pending",
+                    job.get("source") or "custom_gpt",
+                    None,
+                    None,
+                    None,
+                    job.get("matchup"),
+                    job.get("date"),
+                    job.get("slipType") or "review_slip",
+                    job.get("mode"),
+                    job.get("prompt"),
+                    _json_dumps(job.get("target") or {}),
+                    _json_dumps(job.get("selections") or []),
+                    _json_dumps(job.get("request") or job),
+                    _json_dumps({}),
+                    None,
+                ),
+            )
+            conn.commit()
+        created = self.get_slip_job(job_id)
+        if created is None:
+            raise RuntimeError("Slip job insert failed.")
+        return created
+
+    def get_slip_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM slip_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return _slip_job_row(row) if row else None
+
+    def claim_next_slip_job(self, bridge_id: str) -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM slip_jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = row["job_id"]
+            conn.execute(
+                """
+                UPDATE slip_jobs
+                SET status = 'claimed',
+                    bridge_id = ?,
+                    claimed_at = ?,
+                    updated_at = ?,
+                    message = ?
+                WHERE job_id = ?
+                """,
+                (
+                    bridge_id,
+                    now,
+                    now,
+                    f"Claimed by {bridge_id}",
+                    job_id,
+                ),
+            )
+            conn.commit()
+        return self.get_slip_job(job_id)
+
+    def update_slip_job_status(
+        self,
+        job_id: str,
+        status: str,
+        bridge_id: str | None = None,
+        message: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = _utc_now()
+        completed_at = now if status in {"built", "blocked", "failed", "cancelled"} else None
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE slip_jobs
+                SET status = ?,
+                    bridge_id = COALESCE(?, bridge_id),
+                    updated_at = ?,
+                    completed_at = COALESCE(?, completed_at),
+                    message = COALESCE(?, message),
+                    result_json = ?
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    bridge_id,
+                    now,
+                    completed_at,
+                    message,
+                    _json_dumps(result or {}),
+                    job_id,
+                ),
+            )
+            conn.commit()
+        updated = self.get_slip_job(job_id)
+        if updated is None:
+            raise KeyError(f"Slip job not found: {job_id}")
+        return updated
+
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(
@@ -186,6 +307,30 @@ class GptActionStore:
                     examples_json TEXT NOT NULL DEFAULT '[]',
                     PRIMARY KEY(sport, stake_display_name, internal_market_key)
                 );
+
+                CREATE TABLE IF NOT EXISTS slip_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    bridge_id TEXT,
+                    claimed_at TEXT,
+                    completed_at TEXT,
+                    matchup TEXT,
+                    slate_date TEXT,
+                    slip_type TEXT,
+                    mode TEXT,
+                    prompt TEXT,
+                    target_json TEXT NOT NULL DEFAULT '{}',
+                    selections_json TEXT NOT NULL DEFAULT '[]',
+                    request_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    message TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS slip_jobs_status_created_idx
+                    ON slip_jobs (status, created_at);
                 """
             )
             _ensure_column(conn, "gpt_decision_requests", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
@@ -196,6 +341,11 @@ class GptActionStore:
             _ensure_column(conn, "gpt_decision_legs", "settled_at", "TEXT")
             _ensure_column(conn, "gpt_decision_legs", "settlement_confidence", "REAL")
             _ensure_column(conn, "gpt_decision_legs", "settlement_source", "TEXT")
+            _ensure_column(conn, "slip_jobs", "bridge_id", "TEXT")
+            _ensure_column(conn, "slip_jobs", "claimed_at", "TEXT")
+            _ensure_column(conn, "slip_jobs", "completed_at", "TEXT")
+            _ensure_column(conn, "slip_jobs", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+            _ensure_column(conn, "slip_jobs", "message", "TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -281,6 +431,36 @@ def _leg_row(row: sqlite3.Row) -> dict[str, Any]:
             "settledAt": row["settled_at"],
             "confidence": row["settlement_confidence"],
             "source": row["settlement_source"],
+        },
+    }
+
+
+def _slip_job_row(row: sqlite3.Row) -> dict[str, Any]:
+    selections = _json_loads(row["selections_json"]) or []
+    return {
+        "jobId": row["job_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "status": row["status"],
+        "source": row["source"],
+        "bridgeId": row["bridge_id"],
+        "claimedAt": row["claimed_at"],
+        "completedAt": row["completed_at"],
+        "matchup": row["matchup"],
+        "date": row["slate_date"],
+        "slipType": row["slip_type"],
+        "mode": row["mode"],
+        "prompt": row["prompt"],
+        "target": _json_loads(row["target_json"]) or {},
+        "selections": selections,
+        "legCount": len(selections),
+        "request": _json_loads(row["request_json"]) or {},
+        "result": _json_loads(row["result_json"]) or {},
+        "message": row["message"],
+        "safety": {
+            "wagerAmountSupported": False,
+            "betSubmissionSupported": False,
+            "requiresManualReview": True,
         },
     }
 

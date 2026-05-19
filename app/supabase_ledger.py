@@ -66,6 +66,24 @@ async def sync_market_mappings_to_supabase(
     return {"synced": True, "marketMappings": result}
 
 
+async def sync_slip_job_to_supabase(job: dict[str, Any]) -> dict[str, Any]:
+    result = await _post_rows(
+        "slip_jobs",
+        [_slip_job_payload(job)],
+        on_conflict="job_id",
+    )
+    return {"synced": True, "slipJob": result}
+
+
+async def sync_slip_job_status_to_supabase(job: dict[str, Any]) -> dict[str, Any]:
+    result = await _post_rows(
+        "slip_jobs",
+        [_slip_job_payload(job)],
+        on_conflict="job_id",
+    )
+    return {"synced": True, "slipJob": result}
+
+
 async def _post_rows(
     table: str,
     rows: list[dict[str, Any]],
@@ -132,6 +150,29 @@ def _gpt_decision_payloads(
         for rank, selection in enumerate(response.get("selections") or [], start=1)
     ]
     return request_rows, leg_rows
+
+
+def _slip_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": job.get("jobId"),
+        "created_at": job.get("createdAt") or _utc_now(),
+        "updated_at": job.get("updatedAt") or _utc_now(),
+        "status": job.get("status"),
+        "source": job.get("source") or "custom_gpt",
+        "bridge_id": job.get("bridgeId"),
+        "claimed_at": job.get("claimedAt"),
+        "completed_at": job.get("completedAt"),
+        "matchup": job.get("matchup"),
+        "slate_date": job.get("date"),
+        "slip_type": job.get("slipType"),
+        "mode": job.get("mode"),
+        "prompt": job.get("prompt"),
+        "target_json": job.get("target") or {},
+        "selections_json": job.get("selections") or [],
+        "request_json": job.get("request") or {},
+        "result_json": job.get("result") or {},
+        "message": job.get("message"),
+    }
 
 
 def _gpt_decision_leg_payload(

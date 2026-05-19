@@ -111,4 +111,43 @@ create index if not exists gpt_decision_legs_market_idx
 create index if not exists market_mappings_active_idx
     on public.market_mappings (sport, active);
 
+create table if not exists public.slip_jobs (
+    job_id text primary key,
+    created_at timestamptz not null,
+    updated_at timestamptz not null,
+    status text not null,
+    source text not null default 'custom_gpt',
+    bridge_id text,
+    claimed_at timestamptz,
+    completed_at timestamptz,
+    matchup text,
+    slate_date date,
+    slip_type text,
+    mode text,
+    prompt text,
+    target_json jsonb not null default '{}'::jsonb,
+    selections_json jsonb not null default '[]'::jsonb,
+    request_json jsonb not null default '{}'::jsonb,
+    result_json jsonb not null default '{}'::jsonb,
+    message text
+);
+
+alter table public.slip_jobs
+    add column if not exists bridge_id text;
+
+alter table public.slip_jobs
+    add column if not exists claimed_at timestamptz;
+
+alter table public.slip_jobs
+    add column if not exists completed_at timestamptz;
+
+alter table public.slip_jobs
+    add column if not exists result_json jsonb not null default '{}'::jsonb;
+
+alter table public.slip_jobs
+    add column if not exists message text;
+
+create index if not exists slip_jobs_status_created_idx
+    on public.slip_jobs (status, created_at);
+
 notify pgrst, 'reload schema';

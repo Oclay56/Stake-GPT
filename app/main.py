@@ -34,12 +34,19 @@ from .gpt_action import (
 )
 from .mlb_data import MLBAPIError, MLBDataEngine, MLBStatsClient, build_mlb_http_client
 from .slate import DEFAULT_TIMEZONE
+from .slip_jobs import (
+    build_mlb_schedule_stake_map,
+    build_mlb_schedule_view,
+    normalize_slip_job_request,
+)
 from .stake_client import StakeAPIError, StakeClient, build_http_client
 from .storage import GptActionStore
 from .supabase_ledger import (
     supabase_ledger_enabled,
     sync_gpt_decision_to_supabase,
     sync_market_mappings_to_supabase,
+    sync_slip_job_status_to_supabase,
+    sync_slip_job_to_supabase,
 )
 
 
@@ -128,6 +135,38 @@ async def mlb_matchups(
     )
 
 
+@app.get("/mlb/schedule")
+async def mlb_schedule(
+    slate_date: date | None = Query(None, alias="date"),
+    _: None = Depends(require_gpt_api_key),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_data_sources(
+        build_mlb_schedule_view,
+        engine,
+        slate_date,
+        _timezone_name(),
+    )
+
+
+@app.get("/mlb/schedule/stake-map")
+async def mlb_schedule_stake_map(
+    slate_date: date | None = Query(None, alias="date"),
+    limit: int = Query(100, ge=1, le=100),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    return await _call_data_sources(
+        build_mlb_schedule_stake_map,
+        engine,
+        client,
+        slate_date,
+        _timezone_name(),
+        limit,
+    )
+
+
 @app.get("/mlb/matchup/{matchup}/markets")
 async def mlb_matchup_markets(
     matchup: str = Path(..., min_length=2),
@@ -168,6 +207,86 @@ async def mlb_matchup_props(
         side,
         line_mode,
     )
+
+
+@app.post("/slip-jobs")
+async def create_slip_job(
+    payload: dict[str, Any] = Body(...),
+    _: None = Depends(require_gpt_api_key),
+    store: GptActionStore = Depends(get_gpt_store),
+) -> Any:
+    try:
+        normalized = normalize_slip_job_request(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = store.create_slip_job(normalized)
+    response = {
+        **job,
+        "jobStore": {
+            "localSaved": True,
+            "supabaseSynced": False,
+        },
+    }
+    if supabase_ledger_enabled():
+        try:
+            supabase_result = await sync_slip_job_to_supabase(job)
+            response["jobStore"]["supabaseSynced"] = bool(supabase_result.get("synced"))
+        except Exception as exc:
+            response["jobStore"]["supabaseSynced"] = False
+            response["jobStore"]["supabaseWarning"] = str(exc)
+    return response
+
+
+@app.get("/slip-jobs/next")
+async def next_slip_job(
+    bridge_id: str = Query(..., alias="bridgeId", min_length=2),
+    _: None = Depends(require_gpt_api_key),
+    store: GptActionStore = Depends(get_gpt_store),
+) -> Any:
+    job = store.claim_next_slip_job(bridge_id)
+    return {
+        "job": job,
+        "pollAfterSeconds": int(os.getenv("AZP_BRIDGE_POLL_SECONDS", "10")),
+    }
+
+
+@app.get("/slip-jobs/{jobId}")
+async def get_slip_job_status(
+    job_id: str = Path(..., alias="jobId", min_length=2),
+    _: None = Depends(require_gpt_api_key),
+    store: GptActionStore = Depends(get_gpt_store),
+) -> Any:
+    job = store.get_slip_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Slip job not found.")
+    return job
+
+
+@app.post("/slip-jobs/{jobId}/status")
+async def update_slip_job_status(
+    payload: dict[str, Any] = Body(...),
+    job_id: str = Path(..., alias="jobId", min_length=2),
+    _: None = Depends(require_gpt_api_key),
+    store: GptActionStore = Depends(get_gpt_store),
+) -> Any:
+    status = _required_body_text(payload, "status")
+    try:
+        job = store.update_slip_job_status(
+            job_id=job_id,
+            status=status,
+            bridge_id=payload.get("bridgeId") or payload.get("bridge_id"),
+            message=payload.get("message"),
+            result=payload.get("result") if isinstance(payload.get("result"), dict) else {},
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if supabase_ledger_enabled():
+        try:
+            supabase_result = await sync_slip_job_status_to_supabase(job)
+            job["jobStore"] = {"supabaseSynced": bool(supabase_result.get("synced"))}
+        except Exception as exc:
+            job["jobStore"] = {"supabaseSynced": False, "supabaseWarning": str(exc)}
+    return job
 
 
 @app.get("/mlb/matchup/{matchup}/board-summary")

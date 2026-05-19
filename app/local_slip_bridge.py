@@ -6,15 +6,18 @@ import os
 import socket
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
+
+from .stake_ui_builder import StakeUiBuildConfig, build_stake_ui_slip
 
 
 DEFAULT_RENDER_API_URL = "https://azp-gpt-action.onrender.com"
 DEFAULT_STAKE_URL = "https://stake.com/sports/baseball"
+UiRunner = Callable[[dict[str, Any], StakeUiBuildConfig], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,7 @@ class LocalBridgeConfig:
     poll_seconds: float = 10.0
     stake_url: str = DEFAULT_STAKE_URL
     open_browser: bool = False
+    ui_mode: str = "dry_run"
 
     @classmethod
     def from_env(cls) -> "LocalBridgeConfig":
@@ -40,6 +44,7 @@ class LocalBridgeConfig:
             poll_seconds=_float_env("AZP_BRIDGE_POLL_SECONDS", 10.0),
             stake_url=os.getenv("AZP_BRIDGE_STAKE_URL") or DEFAULT_STAKE_URL,
             open_browser=_truthy(os.getenv("AZP_BRIDGE_OPEN_BROWSER")),
+            ui_mode=_clean_ui_mode(os.getenv("AZP_BRIDGE_UI_MODE") or "dry_run"),
         )
 
 
@@ -89,33 +94,49 @@ class SlipJobApiClient:
         return {"X-AZP-API-Key": self._config.api_key}
 
 
-async def run_once(config: LocalBridgeConfig) -> dict[str, Any]:
-    async with httpx.AsyncClient(base_url=config.api_url, timeout=30) as http_client:
-        api_client = SlipJobApiClient(http_client=http_client, config=config)
-        job = await api_client.claim_next_job()
-        if not job:
-            return {"status": "idle", "message": "No pending slip jobs."}
+async def run_once(
+    config: LocalBridgeConfig,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+    ui_runner: UiRunner | None = None,
+) -> dict[str, Any]:
+    if http_client is not None:
+        return await _run_once_with_client(config, http_client, ui_runner=ui_runner)
 
-        print(format_job_summary(job))
-        if config.open_browser:
-            webbrowser.open(config.stake_url)
+    async with httpx.AsyncClient(base_url=config.api_url, timeout=30) as owned_client:
+        return await _run_once_with_client(config, owned_client, ui_runner=ui_runner)
 
-        result = build_dry_run_result(job)
-        updated = await api_client.update_job_status(
-            job["jobId"],
-            "dry_run_ready",
-            message=(
-                "Local bridge dry-run created. Stake UI click automation is not "
-                "enabled in this safe first pass."
-            ),
-            result=result,
-        )
-        return {"status": "processed", "job": updated}
+
+async def _run_once_with_client(
+    config: LocalBridgeConfig,
+    http_client: httpx.AsyncClient,
+    *,
+    ui_runner: UiRunner | None = None,
+) -> dict[str, Any]:
+    api_client = SlipJobApiClient(http_client=http_client, config=config)
+    job = await api_client.claim_next_job()
+    if not job:
+        return {"status": "idle", "message": "No pending slip jobs."}
+
+    print(format_job_summary(job))
+    if config.open_browser and config.ui_mode == "dry_run":
+        webbrowser.open(config.stake_url)
+
+    result = await _build_ui_result(job, config, ui_runner=ui_runner)
+    next_status = _status_from_ui_result(result)
+    updated = await api_client.update_job_status(
+        job["jobId"],
+        next_status,
+        message=result.get("message"),
+        result=result,
+    )
+    return {"status": "processed", "job": updated}
 
 
 async def watch(config: LocalBridgeConfig) -> None:
     print(f"AZP Local Bridge watching {config.api_url}")
     print(f"Bridge ID: {config.bridge_id}")
+    print(f"UI mode: {config.ui_mode}")
     print("Close this window to stop the bridge.")
     while True:
         try:
@@ -201,6 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bridge-id", help="Stable local bridge identifier.")
     parser.add_argument("--poll-seconds", type=float, help="Polling interval for watch mode.")
     parser.add_argument("--open-browser", action="store_true", help="Open Stake when a job is claimed.")
+    parser.add_argument(
+        "--ui-mode",
+        choices=["dry_run", "dry-run", "audit", "click"],
+        help="dry_run prints only, audit verifies visible UI, click selects exact matched legs.",
+    )
     args = parser.parse_args(argv)
 
     base = LocalBridgeConfig.from_env()
@@ -211,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         poll_seconds=args.poll_seconds or base.poll_seconds,
         stake_url=base.stake_url,
         open_browser=args.open_browser or base.open_browser,
+        ui_mode=_clean_ui_mode(args.ui_mode or base.ui_mode),
     )
 
     if args.command == "once":
@@ -235,6 +262,37 @@ def _truthy(value: str | None) -> bool:
 
 def _clock() -> str:
     return time.strftime("%H:%M:%S")
+
+
+async def _build_ui_result(
+    job: dict[str, Any],
+    config: LocalBridgeConfig,
+    *,
+    ui_runner: UiRunner | None = None,
+) -> dict[str, Any]:
+    ui_config = replace(
+        StakeUiBuildConfig.from_env(),
+        stake_url=config.stake_url,
+        mode=config.ui_mode,
+    )
+    runner = ui_runner or build_stake_ui_slip
+    return await runner(job, ui_config)
+
+
+def _status_from_ui_result(result: dict[str, Any]) -> str:
+    mode = result.get("mode")
+    if result.get("blocked", 0):
+        return "blocked"
+    if mode == "click" and result.get("clicked", 0):
+        return "built"
+    if mode == "audit":
+        return "ui_audit_ready"
+    return "dry_run_ready"
+
+
+def _clean_ui_mode(value: str | None) -> str:
+    mode = str(value or "dry_run").strip().lower().replace("-", "_")
+    return mode if mode in {"dry_run", "audit", "click"} else "dry_run"
 
 
 if __name__ == "__main__":

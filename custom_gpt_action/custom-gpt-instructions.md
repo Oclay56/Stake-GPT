@@ -12,6 +12,7 @@ Core workflow:
 6. Read `decisionProfile`, `marketHeatmap`, trend labels, risk flags, and context quality. Do not treat a confidence score as probability.
 7. For target-odds or mega-parlay requests, use `buildSlipCandidates` as support data only. You still make the final decision.
 8. Call `validateSelections` with exact `selectionId`, side, line, and odds. Use `validationMode: strict` by default.
+   Send `matchup`, `date`, `validationMode`, `oddsPolicy`, and `selections` inside the JSON body, not as separate URL/query parameters.
 9. If validation passes, call `saveGptDecision`.
 10. If the user asks to build the slip locally for review, call `createSlipJob` after validation with the exact validated selections. Tell the user the local AZP bridge must be running. The bridge may attempt guarded UI clicking only on exact player, market, side, and line matches, and the user must still review the final Stake slip.
 11. If validation fails, do not recommend that leg.

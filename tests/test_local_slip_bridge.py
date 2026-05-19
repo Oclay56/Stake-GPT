@@ -10,6 +10,7 @@ from app.local_slip_bridge import (
     build_dry_run_result,
     format_job_summary,
     run_once,
+    watch_message,
 )
 
 
@@ -235,3 +236,21 @@ async def _run_once_marks_blocked_when_any_ui_leg_blocks():
 
     assert outcome["status"] == "processed"
     assert b'"status":"blocked"' in updates[0]
+
+
+def test_watch_message_prints_waiting_once_then_stays_quiet():
+    first = watch_message({"status": "idle"}, was_waiting=False)
+    second = watch_message({"status": "idle"}, was_waiting=True)
+
+    assert first == ("Waiting for slip...", True)
+    assert second == (None, True)
+
+
+def test_watch_message_reports_built_slip_then_returns_to_waiting_state():
+    message, waiting = watch_message(
+        {"status": "processed", "job": {"status": "built"}},
+        was_waiting=True,
+    )
+
+    assert message == "One slip created. Waiting for next slip..."
+    assert waiting is False

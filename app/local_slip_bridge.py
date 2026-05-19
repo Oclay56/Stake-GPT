@@ -138,14 +138,15 @@ async def watch(config: LocalBridgeConfig) -> None:
     print(f"Bridge ID: {config.bridge_id}")
     print(f"UI mode: {config.ui_mode}")
     print("Close this window to stop the bridge.")
+    was_waiting = False
     while True:
         try:
             outcome = await run_once(config)
-            if outcome["status"] == "idle":
-                print(f"[{_clock()}] No pending slip jobs.")
-            else:
-                print(f"[{_clock()}] Processed slip job.")
+            message, was_waiting = watch_message(outcome, was_waiting=was_waiting)
+            if message:
+                print(f"[{_clock()}] {message}")
         except Exception as exc:
+            was_waiting = False
             print(f"[{_clock()}] Bridge error: {exc}")
         await asyncio.sleep(max(2.0, config.poll_seconds))
 
@@ -262,6 +263,26 @@ def _truthy(value: str | None) -> bool:
 
 def _clock() -> str:
     return time.strftime("%H:%M:%S")
+
+
+def watch_message(
+    outcome: dict[str, Any],
+    *,
+    was_waiting: bool,
+) -> tuple[str | None, bool]:
+    if outcome.get("status") == "idle":
+        if was_waiting:
+            return None, True
+        return "Waiting for slip...", True
+
+    job_status = ((outcome.get("job") or {}).get("status") or "").strip().lower()
+    if job_status == "built":
+        return "One slip created. Waiting for next slip...", False
+    if job_status == "blocked":
+        return "Slip blocked. Waiting for next slip...", False
+    if job_status == "failed":
+        return "Slip failed. Waiting for next slip...", False
+    return "Slip job processed. Waiting for next slip...", False
 
 
 async def _build_ui_result(

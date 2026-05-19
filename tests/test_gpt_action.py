@@ -267,6 +267,27 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert "/gpt/mlb/matchup-picks" not in schema["paths"]
 
 
+def test_validate_selections_schema_requires_json_body():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+    operation = schema["paths"]["/mlb/validate-selections"]["post"]
+    body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+
+    assert body_schema["required"] == ["matchup", "selections"]
+    assert "validationMode" in body_schema["properties"]
+    assert "oddsPolicy" in body_schema["properties"]
+    assert "selections" in body_schema["properties"]
+
+
+def test_save_gpt_decision_schema_preserves_prompt_fields():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+    operation = schema["paths"]["/mlb/save-gpt-decision"]["post"]
+    body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+
+    assert "prompt" in body_schema["properties"]
+    assert "reasoning" in body_schema["properties"]
+    assert "riskFlags" in body_schema["properties"]
+
+
 def test_gpt_api_key_is_optional_until_env_var_is_set(monkeypatch):
     monkeypatch.delenv("AZP_GPT_API_KEY", raising=False)
     assert require_gpt_api_key_value(None) is None

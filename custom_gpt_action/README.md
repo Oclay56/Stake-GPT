@@ -92,14 +92,14 @@ Stop it with:
 Stop-AZP-Local-Bridge.bat
 ```
 
-The first pass is intentionally safe:
+The bridge is intentionally guarded:
 
 - it watches Render/Supabase-backed slip-job endpoints
 - it claims pending jobs
-- it can open Stake in your normal browser flow
-- it reports a dry-run result back to the backend
+- it can audit or click exact visible Stake legs when configured
+- it blocks ambiguous or missing UI matches instead of guessing
+- it reports the bridge result back to the backend
 - it does not enter wager amount
 - it does not submit bets
-- it does not click Stake legs until UI selectors are calibrated in a later pass
 
 For the AI-to-local handoff to work, the bridge must be running before or after the GPT creates the job. If it is off, pending jobs wait until the bridge starts.

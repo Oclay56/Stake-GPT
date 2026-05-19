@@ -2448,6 +2448,24 @@ def _selection_request_body(include_prompt: bool = False) -> dict[str, Any]:
             },
         },
     }
+    required = ["matchup", "selections"]
+    if include_prompt:
+        properties["prompt"] = {"type": "string"}
+        properties["reasoning"] = {"type": "array", "items": {"type": "string"}}
+        properties["riskFlags"] = {"type": "array", "items": {"type": "string"}}
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
 
 
 def _slip_job_request_body() -> dict[str, Any]:
@@ -2485,24 +2503,6 @@ def _slip_job_request_body() -> dict[str, Any]:
                         },
                     },
                     "required": ["selections"],
-                    "additionalProperties": True,
-                }
-            }
-        },
-    }
-    required = ["matchup", "selections"]
-    if include_prompt:
-        properties["prompt"] = {"type": "string"}
-        properties["reasoning"] = {"type": "array", "items": {"type": "string"}}
-        properties["riskFlags"] = {"type": "array", "items": {"type": "string"}}
-    return {
-        "required": True,
-        "content": {
-            "application/json": {
-                "schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
                     "additionalProperties": True,
                 }
             }

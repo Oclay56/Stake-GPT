@@ -435,9 +435,42 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
         )
         page.wait_for_timeout(1_000)
         result["postClick"] = _read_bet_slip_state(page)
+        if result.get("status") == "clicked" and result["postClick"].get("rightPanelEmpty"):
+            fallback = _click_custom_bet_sticky_add(page)
+            fallback["initialAddBetClick"] = result
+            return fallback
         return result
     except Exception as exc:
         return {"status": "not_clicked", "reason": str(exc)}
+
+
+def _click_custom_bet_sticky_add(page: Any) -> dict[str, Any]:
+    try:
+        button = page.locator("#custom-bet-sticky-add")
+        if not button.count():
+            return {"status": "not_clicked", "reason": "custom_bet_sticky_add_not_found"}
+        button.first.scroll_into_view_if_needed(timeout=3_000)
+        button.first.click(timeout=5_000)
+        post_click: dict[str, Any] = {}
+        for _ in range(16):
+            page.wait_for_timeout(250)
+            post_click = _read_bet_slip_state(page)
+            if post_click and not post_click.get("rightPanelEmpty", True):
+                return {
+                    "status": "clicked",
+                    "clickedText": "custom-bet-sticky-add",
+                    "clickedBy": "playwright_locator",
+                    "postClick": post_click,
+                }
+        return {
+            "status": "not_clicked",
+            "reason": "custom_bet_sticky_add_did_not_update_bet_slip",
+            "clickedText": "custom-bet-sticky-add",
+            "clickedBy": "playwright_locator",
+            "postClick": post_click,
+        }
+    except Exception as exc:
+        return {"status": "not_clicked", "reason": f"custom_bet_sticky_add_click_failed: {exc}"}
 
 
 def _read_bet_slip_state(page: Any) -> dict[str, Any]:
@@ -447,6 +480,8 @@ def _read_bet_slip_state(page: Any) -> dict[str, Any]:
                 """
                 () => {
                   const norm = (value) => String(value || "")
+                    .normalize("NFD")
+                    .replace(/[\\u0300-\\u036f]/g, "")
                     .toLowerCase()
                     .replace(/\\s+/g, " ")
                     .trim();
@@ -459,21 +494,29 @@ def _read_bet_slip_state(page: Any) -> dict[str, Any]:
                       && rect.width > 0
                       && rect.height > 0;
                   };
-                  const rightPanel = Array.from(document.querySelectorAll("aside,[role='complementary'],body *"))
+                  const emptyPhrases = [
+                    "bet slip is empty",
+                    "betting slip is empty",
+                    "wettschein ist leer",
+                  ];
+                  const hasEmptyPhrase = (text) => emptyPhrases.some((phrase) => text.includes(phrase));
+                  const rightPanel = document.querySelector("#right-sidebar") || Array.from(document.querySelectorAll("aside,[role='complementary'],body *"))
                     .filter(visible)
                     .find((el) => {
                       const rect = el.getBoundingClientRect();
                       const text = norm(el.innerText || el.textContent || "");
                       return rect.width >= 220
                         && rect.x > window.innerWidth * 0.55
-                        && text.includes("bet slip");
+                        && (text.includes("bet slip") || text.includes("betting slip") || text.includes("wettschein"));
                     });
                   const panelText = rightPanel ? norm(rightPanel.innerText || rightPanel.textContent || "") : "";
                   return {
-                    betSlipEmpty: bodyText.includes("bet slip is empty"),
-                    rightPanelEmpty: panelText.includes("bet slip is empty"),
-                    rightPanelHasTotalStake: panelText.includes("total stake"),
-                    rightPanelHasPlaceBet: panelText.includes("place bet"),
+                    betSlipEmpty: hasEmptyPhrase(bodyText),
+                    rightPanelFound: Boolean(rightPanel),
+                    rightPanelEmpty: rightPanel ? hasEmptyPhrase(panelText) : true,
+                    rightPanelHasTotalStake: panelText.includes("total stake") || panelText.includes("total deployment"),
+                    rightPanelHasPlaceBet: panelText.includes("place bet") || panelText.includes("placing bets"),
+                    rightPanelTextSample: panelText.slice(0, 260),
                   };
                 }
                 """

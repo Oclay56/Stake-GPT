@@ -116,6 +116,45 @@ class SupabaseLocalUiJobStore:
             raise LocalUiBridgeError(f"Local UI job was not found: {job_id}")
         return _row_to_job(rows[0])
 
+    async def find_recent_completed_job(
+        self,
+        *,
+        job_type: str,
+        fixture_slug: str,
+        max_age_seconds: int,
+        limit: int = 20,
+    ) -> dict[str, Any] | None:
+        self._require_enabled()
+        if max_age_seconds <= 0 or not fixture_slug:
+            return None
+
+        rows = await self._request(
+            "GET",
+            self._table_url(),
+            params={
+                "select": "*",
+                "job_type": f"eq.{job_type}",
+                "status": "eq.completed",
+                "order": "updated_at.desc",
+                "limit": str(max(limit, 1)),
+            },
+        )
+        now = datetime.now(timezone.utc)
+        for row in rows or []:
+            request = row.get("request_json") or {}
+            if str(request.get("fixtureSlug") or "") != fixture_slug:
+                continue
+
+            updated_at = _parse_utc_datetime(
+                row.get("completed_at") or row.get("updated_at") or row.get("created_at")
+            )
+            if not updated_at:
+                continue
+            age_seconds = (now - updated_at).total_seconds()
+            if age_seconds <= max_age_seconds:
+                return _row_to_job(row)
+        return None
+
     async def claim_next_pending_job(
         self,
         *,
@@ -268,3 +307,15 @@ def _row_to_job(row: dict[str, Any]) -> dict[str, Any]:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_utc_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)

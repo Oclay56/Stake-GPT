@@ -51,9 +51,20 @@ class FakeSlugNameStakeClient:
 class FakeCompletedUiJobStore:
     def __init__(self) -> None:
         self.created_jobs: list[dict] = []
+        self.cached_job: dict | None = None
 
     def enabled(self) -> bool:
         return True
+
+    async def find_recent_completed_job(
+        self,
+        *,
+        job_type: str,
+        fixture_slug: str,
+        max_age_seconds: int,
+        limit: int = 20,
+    ):
+        return self.cached_job
 
     async def create_job(self, *, job_type: str, request: dict, timeout_seconds: int):
         job = {
@@ -204,6 +215,51 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
     assert len(body["uiBoard"]["rows"]) == 6
     assert created_request["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert created_request["matchup"] == "Braves vs Marlins"
+    assert body["bridge"]["cacheHit"] is False
+
+
+def test_stake_ui_sgm_board_route_reuses_fresh_completed_ui_job(fake_ui_store):
+    fake_ui_store.cached_job = {
+        "jobId": "job-cached",
+        "status": "completed",
+        "workerId": "azp-local-test",
+        "result": {
+            "source": "stake_ui_sgm",
+            "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
+            "counts": {"playerPropsPlayable": 1},
+            "playerProps": [
+                {
+                    "team": "Atlanta Braves",
+                    "player": "Ronald Acuna Jr.",
+                    "market": "Hits",
+                    "line": 0.5,
+                    "under": 2.1,
+                    "over": 1.62,
+                    "playable": True,
+                }
+            ],
+            "teamMarkets": [],
+        },
+        "error": None,
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/sgm-board",
+            json={
+                "matchup": "Braves vs Marlins",
+                "date": "2026-05-19",
+                "timeoutSeconds": 2,
+            },
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["bridge"]["jobId"] == "job-cached"
+    assert body["bridge"]["cacheHit"] is True
+    assert body["uiBoard"]["returnedRows"] == 2
+    assert fake_ui_store.created_jobs == []
 
 
 def test_stake_ui_review_slip_route_creates_build_job_with_review_only_guardrails():

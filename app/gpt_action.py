@@ -2464,7 +2464,16 @@ def _stake_ui_sgm_request_body() -> dict[str, Any]:
                             "type": "boolean",
                             "description": "When true, returns only rows Stake marks playable in the UI-backed SGM data.",
                         },
-                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 45},
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 90},
+                        "maxCacheAgeSeconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 600,
+                            "description": (
+                                "Reuse a recent completed local UI board for this fixture when available. "
+                                "Use 0 to force a fresh local read."
+                            ),
+                        },
                     },
                     "required": ["matchup"],
                     "additionalProperties": True,

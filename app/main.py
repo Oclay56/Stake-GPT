@@ -377,9 +377,16 @@ async def mlb_stake_ui_sgm_board(
     timeout_seconds = _clean_int_from_body(
         payload,
         "timeoutSeconds",
-        25,
+        45,
         minimum=1,
-        maximum=45,
+        maximum=90,
+    )
+    max_cache_age_seconds = _clean_int_from_body(
+        payload,
+        "maxCacheAgeSeconds",
+        180,
+        minimum=0,
+        maximum=600,
     )
     fixture_slug = str(payload.get("fixtureSlug") or "").strip()
     if not fixture_slug:
@@ -390,6 +397,25 @@ async def mlb_stake_ui_sgm_board(
             limit=limit,
         )
 
+    cached = await job_store.find_recent_completed_job(
+        job_type=STAKE_SGM_JOB_TYPE,
+        fixture_slug=fixture_slug,
+        max_age_seconds=max_cache_age_seconds,
+    )
+    if cached and cached.get("result"):
+        return _stake_ui_sgm_board_response(
+            matchup=matchup,
+            slate_date=slate_date,
+            fixture_slug=fixture_slug,
+            completed=cached,
+            limit=limit,
+            side=side,
+            market=market,
+            scope=scope,
+            playable_only=playable_only,
+            cache_hit=True,
+        )
+
     request = {
         "matchup": matchup,
         "fixtureSlug": fixture_slug,
@@ -397,6 +423,7 @@ async def mlb_stake_ui_sgm_board(
         "requestedBy": "custom_gpt",
         "purpose": "stake_ui_sgm_truth_board",
     }
+    job: dict[str, Any] | None = None
     try:
         job = await job_store.create_job(
             job_type=STAKE_SGM_JOB_TYPE,
@@ -420,6 +447,7 @@ async def mlb_stake_ui_sgm_board(
                 "message": str(exc),
                 "fixtureSlug": fixture_slug,
                 "matchup": matchup,
+                "jobId": (job or {}).get("jobId"),
             },
         ) from exc
     except LocalUiBridgeError as exc:
@@ -439,29 +467,18 @@ async def mlb_stake_ui_sgm_board(
             },
         )
 
-    return {
-        "decisionOwner": "custom_gpt",
-        "source": "stake_ui_sgm_via_local_helper",
-        "purpose": "stake_ui_truth_board",
-        "matchup": matchup,
-        "date": slate_date.isoformat() if slate_date else None,
-        "fixtureSlug": fixture_slug,
-        "bridge": {
-            "jobId": completed.get("jobId"),
-            "status": completed.get("status"),
-            "workerId": completed.get("workerId"),
-            "createdAt": completed.get("createdAt"),
-            "completedAt": completed.get("completedAt"),
-        },
-        "uiBoard": _compact_stake_ui_sgm_board(
-            completed.get("result") or {},
-            limit=limit,
-            side=side,
-            market=market,
-            scope=scope,
-            playable_only=playable_only,
-        ),
-    }
+    return _stake_ui_sgm_board_response(
+        matchup=matchup,
+        slate_date=slate_date,
+        fixture_slug=fixture_slug,
+        completed=completed,
+        limit=limit,
+        side=side,
+        market=market,
+        scope=scope,
+        playable_only=playable_only,
+        cache_hit=False,
+    )
 
 
 @app.post("/mlb/stake-ui/review-slip")
@@ -527,6 +544,7 @@ async def mlb_stake_ui_review_slip(
         "selections": selections,
     }
 
+    job: dict[str, Any] | None = None
     try:
         job = await job_store.create_job(
             job_type=STAKE_SGM_BUILD_SLIP_JOB_TYPE,
@@ -550,6 +568,7 @@ async def mlb_stake_ui_review_slip(
                 "message": str(exc),
                 "fixtureSlug": fixture_slug,
                 "matchup": matchup,
+                "jobId": (job or {}).get("jobId"),
             },
         ) from exc
     except LocalUiBridgeError as exc:
@@ -1068,6 +1087,46 @@ def _compact_review_slip_result(result: dict[str, Any]) -> dict[str, Any]:
             "clickedPlaceBet": False,
             **(result.get("safety") or {}),
         },
+    }
+
+
+def _stake_ui_sgm_board_response(
+    *,
+    matchup: str,
+    slate_date: date | None,
+    fixture_slug: str,
+    completed: dict[str, Any],
+    limit: int,
+    side: str,
+    market: str,
+    scope: str,
+    playable_only: bool,
+    cache_hit: bool,
+) -> dict[str, Any]:
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_ui_sgm_via_local_helper",
+        "purpose": "stake_ui_truth_board",
+        "matchup": matchup,
+        "date": slate_date.isoformat() if slate_date else None,
+        "fixtureSlug": fixture_slug,
+        "bridge": {
+            "jobId": completed.get("jobId"),
+            "status": completed.get("status"),
+            "workerId": completed.get("workerId"),
+            "createdAt": completed.get("createdAt"),
+            "completedAt": completed.get("completedAt"),
+            "updatedAt": completed.get("updatedAt"),
+            "cacheHit": cache_hit,
+        },
+        "uiBoard": _compact_stake_ui_sgm_board(
+            completed.get("result") or {},
+            limit=limit,
+            side=side,
+            market=market,
+            scope=scope,
+            playable_only=playable_only,
+        ),
     }
 
 

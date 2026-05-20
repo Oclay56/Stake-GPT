@@ -9,7 +9,11 @@ from typing import Any
 import httpx
 
 
-STAKE_SGM_JOB_TYPE = "stake_ui_sgm_board"
+STAKE_SGM_BOARD_JOB_TYPE = "stake_ui_sgm_board"
+STAKE_SGM_BUILD_SLIP_JOB_TYPE = "stake_ui_sgm_build_slip"
+
+# Backward-compatible name used by the first local helper implementation.
+STAKE_SGM_JOB_TYPE = STAKE_SGM_BOARD_JOB_TYPE
 
 
 class LocalUiBridgeError(RuntimeError):

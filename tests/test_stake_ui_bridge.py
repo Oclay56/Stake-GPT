@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.gpt_action import build_gpt_action_openapi_schema
 from app.main import app, get_local_ui_job_store, get_stake_client
-from app.stake_sgm_browser import normalize_sgm_response
+from app.stake_sgm_browser import match_sgm_review_selections, normalize_sgm_response
 
 
 class FakeStakeClient:
@@ -98,6 +98,53 @@ class FakeCompletedUiJobStore:
         }
 
 
+class FakeCompletedBuildJobStore(FakeCompletedUiJobStore):
+    async def wait_for_completed_result(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: int,
+        poll_interval_seconds: float = 1.0,
+    ):
+        assert job_id == "job-123"
+        return {
+            "jobId": job_id,
+            "status": "completed",
+            "workerId": "azp-local-test",
+            "result": {
+                "source": "stake_ui_sgm_build_slip",
+                "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
+                "status": "built_for_review",
+                "reviewOnly": True,
+                "clickedLegs": 2,
+                "selectedRows": [
+                    {
+                        "player": "Ronald Acuna Jr.",
+                        "team": "Atlanta Braves",
+                        "market": "Hits",
+                        "side": "under",
+                        "line": 0.5,
+                        "odds": 2.1,
+                    },
+                    {
+                        "player": "Ozzie Albies",
+                        "team": "Atlanta Braves",
+                        "market": "Total Bases",
+                        "side": "under",
+                        "line": 1.5,
+                        "odds": 1.8,
+                    },
+                ],
+                "missingSelections": [],
+                "safety": {
+                    "enteredStakeAmount": False,
+                    "clickedPlaceBet": False,
+                },
+            },
+            "error": None,
+        }
+
+
 @pytest.fixture
 def fake_ui_store():
     return FakeCompletedUiJobStore()
@@ -118,6 +165,17 @@ def test_gpt_schema_exposes_stake_ui_sgm_board_action():
 
     assert operation["operationId"] == "getStakeUiSgmBoard"
     assert "Stake UI" in operation["summary"]
+
+
+def test_gpt_schema_exposes_review_slip_build_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    operation = schema["paths"]["/mlb/stake-ui/review-slip"]["post"]
+
+    assert operation["operationId"] == "buildStakeUiReviewSlip"
+    assert "review" in operation["summary"].lower()
+    properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert properties["reviewOnly"]["const"] is True
 
 
 def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_ui_store):
@@ -146,6 +204,74 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
     assert len(body["uiBoard"]["rows"]) == 6
     assert created_request["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert created_request["matchup"] == "Braves vs Marlins"
+
+
+def test_stake_ui_review_slip_route_creates_build_job_with_review_only_guardrails():
+    fake_store = FakeCompletedBuildJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip",
+            json={
+                "matchup": "Braves vs Marlins",
+                "date": "2026-05-19",
+                "timeoutSeconds": 2,
+                "reviewOnly": True,
+                "selections": [
+                    {
+                        "player": "Ronald Acuna Jr.",
+                        "team": "Atlanta Braves",
+                        "market": "Hits",
+                        "side": "under",
+                        "line": 0.5,
+                        "odds": 2.1,
+                    },
+                    {
+                        "player": "Ozzie Albies",
+                        "team": "Atlanta Braves",
+                        "market": "Total Bases",
+                        "side": "under",
+                        "line": 1.5,
+                        "odds": 1.8,
+                    },
+                ],
+            },
+        )
+
+    body = response.json()
+    created_request = fake_store.created_jobs[0]["request"]
+
+    assert response.status_code == 200
+    assert body["source"] == "stake_ui_sgm_review_slip_via_local_helper"
+    assert body["result"]["status"] == "built_for_review"
+    assert body["result"]["safety"]["clickedPlaceBet"] is False
+    assert created_request["reviewOnly"] is True
+    assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
+    assert len(created_request["selections"]) == 2
+
+
+def test_stake_ui_review_slip_route_rejects_missing_exact_selection_fields():
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip",
+            json={
+                "matchup": "Braves vs Marlins",
+                "date": "2026-05-19",
+                "reviewOnly": True,
+                "selections": [
+                    {
+                        "player": "Ronald Acuna Jr.",
+                        "market": "Hits",
+                        "side": "under",
+                        "line": 0.5,
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "odds" in response.json()["detail"]
 
 
 def test_stake_ui_sgm_board_route_returns_compact_limited_under_rows(fake_ui_store):
@@ -260,3 +386,57 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
     assert board["playerProps"][0]["player"] == "Ronald Acuna Jr."
     assert board["playerProps"][0]["playable"] is True
     assert board["playerProps"][1]["playable"] is False
+
+
+def test_match_sgm_review_selections_requires_exact_playable_ui_rows():
+    board = {
+        "playerProps": [
+            {
+                "team": "Atlanta Braves",
+                "player": "Ronald Acuna Jr.",
+                "market": "Hits",
+                "line": 0.5,
+                "under": 2.1,
+                "over": 1.62,
+                "playable": True,
+                "lineId": "line-1",
+            },
+            {
+                "team": "Atlanta Braves",
+                "player": "Ozzie Albies",
+                "market": "Hits",
+                "line": 1.5,
+                "under": 1.4,
+                "over": 2.8,
+                "playable": False,
+                "lineId": "line-2",
+            },
+        ],
+        "teamMarkets": [],
+    }
+
+    result = match_sgm_review_selections(
+        board,
+        [
+            {
+                "player": "Ronald Acuna Jr.",
+                "team": "Atlanta Braves",
+                "market": "Hits",
+                "side": "under",
+                "line": 0.5,
+                "odds": 2.1,
+            },
+            {
+                "player": "Ozzie Albies",
+                "team": "Atlanta Braves",
+                "market": "Hits",
+                "side": "under",
+                "line": 1.5,
+                "odds": 1.4,
+            },
+        ],
+    )
+
+    assert len(result["matchedRows"]) == 1
+    assert result["matchedRows"][0]["lineId"] == "line-1"
+    assert result["missingSelections"][0]["reason"] == "no exact playable UI row matched"

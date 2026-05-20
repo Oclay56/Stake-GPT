@@ -9,8 +9,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .local_ui_bridge import STAKE_SGM_JOB_TYPE, SupabaseLocalUiJobStore
-from .stake_sgm_browser import DEFAULT_CDP_URL, read_stake_sgm_board
+from .local_ui_bridge import (
+    STAKE_SGM_BOARD_JOB_TYPE,
+    STAKE_SGM_BUILD_SLIP_JOB_TYPE,
+    SupabaseLocalUiJobStore,
+)
+from .stake_sgm_browser import (
+    DEFAULT_CDP_URL,
+    build_stake_sgm_review_slip,
+    read_stake_sgm_board,
+)
 
 
 DEFAULT_CHROME_USER_DATA_DIR = Path("data") / "chrome-stake-ui"
@@ -22,6 +30,7 @@ async def run_helper(
     poll_seconds: float = 2.0,
     worker_id: str | None = None,
     autostart_chrome: bool = True,
+    mode: str = "review",
 ) -> None:
     _load_dotenv()
     store = SupabaseLocalUiJobStore()
@@ -35,15 +44,21 @@ async def run_helper(
         ensure_debug_chrome(cdp_url)
 
     resolved_worker_id = worker_id or f"azp-local-{socket.gethostname()}"
+    job_types = _job_types_for_mode(mode)
     print("AZP Local Helper")
     print(f"Status: waiting for Stake UI jobs as {resolved_worker_id}")
+    print(f"Mode: {mode} ({', '.join(job_types)})")
     print("Stop: press Ctrl+C in this window.")
 
     while True:
-        job = await store.claim_next_pending_job(
-            worker_id=resolved_worker_id,
-            job_type=STAKE_SGM_JOB_TYPE,
-        )
+        job = None
+        for job_type in job_types:
+            job = await store.claim_next_pending_job(
+                worker_id=resolved_worker_id,
+                job_type=job_type,
+            )
+            if job:
+                break
         if not job:
             await asyncio.sleep(max(poll_seconds, 0.5))
             continue
@@ -58,21 +73,31 @@ async def process_job(
     cdp_url: str = DEFAULT_CDP_URL,
 ) -> None:
     job_id = str(job["jobId"])
+    job_type = str(job.get("jobType") or "")
     request = job.get("request") or {}
     fixture_slug = str(request.get("fixtureSlug") or "").strip()
     if not fixture_slug:
         await store.fail_job(job_id, "Job request is missing fixtureSlug.")
         return
 
-    print(f"[{time.strftime('%H:%M:%S')}] Reading Stake SGM: {fixture_slug}")
+    label = "Building review slip" if job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE else "Reading Stake SGM"
+    print(f"[{time.strftime('%H:%M:%S')}] {label}: {fixture_slug}")
     try:
-        board = await asyncio.to_thread(
-            read_stake_sgm_board,
-            fixture_slug,
-            cdp_url=cdp_url,
-        )
-        board["request"] = request
-        await store.complete_job(job_id, board)
+        if job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE:
+            result = await asyncio.to_thread(
+                build_stake_sgm_review_slip,
+                fixture_slug,
+                list(request.get("selections") or []),
+                cdp_url=cdp_url,
+            )
+        else:
+            result = await asyncio.to_thread(
+                read_stake_sgm_board,
+                fixture_slug,
+                cdp_url=cdp_url,
+            )
+        result["request"] = request
+        await store.complete_job(job_id, result)
         print(f"[{time.strftime('%H:%M:%S')}] Completed job {job_id}")
     except Exception as exc:
         await store.fail_job(job_id, str(exc))
@@ -141,6 +166,15 @@ def _chrome_path() -> Path | None:
     return None
 
 
+def _job_types_for_mode(mode: str) -> list[str]:
+    normalized = str(mode or "review").strip().lower()
+    if normalized == "build":
+        return [STAKE_SGM_BOARD_JOB_TYPE, STAKE_SGM_BUILD_SLIP_JOB_TYPE]
+    if normalized == "all":
+        return [STAKE_SGM_BOARD_JOB_TYPE, STAKE_SGM_BUILD_SLIP_JOB_TYPE]
+    return [STAKE_SGM_BOARD_JOB_TYPE]
+
+
 def _load_dotenv(path: Path | None = None) -> None:
     env_path = path or Path.cwd() / ".env"
     if not env_path.exists():
@@ -165,6 +199,12 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--worker-id")
     parser.add_argument("--no-autostart-chrome", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=["review", "build", "all"],
+        default="review",
+        help="review reads UI boards only; build also processes review-only slip build jobs.",
+    )
     args = parser.parse_args()
 
     try:
@@ -174,6 +214,7 @@ def main() -> int:
                 poll_seconds=args.poll_seconds,
                 worker_id=args.worker_id,
                 autostart_chrome=not args.no_autostart_chrome,
+                mode=args.mode,
             )
         )
         return 0

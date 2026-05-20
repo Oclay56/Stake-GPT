@@ -183,6 +183,18 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     request_body=_stake_ui_sgm_request_body(),
                 )
             },
+            "/mlb/stake-ui/review-slip": {
+                "post": _operation(
+                    "buildStakeUiReviewSlip",
+                    "Build Stake UI review slip",
+                    (
+                        "Creates a local-helper job that clicks exact validated SGM "
+                        "legs into the user's Stake slip for review only. This action "
+                        "must never enter stake amount or click Place Bet."
+                    ),
+                    request_body=_stake_ui_review_slip_request_body(),
+                )
+            },
             "/mlb/matchup/{matchup}/probable-pitchers": {
                 "get": _operation(
                     "getProbablePitchers",
@@ -2455,6 +2467,67 @@ def _stake_ui_sgm_request_body() -> dict[str, Any]:
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 45},
                     },
                     "required": ["matchup"],
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
+def _stake_ui_review_slip_request_body() -> dict[str, Any]:
+    exact_selection_schema = {
+        "type": "object",
+        "properties": {
+            "player": {
+                "type": "string",
+                "description": "Player name exactly as returned by getStakeUiSgmBoard. Omit only for team or match markets.",
+            },
+            "team": {"type": "string"},
+            "market": {"type": "string"},
+            "side": {"type": "string", "enum": ["over", "under"]},
+            "line": {"type": "number"},
+            "odds": {"type": "number"},
+            "scope": {"type": "string"},
+            "selectionId": {"type": "string"},
+            "propId": {"type": "string"},
+            "lineId": {"type": "string"},
+            "marketId": {"type": "string"},
+        },
+        "required": ["team", "market", "side", "line", "odds"],
+        "additionalProperties": True,
+    }
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "matchup": {
+                            "type": "string",
+                            "description": "Matchup text, for example Braves vs Marlins.",
+                        },
+                        "fixtureSlug": {
+                            "type": "string",
+                            "description": "Stake fixture slug. Preferred when known.",
+                        },
+                        "date": {"type": "string", "format": "date"},
+                        "reviewOnly": {
+                            "type": "boolean",
+                            "const": True,
+                            "description": "Must be true. The helper only builds a visible slip for user review.",
+                        },
+                        "selections": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 20,
+                            "items": exact_selection_schema,
+                            "description": "Exact UI-backed legs returned from getStakeUiSgmBoard.",
+                        },
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                        "scheduleLimit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    "required": ["matchup", "reviewOnly", "selections"],
                     "additionalProperties": True,
                 }
             }

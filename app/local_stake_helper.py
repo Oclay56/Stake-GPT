@@ -66,7 +66,11 @@ async def process_job(
 
     print(f"[{time.strftime('%H:%M:%S')}] Reading Stake SGM: {fixture_slug}")
     try:
-        board = read_stake_sgm_board(fixture_slug, cdp_url=cdp_url)
+        board = await asyncio.to_thread(
+            read_stake_sgm_board,
+            fixture_slug,
+            cdp_url=cdp_url,
+        )
         board["request"] = request
         await store.complete_job(job_id, board)
         print(f"[{time.strftime('%H:%M:%S')}] Completed job {job_id}")

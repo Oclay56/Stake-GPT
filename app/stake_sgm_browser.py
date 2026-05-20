@@ -562,6 +562,11 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
             : wanted.side === "over"
             ? ["over", "uber", "über"]
             : [wanted.side].filter(Boolean);
+          const oppositeSideAliases = wanted.side === "under"
+            ? ["over", "uber"]
+            : wanted.side === "over"
+            ? ["under", "unter"]
+            : [];
           const marketAliases = {
             "earned runs": ["earned runs", "runs achieved", "runs allowed"],
             "first er": ["first er", "first earned run", "first well deserved run"],
@@ -603,6 +608,16 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
             const values = matches.map(numberValue).filter((value) => value != null);
             return values.length ? values[values.length - 1] : null;
           };
+          const directButtonSide = (el) => {
+            const text = norm(`${el.getAttribute("aria-label") || ""} ${el.innerText || el.textContent || ""}`);
+            const wantedSide = sideAliases.some((side) => text.includes(side));
+            const oppositeSide = oppositeSideAliases.some((side) => text.includes(side));
+            return {
+              text,
+              hasSide: wantedSide || oppositeSide,
+              matchesWanted: wantedSide && !oppositeSide,
+            };
+          };
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
           const candidateElements = () => {
             const sideButtons = Array.from(document.querySelectorAll("button[data-testid='fixture-outcome']"))
@@ -629,6 +644,10 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
             lastCandidateSamples = candidates.slice(0, 8).map((el) => String(el.innerText || el.textContent || "").trim());
             scopedCandidates = [];
             for (const el of candidates) {
+              const buttonSide = directButtonSide(el);
+              if (buttonSide.hasSide && !buttonSide.matchesWanted) {
+                continue;
+              }
               let current = el;
               let rowContainer = null;
               let matchedText = "";
@@ -640,11 +659,15 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
               for (let depth = 0; depth < 13 && current; depth += 1) {
                 const rect = current.getBoundingClientRect();
                 const text = norm(current.innerText || current.textContent || "");
-                const hasSide = sideAliases.length ? sideAliases.some((side) => text.includes(side)) : true;
+                const hasSide = buttonSide.hasSide
+                  ? buttonSide.matchesWanted
+                  : sideAliases.length
+                  ? sideAliases.some((side) => text.includes(side))
+                  : true;
                 if (depth <= 2 && hasSide && textHasLine(text)) {
                   lineSideMatched = true;
                 }
-                if (rowHasMarket(text) && rect.height <= 650) {
+                if (rowHasMarket(text) && rect.height <= 180) {
                   marketMatched = true;
                 }
                 combinedText = `${text} ${combinedText}`.slice(0, 1000);

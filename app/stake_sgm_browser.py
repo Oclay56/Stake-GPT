@@ -356,11 +356,16 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
                 }
                 return parts.join(" ");
               };
-              const buttons = Array.from(document.querySelectorAll("button,[role='button']"))
-                .filter(visible)
-                .filter((el) => norm(el.innerText || el.textContent || "") === "add bet");
-              const candidates = buttons
-                .map((el) => {
+              const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+              let buttons = [];
+              let candidates = [];
+              let candidate = null;
+              for (let attempt = 0; attempt < 24 && !candidate; attempt += 1) {
+                buttons = Array.from(document.querySelectorAll("button,[role='button']"))
+                  .filter(visible)
+                  .filter((el) => norm(el.innerText || el.textContent || "").includes("add bet"));
+                candidates = buttons
+                  .map((el) => {
                   const rect = el.getBoundingClientRect();
                   const context = ancestorText(el);
                   const selectedOutcomeCount = Array.from(document.querySelectorAll('button[data-testid="fixture-outcome"]'))
@@ -396,7 +401,11 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
                 })
                 .sort((a, b) => b.score - a.score);
 
-              const candidate = candidates.find((item) => !item.disabled);
+                candidate = candidates.find((item) => !item.disabled);
+                if (!candidate) {
+                  await sleep(250);
+                }
+              }
               if (!candidate) {
                 return {
                   status: "not_clicked",

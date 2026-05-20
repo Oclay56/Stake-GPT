@@ -79,7 +79,7 @@ class FakeCompletedUiJobStore:
             "result": {
                 "source": "stake_ui_sgm",
                 "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
-                "counts": {"playerPropsPlayable": 1},
+                "counts": {"playerPropsPlayable": 3},
                 "playerProps": [
                     {
                         "team": "Atlanta Braves",
@@ -90,7 +90,9 @@ class FakeCompletedUiJobStore:
                         "over": 1.62,
                         "playable": True,
                     }
+                    for _ in range(3)
                 ],
+                "teamMarkets": [],
             },
             "error": None,
         }
@@ -138,9 +140,35 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
     assert body["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert body["bridge"]["jobId"] == "job-123"
     assert body["bridge"]["status"] == "completed"
-    assert body["uiBoard"]["counts"]["playerPropsPlayable"] == 1
+    assert body["uiBoard"]["counts"]["playerPropsPlayable"] == 3
+    assert "playerProps" not in body["uiBoard"]
+    assert "teamMarkets" not in body["uiBoard"]
+    assert len(body["uiBoard"]["rows"]) == 6
     assert created_request["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert created_request["matchup"] == "Braves vs Marlins"
+
+
+def test_stake_ui_sgm_board_route_returns_compact_limited_under_rows(fake_ui_store):
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/sgm-board",
+            json={
+                "matchup": "Braves vs Marlins",
+                "date": "2026-05-19",
+                "timeoutSeconds": 2,
+                "side": "under",
+                "limit": 2,
+            },
+        )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["uiBoard"]["filters"]["side"] == "under"
+    assert body["uiBoard"]["returnedRows"] == 2
+    assert len(body["uiBoard"]["rows"]) == 2
+    assert all(row["side"] == "under" for row in body["uiBoard"]["rows"])
+    assert all(set(row) >= {"player", "team", "market", "side", "line", "odds"} for row in body["uiBoard"]["rows"])
 
 
 def test_stake_ui_sgm_board_resolves_slug_only_schedule_names(fake_ui_store):

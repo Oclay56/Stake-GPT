@@ -367,6 +367,12 @@ async def mlb_stake_ui_sgm_board(
     matchup = _required_body_text(payload, "matchup")
     slate_date = _date_from_body(payload)
     limit = _clean_int_from_body(payload, "limit", 25, minimum=1, maximum=100)
+    side = _optional_body_text(payload, "side").lower() or "any"
+    if side not in {"any", "over", "under"}:
+        raise HTTPException(status_code=422, detail="side must be any, over, or under")
+    market = _optional_body_text(payload, "market")
+    scope = _optional_body_text(payload, "scope").lower()
+    playable_only = _bool_from_body(payload, "playableOnly", "playable_only", True)
     timeout_seconds = _clean_int_from_body(
         payload,
         "timeoutSeconds",
@@ -446,7 +452,14 @@ async def mlb_stake_ui_sgm_board(
             "createdAt": completed.get("createdAt"),
             "completedAt": completed.get("completedAt"),
         },
-        "uiBoard": completed.get("result") or {},
+        "uiBoard": _compact_stake_ui_sgm_board(
+            completed.get("result") or {},
+            limit=limit,
+            side=side,
+            market=market,
+            scope=scope,
+            playable_only=playable_only,
+        ),
     }
 
 
@@ -786,6 +799,13 @@ def _required_body_text(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_body_text(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _date_from_body(payload: dict[str, Any]) -> date | None:
     raw_date = payload.get("date")
     if not raw_date:
@@ -836,6 +856,100 @@ def _clean_int_from_body(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"{key} must be an integer") from exc
     return max(minimum, min(value, maximum))
+
+
+def _compact_stake_ui_sgm_board(
+    board: dict[str, Any],
+    *,
+    limit: int,
+    side: str,
+    market: str,
+    scope: str,
+    playable_only: bool,
+) -> dict[str, Any]:
+    rows = _stake_ui_selection_rows(
+        board,
+        limit=limit,
+        side=side,
+        market=market,
+        scope=scope,
+        playable_only=playable_only,
+    )
+    return {
+        "source": board.get("source"),
+        "fixtureSlug": board.get("fixtureSlug"),
+        "capturedAt": board.get("capturedAt"),
+        "fixture": board.get("fixture") or {},
+        "teams": board.get("teams") or [],
+        "counts": board.get("counts") or {},
+        "warnings": board.get("warnings") or [],
+        "filters": {
+            "side": side,
+            "market": market or None,
+            "scope": scope or None,
+            "playableOnly": playable_only,
+            "limit": limit,
+        },
+        "returnedRows": len(rows),
+        "rows": rows,
+    }
+
+
+def _stake_ui_selection_rows(
+    board: dict[str, Any],
+    *,
+    limit: int,
+    side: str,
+    market: str,
+    scope: str,
+    playable_only: bool,
+) -> list[dict[str, Any]]:
+    source_rows = list(board.get("playerProps") or []) + list(board.get("teamMarkets") or [])
+    wanted_sides = ("over", "under") if side == "any" else (side,)
+    market_key = market.lower().strip()
+    scope_key = scope.lower().strip()
+    compact_rows: list[dict[str, Any]] = []
+
+    for row in source_rows:
+        if playable_only and not row.get("playable"):
+            continue
+        row_market = str(row.get("market") or "")
+        if market_key and market_key not in row_market.lower():
+            continue
+        row_scope = str(row.get("scope") or "").lower()
+        if scope_key and scope_key != row_scope:
+            continue
+
+        for row_side in wanted_sides:
+            odds = row.get(row_side)
+            if odds is None:
+                continue
+            compact_rows.append(
+                {
+                    "selectionId": f"{row.get('lineId') or ''}:{row_side}",
+                    "propId": row.get("lineId"),
+                    "player": row.get("player"),
+                    "team": row.get("team"),
+                    "position": row.get("position"),
+                    "scope": row.get("scope"),
+                    "market": row.get("market"),
+                    "side": row_side,
+                    "line": row.get("line"),
+                    "odds": odds,
+                    "playable": bool(row.get("playable")),
+                    "suspended": bool(row.get("suspended")),
+                    "customBet": bool(row.get("customBet")),
+                    "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
+                    "playerId": row.get("playerId"),
+                    "marketId": row.get("marketId"),
+                    "lineId": row.get("lineId"),
+                    "swishStatId": row.get("swishStatId"),
+                }
+            )
+            if len(compact_rows) >= limit:
+                return compact_rows
+
+    return compact_rows
 
 
 async def _resolve_stake_fixture_slug(

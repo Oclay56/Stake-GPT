@@ -2429,7 +2429,29 @@ def _stake_ui_sgm_request_body() -> dict[str, Any]:
                             "description": "Stake fixture slug. Preferred when known.",
                         },
                         "date": {"type": "string", "format": "date"},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Maximum compact selection rows to return.",
+                        },
+                        "side": {
+                            "type": "string",
+                            "enum": ["any", "over", "under"],
+                            "description": "Optional side filter. Use under for under-only slip research.",
+                        },
+                        "market": {
+                            "type": "string",
+                            "description": "Optional market name filter, for example hits, runs, total bases, or strikeouts.",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Optional scope filter, for example player, team_props, or match_props.",
+                        },
+                        "playableOnly": {
+                            "type": "boolean",
+                            "description": "When true, returns only rows Stake marks playable in the UI-backed SGM data.",
+                        },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 45},
                     },
                     "required": ["matchup"],

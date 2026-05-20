@@ -27,6 +27,27 @@ class FakeStakeClient:
         }
 
 
+class FakeSlugNameStakeClient:
+    async def get_tournament_schedule(self, sport: str, category: str, tournament: str):
+        return {
+            "sport": {"slug": sport, "name": "Baseball"},
+            "schedule": [
+                {
+                    "date": 1778277600000,
+                    "fixtures": [
+                        {
+                            "slug": "46450286-toronto-blue-jays-los-angeles-angels",
+                            "name": "46450286-toronto-blue-jays-los-angeles-angels",
+                            "date": 1778277600000,
+                            "status": "active",
+                            "type": "match",
+                        }
+                    ],
+                }
+            ],
+        }
+
+
 class FakeMLBEngine:
     async def get_schedule(self, game_date: str):
         return {
@@ -103,3 +124,31 @@ def test_mlb_schedule_stake_map_links_official_game_to_stake_fixture(tmp_path):
     assert body["games"][0]["stake"]["available"] is True
     assert body["games"][0]["stake"]["fixtureSlug"] == "blue-jays-angels"
     assert body["games"][0]["stake"]["name"] == "Toronto Blue Jays - Los Angeles Angels"
+
+
+def test_mlb_schedule_stake_map_links_slug_only_stake_fixture(tmp_path):
+    app.dependency_overrides[get_mlb_engine] = lambda: FakeMLBEngine()
+    app.dependency_overrides[get_stake_client] = lambda: FakeSlugNameStakeClient()
+    app.dependency_overrides[get_gpt_store] = lambda: GptActionStore(
+        tmp_path / "gpt.sqlite"
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/mlb/schedule/stake-map",
+                params={"date": "2026-05-08"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["games"][0]["stake"]["available"] is True
+    assert (
+        body["games"][0]["stake"]["fixtureSlug"]
+        == "46450286-toronto-blue-jays-los-angeles-angels"
+    )
+    assert body["games"][0]["stake"]["teams"] == [
+        "Toronto Blue Jays",
+        "Los Angeles Angels",
+    ]

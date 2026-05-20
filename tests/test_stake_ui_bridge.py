@@ -29,6 +29,25 @@ class FakeStakeClient:
         }
 
 
+class FakeSlugNameStakeClient:
+    async def get_tournament_schedule(self, sport: str, category: str, tournament: str):
+        return {
+            "schedule": [
+                {
+                    "fixtures": [
+                        {
+                            "slug": "46575343-miami-marlins-atlanta-braves",
+                            "name": "46575343-miami-marlins-atlanta-braves",
+                            "date": 1779314400000,
+                            "status": "active",
+                            "type": "match",
+                        }
+                    ]
+                }
+            ]
+        }
+
+
 class FakeCompletedUiJobStore:
     def __init__(self) -> None:
         self.created_jobs: list[dict] = []
@@ -122,6 +141,27 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
     assert body["uiBoard"]["counts"]["playerPropsPlayable"] == 1
     assert created_request["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert created_request["matchup"] == "Braves vs Marlins"
+
+
+def test_stake_ui_sgm_board_resolves_slug_only_schedule_names(fake_ui_store):
+    app.dependency_overrides[get_stake_client] = lambda: FakeSlugNameStakeClient()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/sgm-board",
+            json={
+                "matchup": "Marlins vs Braves",
+                "date": "2026-05-20",
+                "timeoutSeconds": 2,
+            },
+        )
+
+    body = response.json()
+    created_request = fake_ui_store.created_jobs[0]["request"]
+
+    assert response.status_code == 200
+    assert body["fixtureSlug"] == "46575343-miami-marlins-atlanta-braves"
+    assert created_request["fixtureSlug"] == "46575343-miami-marlins-atlanta-braves"
 
 
 def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable():

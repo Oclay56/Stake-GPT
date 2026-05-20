@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import date, datetime
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .mlb_props import slug_key
 from .stake_client import StakeAPIError
 
 
@@ -321,8 +323,60 @@ def _fixture_start_ms(fixture: dict[str, Any]) -> int | None:
 
 def _fixture_teams(game: str) -> list[str]:
     if " - " not in game:
-        return []
+        return _fixture_teams_from_slug(game)
     return [part.strip() for part in game.split(" - ", 1) if part.strip()]
+
+
+MLB_TEAM_NAMES_BY_SLUG = {
+    "arizona-diamondbacks": "Arizona Diamondbacks",
+    "atlanta-braves": "Atlanta Braves",
+    "baltimore-orioles": "Baltimore Orioles",
+    "boston-red-sox": "Boston Red Sox",
+    "chicago-cubs": "Chicago Cubs",
+    "chicago-white-sox": "Chicago White Sox",
+    "cincinnati-reds": "Cincinnati Reds",
+    "cleveland-guardians": "Cleveland Guardians",
+    "colorado-rockies": "Colorado Rockies",
+    "detroit-tigers": "Detroit Tigers",
+    "houston-astros": "Houston Astros",
+    "kansas-city-royals": "Kansas City Royals",
+    "los-angeles-angels": "Los Angeles Angels",
+    "los-angeles-dodgers": "Los Angeles Dodgers",
+    "miami-marlins": "Miami Marlins",
+    "milwaukee-brewers": "Milwaukee Brewers",
+    "minnesota-twins": "Minnesota Twins",
+    "new-york-mets": "New York Mets",
+    "new-york-yankees": "New York Yankees",
+    "athletics": "Athletics",
+    "oakland-athletics": "Oakland Athletics",
+    "philadelphia-phillies": "Philadelphia Phillies",
+    "pittsburgh-pirates": "Pittsburgh Pirates",
+    "san-diego-padres": "San Diego Padres",
+    "san-francisco-giants": "San Francisco Giants",
+    "seattle-mariners": "Seattle Mariners",
+    "st-louis-cardinals": "St. Louis Cardinals",
+    "tampa-bay-rays": "Tampa Bay Rays",
+    "texas-rangers": "Texas Rangers",
+    "toronto-blue-jays": "Toronto Blue Jays",
+    "washington-nationals": "Washington Nationals",
+}
+
+
+def _fixture_teams_from_slug(value: str) -> list[str]:
+    slug = re.sub(r"^\d+-", "", slug_key(value))
+    if not slug:
+        return []
+
+    team_slugs = sorted(MLB_TEAM_NAMES_BY_SLUG, key=len, reverse=True)
+    for away_slug in team_slugs:
+        prefix = f"{away_slug}-"
+        if not slug.startswith(prefix):
+            continue
+        home_slug = slug.removeprefix(prefix)
+        home_name = MLB_TEAM_NAMES_BY_SLUG.get(home_slug)
+        if home_name:
+            return [MLB_TEAM_NAMES_BY_SLUG[away_slug], home_name]
+    return []
 
 
 def _date_from_epoch_ms(epoch_ms: int, timezone: ZoneInfo) -> date:

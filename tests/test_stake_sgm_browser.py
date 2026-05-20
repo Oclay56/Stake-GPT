@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.stake_sgm_browser import _check_page_ready, _find_or_open_fixture_page, fixture_url
+from app.stake_sgm_browser import (
+    _check_page_ready,
+    _find_or_open_fixture_page,
+    _has_logged_out_warning,
+    fixture_url,
+)
 
 
 class FakePage:
@@ -36,6 +41,7 @@ class FakeLocator:
 class FakeReadyPage:
     def __init__(self, text: str) -> None:
         self.text = text
+        self.navigated_to: list[str] = []
 
     def wait_for_load_state(self, state: str, *, timeout: int) -> None:
         return None
@@ -43,6 +49,9 @@ class FakeReadyPage:
     def locator(self, selector: str) -> FakeLocator:
         assert selector == "body"
         return FakeLocator(self.text)
+
+    def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        self.navigated_to.append(url)
 
 
 def test_find_or_open_fixture_page_refreshes_restricted_region_tab():
@@ -78,3 +87,26 @@ def test_check_page_ready_reports_cloudflare_verification():
 
     with pytest.raises(RuntimeError, match="Cloudflare verification"):
         _check_page_ready(page)
+
+
+def test_check_page_ready_accepts_hyphenated_same_game_multi_tab():
+    page = FakeReadyPage("Wallet\nMain\nSame-Game Multi\nPlayer Props")
+
+    assert _check_page_ready(page) == []
+
+
+def test_check_page_ready_reloads_region_blocked_fixture_before_failing():
+    fixture_slug = "46575343-miami-marlins-atlanta-braves"
+    page = FakeReadyPage("Sorry, Stake.com is not available in your region.")
+
+    with pytest.raises(RuntimeError, match="region-blocked"):
+        _check_page_ready(page, fixture_slug=fixture_slug)
+
+    assert page.navigated_to == [fixture_url(fixture_slug)]
+
+
+def test_has_logged_out_warning_detects_account_action_blocker():
+    assert _has_logged_out_warning(
+        ["browser appears logged out; read-only SGM data may still load"]
+    )
+    assert not _has_logged_out_warning(["page did not reach networkidle before continuing"])

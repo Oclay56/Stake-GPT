@@ -104,7 +104,7 @@ def read_stake_sgm_board(
             raise RuntimeError("No Chrome context found on the debug port.")
 
         page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
-        warnings = _check_page_ready(page)
+        warnings = _check_page_ready(page, fixture_slug=fixture_slug)
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
         return normalize_sgm_response(fixture_slug, response, warnings)
 
@@ -122,9 +122,18 @@ def build_stake_sgm_review_slip(
             raise RuntimeError("No Chrome context found on the debug port.")
 
         page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
-        warnings = _check_page_ready(page)
+        warnings = _check_page_ready(page, fixture_slug=fixture_slug)
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
         board = normalize_sgm_response(fixture_slug, response, warnings)
+        if _has_logged_out_warning(warnings):
+            return _review_slip_result(
+                fixture_slug=fixture_slug,
+                status="blocked_login_required",
+                board=board,
+                selected_rows=[],
+                missing_selections=[],
+                click_results=[],
+            )
         match_result = match_sgm_review_selections(board, selections)
 
         if match_result["missingSelections"]:
@@ -304,10 +313,12 @@ def _click_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[
 
 def _open_same_game_multi_tab(page: Any) -> None:
     try:
-        tab = page.get_by_text("Same Game Multi", exact=True)
-        if tab.count():
-            tab.first.click(timeout=5_000)
-            page.wait_for_timeout(500)
+        for label in ("Same Game Multi", "Same-Game Multi"):
+            tab = page.get_by_text(label, exact=True)
+            if tab.count():
+                tab.first.click(timeout=5_000)
+                page.wait_for_timeout(500)
+                return
     except Exception:
         # The fixture page may already be on the SGM board, and board validation is
         # still the hard source of truth.
@@ -318,6 +329,7 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
     player_or_team = row.get("player") or row.get("team") or ""
     if player_or_team:
         _filter_sgm_board(page, str(player_or_team))
+        _expand_sgm_owner(page, str(player_or_team))
 
     click_result = page.evaluate(
         """
@@ -340,14 +352,15 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
             team: norm(row.team),
             market: norm(row.market),
             line: norm(row.line),
+            side: norm(row.side),
           };
-          const odds = String(oddsText);
+          const oddsVariants = [String(oddsText), String(oddsText).replace(".", ",")];
           const clickableSelector = "button,[role='button'],[tabindex='0']";
           const candidates = Array.from(document.querySelectorAll(clickableSelector))
             .filter(visible)
             .filter((el) => {
               const text = String(el.innerText || el.textContent || "").trim();
-              return text === odds || text.includes(odds);
+              return oddsVariants.some((odds) => text === odds || text.includes(odds));
             });
 
           const scopedCandidates = [];
@@ -358,8 +371,9 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
               const hasOwner = wanted.player
                 ? text.includes(wanted.player)
                 : text.includes(wanted.team);
-              if (hasOwner && text.includes(wanted.market) && text.includes(wanted.line)) {
-                scopedCandidates.push({ el, text });
+              const hasSide = wanted.side ? text.includes(wanted.side) : true;
+              if (hasOwner && hasSide && text.includes(wanted.line)) {
+                scopedCandidates.push({ el, text: text.slice(0, 400) });
                 break;
               }
               current = current.parentElement;
@@ -373,6 +387,8 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
                 ? "no visible exact clickable odds cell found"
                 : "ambiguous clickable odds cells found",
               candidateCount: scopedCandidates.length,
+              oddsVariants,
+              candidateSamples: scopedCandidates.slice(0, 5).map((candidate) => candidate.text),
             };
           }
 
@@ -388,11 +404,26 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _expand_sgm_owner(page: Any, value: str) -> None:
+    try:
+        owner = page.get_by_text(value, exact=False)
+        if owner.count():
+            owner.first.click(timeout=3_000)
+            page.wait_for_timeout(700)
+    except Exception:
+        return
+
+
 def _filter_sgm_board(page: Any, value: str) -> None:
     try:
         search = page.get_by_placeholder("Search")
         if search.count():
             search.first.fill(value, timeout=3_000)
+            page.wait_for_timeout(500)
+            return
+        inputs = page.locator("input")
+        if inputs.count():
+            inputs.first.fill(value, timeout=3_000)
             page.wait_for_timeout(500)
     except Exception:
         return
@@ -513,7 +544,7 @@ def _restricted_region_url(url: str) -> bool:
     )
 
 
-def _check_page_ready(page: Any) -> list[str]:
+def _check_page_ready(page: Any, fixture_slug: str | None = None) -> list[str]:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
     warnings: list[str] = []
@@ -523,6 +554,14 @@ def _check_page_ready(page: Any) -> list[str]:
         warnings.append("page did not reach networkidle before continuing")
 
     body = page.locator("body").inner_text(timeout=8_000)
+    if _is_region_blocked_body(body) and fixture_slug:
+        page.goto(fixture_url(fixture_slug), wait_until="domcontentloaded", timeout=45_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except PlaywrightTimeoutError:
+            warnings.append("page did not reach networkidle after region-block reload")
+        body = page.locator("body").inner_text(timeout=8_000)
+
     normalized_body = body.lower()
     if (
         "performing security verification" in normalized_body
@@ -533,20 +572,34 @@ def _check_page_ready(page: Any) -> list[str]:
             "Stake Cloudflare verification is required in the helper Chrome session. "
             "Complete the browser verification manually, then retry."
         )
-    if "not available in your region" in body:
+    if _is_region_blocked_body(body):
         raise RuntimeError(
             "Stake is still region-blocked in this browser session. "
-            "Turn on the desktop VPN and retry."
+            "Turn on the desktop VPN before starting the helper, close this helper, "
+            "then retry."
         )
     if "Login" in body and "Register" in body and "Wallet" not in body:
         warnings.append(
             "browser appears logged out; read-only SGM data may still load, "
             "but account-only actions will not"
         )
-    if "Same Game Multi" not in body:
+    if not _has_same_game_multi_tab(body):
         raise RuntimeError("Same Game Multi tab is not visible on this fixture page.")
 
     return warnings
+
+
+def _is_region_blocked_body(body: str) -> bool:
+    return "not available in your region" in str(body or "").lower()
+
+
+def _has_same_game_multi_tab(body: str) -> bool:
+    normalized = str(body or "").lower().replace("-", " ")
+    return "same game multi" in normalized
+
+
+def _has_logged_out_warning(warnings: list[str]) -> bool:
+    return any("appears logged out" in warning for warning in warnings)
 
 
 def _fetch_sgm_board_in_browser(page: Any, fixture_slug: str) -> dict[str, Any]:

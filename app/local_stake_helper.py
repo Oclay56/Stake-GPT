@@ -51,19 +51,26 @@ async def run_helper(
     print("Stop: press Ctrl+C in this window.")
 
     while True:
-        job = None
-        for job_type in job_types:
-            job = await store.claim_next_pending_job(
-                worker_id=resolved_worker_id,
-                job_type=job_type,
-            )
-            if job:
-                break
-        if not job:
-            await asyncio.sleep(max(poll_seconds, 0.5))
-            continue
+        try:
+            job = None
+            for job_type in job_types:
+                job = await store.claim_next_pending_job(
+                    worker_id=resolved_worker_id,
+                    job_type=job_type,
+                )
+                if job:
+                    break
+            if not job:
+                await asyncio.sleep(max(poll_seconds, 0.5))
+                continue
 
-        await process_job(store, job, cdp_url=cdp_url)
+            await process_job(store, job, cdp_url=cdp_url)
+        except Exception as exc:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] Helper poll error: {exc}. "
+                f"Retrying in {max(poll_seconds, 2.0):.0f}s."
+            )
+            await asyncio.sleep(max(poll_seconds, 2.0))
 
 
 async def process_job(
@@ -97,11 +104,37 @@ async def process_job(
                 cdp_url=cdp_url,
             )
         result["request"] = request
-        await store.complete_job(job_id, result)
-        print(f"[{time.strftime('%H:%M:%S')}] Completed job {job_id}")
+        if await _safe_complete_job(store, job_id, result):
+            print(f"[{time.strftime('%H:%M:%S')}] Completed job {job_id}")
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] Completed locally but could not sync job {job_id}")
     except Exception as exc:
-        await store.fail_job(job_id, str(exc))
+        await _safe_fail_job(store, job_id, str(exc))
         print(f"[{time.strftime('%H:%M:%S')}] Failed job {job_id}: {exc}")
+
+
+async def _safe_complete_job(
+    store: SupabaseLocalUiJobStore,
+    job_id: str,
+    result: dict[str, Any],
+) -> bool:
+    try:
+        await store.complete_job(job_id, result)
+        return True
+    except Exception as exc:
+        print(f"[{time.strftime('%H:%M:%S')}] Could not report completed job {job_id}: {exc}")
+        return False
+
+
+async def _safe_fail_job(
+    store: SupabaseLocalUiJobStore,
+    job_id: str,
+    error_message: str,
+) -> None:
+    try:
+        await store.fail_job(job_id, error_message)
+    except Exception as exc:
+        print(f"[{time.strftime('%H:%M:%S')}] Could not report failed job {job_id}: {exc}")
 
 
 def ensure_debug_chrome(cdp_url: str = DEFAULT_CDP_URL) -> None:

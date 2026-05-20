@@ -149,7 +149,11 @@ class AzpHelperGui:
                 self.status_label.configure(text="Status: waiting for GPT jobs")
             elif "completed job" in lower:
                 self.status_label.configure(text="Status: completed job; waiting for next job")
-            elif "failed job" in lower or "error" in lower:
+            elif "helper poll error" in lower:
+                self.status_label.configure(text="Status: connection issue; retrying")
+            elif "failed job" in lower:
+                self.status_label.configure(text="Status: job failed; waiting for next job")
+            elif "error" in lower:
                 self.status_label.configure(text="Status: helper error")
             elif "exited with code" in lower:
                 self.status_label.configure(text="Status: stopped")

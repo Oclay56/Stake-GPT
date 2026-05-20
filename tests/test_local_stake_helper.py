@@ -9,11 +9,14 @@ class FakeJobStore:
     def __init__(self) -> None:
         self.completed: list[tuple[str, dict]] = []
         self.failed: list[tuple[str, str]] = []
+        self.fail_raises: Exception | None = None
 
     async def complete_job(self, job_id: str, result: dict):
         self.completed.append((job_id, result))
 
     async def fail_job(self, job_id: str, error_message: str):
+        if self.fail_raises:
+            raise self.fail_raises
         self.failed.append((job_id, error_message))
 
 
@@ -55,3 +58,32 @@ def test_process_job_runs_sync_browser_reader_outside_event_loop(monkeypatch):
     assert store.completed[0][0] == "job-123"
     assert store.completed[0][1]["fixtureSlug"] == "46575343-miami-marlins-atlanta-braves"
     assert store.completed[0][1]["request"] == job["request"]
+
+
+def test_process_job_does_not_crash_when_failure_reporting_fails(monkeypatch, capsys):
+    def fake_read_stake_sgm_board(fixture_slug: str, *, cdp_url: str):
+        raise RuntimeError("Stake is still region-blocked in this browser session.")
+
+    monkeypatch.setattr(
+        local_stake_helper,
+        "read_stake_sgm_board",
+        fake_read_stake_sgm_board,
+    )
+    store = FakeJobStore()
+    store.fail_raises = OSError("[Errno 11001] getaddrinfo failed")
+    job = {
+        "jobId": "job-456",
+        "request": {"fixtureSlug": "46575343-miami-marlins-atlanta-braves"},
+    }
+
+    asyncio.run(
+        local_stake_helper.process_job(
+            store,
+            job,
+            cdp_url="http://127.0.0.1:9222",
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "Failed job job-456" in output
+    assert "Could not report failed job job-456" in output

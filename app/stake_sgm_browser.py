@@ -221,11 +221,21 @@ def _find_or_open_fixture_page(context: Any, fixture_slug: str) -> Any:
     expected = fixture_url(fixture_slug)
     for page in context.pages:
         if fixture_slug in page.url and "stake.com" in page.url:
+            if _restricted_region_url(page.url):
+                page.goto(expected, wait_until="domcontentloaded", timeout=45_000)
             return page
 
     page = context.pages[0] if context.pages else context.new_page()
     page.goto(expected, wait_until="domcontentloaded", timeout=45_000)
     return page
+
+
+def _restricted_region_url(url: str) -> bool:
+    return (
+        "modal=restrictedRegion" in url
+        or "regionKey=US" in url
+        or "country=US" in url
+    )
 
 
 def _check_page_ready(page: Any) -> list[str]:
@@ -238,6 +248,16 @@ def _check_page_ready(page: Any) -> list[str]:
         warnings.append("page did not reach networkidle before continuing")
 
     body = page.locator("body").inner_text(timeout=8_000)
+    normalized_body = body.lower()
+    if (
+        "performing security verification" in normalized_body
+        or "protect against malicious bots" in normalized_body
+        or "cloudflare" in normalized_body and "verification" in normalized_body
+    ):
+        raise RuntimeError(
+            "Stake Cloudflare verification is required in the helper Chrome session. "
+            "Complete the browser verification manually, then retry."
+        )
     if "not available in your region" in body:
         raise RuntimeError(
             "Stake is still region-blocked in this browser session. "

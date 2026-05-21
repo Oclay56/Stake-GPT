@@ -1,14 +1,240 @@
 from __future__ import annotations
 
+import ctypes
 import queue
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, Button, Frame, Label, Tk, Text, messagebox
+from ctypes import wintypes
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+WPARAM = ctypes.c_size_t
+LPARAM = ctypes.c_ssize_t
+LRESULT = ctypes.c_ssize_t
+
+
+def should_minimize_to_tray(window_state: str, *, tray_supported: bool) -> bool:
+    return tray_supported and window_state == "iconic"
+
+
+class WindowsTrayIcon:
+    WM_TRAYICON = 0x0400 + 31
+    WM_DESTROY = 0x0002
+    WM_COMMAND = 0x0111
+    WM_LBUTTONDBLCLK = 0x0203
+    WM_RBUTTONUP = 0x0205
+
+    NIF_MESSAGE = 0x00000001
+    NIF_ICON = 0x00000002
+    NIF_TIP = 0x00000004
+    NIM_ADD = 0x00000000
+    NIM_DELETE = 0x00000002
+    TPM_RETURNCMD = 0x0100
+    TPM_RIGHTBUTTON = 0x0002
+    MF_STRING = 0x0000
+    IDI_APPLICATION = 32512
+
+    RESTORE_COMMAND = 1001
+    EXIT_COMMAND = 1002
+
+    def __init__(
+        self,
+        tooltip: str,
+        *,
+        on_restore: Callable[[], None],
+        on_exit: Callable[[], None],
+    ) -> None:
+        self.tooltip = tooltip[:127]
+        self.on_restore = on_restore
+        self.on_exit = on_exit
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._hwnd: int | None = None
+        self._hicon: int | None = None
+        self._visible = False
+        self._wndproc = None
+        self._class_name = f"AZP_LOCAL_HELPER_TRAY_{id(self)}"
+
+    @staticmethod
+    def is_supported() -> bool:
+        return sys.platform == "win32"
+
+    def show(self) -> bool:
+        if not self.is_supported():
+            return False
+        if self._visible:
+            return True
+
+        if not self._thread or not self._thread.is_alive():
+            self._ready.clear()
+            self._thread = threading.Thread(target=self._message_loop, daemon=True)
+            self._thread.start()
+
+        if not self._ready.wait(timeout=2) or not self._hwnd:
+            return False
+
+        data = self._notify_data()
+        shell32 = ctypes.windll.shell32
+        self._visible = bool(shell32.Shell_NotifyIconW(self.NIM_ADD, ctypes.byref(data)))
+        return self._visible
+
+    def hide(self) -> None:
+        if not self._visible or not self._hwnd:
+            return
+        data = self._notify_data()
+        ctypes.windll.shell32.Shell_NotifyIconW(self.NIM_DELETE, ctypes.byref(data))
+        self._visible = False
+
+    def close(self) -> None:
+        if not self.is_supported():
+            return
+        self.hide()
+        if self._hwnd:
+            ctypes.windll.user32.PostMessageW.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                WPARAM,
+                LPARAM,
+            ]
+            ctypes.windll.user32.PostMessageW(self._hwnd, self.WM_DESTROY, 0, 0)
+
+    def _notify_data(self):
+        class NotifyIconData(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT),
+                ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HANDLE),
+                ("szTip", wintypes.WCHAR * 128),
+                ("dwState", wintypes.DWORD),
+                ("dwStateMask", wintypes.DWORD),
+                ("szInfo", wintypes.WCHAR * 256),
+                ("uTimeoutOrVersion", wintypes.UINT),
+                ("szInfoTitle", wintypes.WCHAR * 64),
+                ("dwInfoFlags", wintypes.DWORD),
+                ("guidItem", ctypes.c_byte * 16),
+                ("hBalloonIcon", wintypes.HANDLE),
+            ]
+
+        data = NotifyIconData()
+        data.cbSize = ctypes.sizeof(NotifyIconData)
+        data.hWnd = self._hwnd
+        data.uID = 1
+        data.uFlags = self.NIF_MESSAGE | self.NIF_ICON | self.NIF_TIP
+        data.uCallbackMessage = self.WM_TRAYICON
+        data.hIcon = self._hicon or ctypes.windll.user32.LoadIconW(None, self.IDI_APPLICATION)
+        data.szTip = self.tooltip
+        return data
+
+    def _message_loop(self) -> None:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
+        user32.DefWindowProcW.restype = LRESULT
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            LRESULT,
+            wintypes.HWND,
+            wintypes.UINT,
+            WPARAM,
+            LPARAM,
+        )
+
+        class WndClass(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HANDLE),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HANDLE),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == self.WM_TRAYICON:
+                if lparam == self.WM_LBUTTONDBLCLK:
+                    self.on_restore()
+                    return 0
+                if lparam == self.WM_RBUTTONUP:
+                    self._show_menu(hwnd)
+                    return 0
+            if msg == self.WM_DESTROY:
+                user32.PostQuitMessage(0)
+                return 0
+            if msg == self.WM_COMMAND:
+                command = wparam & 0xFFFF
+                if command == self.RESTORE_COMMAND:
+                    self.on_restore()
+                elif command == self.EXIT_COMMAND:
+                    self.on_exit()
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc = WNDPROC(wndproc)
+        hinstance = kernel32.GetModuleHandleW(None)
+        self._hicon = user32.LoadIconW(None, self.IDI_APPLICATION)
+
+        wndclass = WndClass()
+        wndclass.lpfnWndProc = self._wndproc
+        wndclass.hInstance = hinstance
+        wndclass.hIcon = self._hicon
+        wndclass.lpszClassName = self._class_name
+        user32.RegisterClassW(ctypes.byref(wndclass))
+
+        self._hwnd = user32.CreateWindowExW(
+            0,
+            self._class_name,
+            self._class_name,
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            hinstance,
+            None,
+        )
+        self._ready.set()
+
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def _show_menu(self, hwnd: int) -> None:
+        user32 = ctypes.windll.user32
+        menu = user32.CreatePopupMenu()
+        user32.AppendMenuW(menu, self.MF_STRING, self.RESTORE_COMMAND, "Restore")
+        user32.AppendMenuW(menu, self.MF_STRING, self.EXIT_COMMAND, "Exit")
+
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        user32.SetForegroundWindow(hwnd)
+        command = user32.TrackPopupMenu(
+            menu,
+            self.TPM_RETURNCMD | self.TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            None,
+        )
+        user32.DestroyMenu(menu)
+        if command == self.RESTORE_COMMAND:
+            self.on_restore()
+        elif command == self.EXIT_COMMAND:
+            self.on_exit()
 
 
 class AzpHelperGui:
@@ -19,6 +245,13 @@ class AzpHelperGui:
         self.root.minsize(620, 360)
         self.process: subprocess.Popen[str] | None = None
         self.output_queue: queue.Queue[str] = queue.Queue()
+        self._closing = False
+        self._hidden_to_tray = False
+        self.tray_icon = WindowsTrayIcon(
+            "AZP Local Helper",
+            on_restore=lambda: self.root.after(0, self.restore_from_tray),
+            on_exit=lambda: self.root.after(0, self.close),
+        )
 
         Label(
             self.root,
@@ -71,6 +304,7 @@ class AzpHelperGui:
         self._write_log("Build Mode never enters a stake amount and never clicks Place Bet.\n\n")
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.bind("<Unmap>", self.on_unmap)
         self.root.after(100, self.drain_output)
 
     def run(self) -> None:
@@ -126,8 +360,42 @@ class AzpHelperGui:
         self._write_log("Helper stopped.\n")
 
     def close(self) -> None:
+        self._closing = True
+        self.tray_icon.close()
         self.stop_helper()
         self.root.destroy()
+
+    def on_unmap(self, _event=None) -> None:
+        if self._closing or self._hidden_to_tray:
+            return
+        try:
+            window_state = self.root.state()
+        except Exception:
+            return
+        if should_minimize_to_tray(
+            window_state,
+            tray_supported=self.tray_icon.is_supported(),
+        ):
+            self.root.after(50, self.minimize_to_tray)
+
+    def minimize_to_tray(self) -> None:
+        if self._closing or self._hidden_to_tray:
+            return
+        if self.tray_icon.show():
+            self._hidden_to_tray = True
+            self.root.withdraw()
+            self._write_log(
+                "Helper minimized to system tray. Double-click the tray icon to restore.\n"
+            )
+        else:
+            self._write_log("System tray unavailable; helper stayed minimized.\n")
+
+    def restore_from_tray(self) -> None:
+        self.tray_icon.hide()
+        self._hidden_to_tray = False
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
 
     def capture_output(self) -> None:
         if not self.process or not self.process.stdout:

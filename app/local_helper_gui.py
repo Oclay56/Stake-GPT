@@ -7,7 +7,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, Button, Frame, Label, Tk, Text, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, Button, Canvas, Frame, Label, Tk, Text, messagebox
 from ctypes import wintypes
 
 
@@ -21,6 +21,7 @@ HELPER_MUTED_FG = "#C9C7D9"
 HELPER_PANEL_BG = "#070923"
 HELPER_BUTTON_BG = "#11143A"
 HELPER_BUTTON_ACTIVE_BG = "#1A1E55"
+LOGO_FONT_FAMILY = "Segoe Script"
 
 
 def should_minimize_to_tray(window_state: str, *, tray_supported: bool) -> bool:
@@ -260,13 +261,8 @@ class AzpHelperGui:
             on_exit=lambda: self.root.after(0, self.close),
         )
 
-        Label(
-            self.root,
-            text="AZP Local Helper",
-            font=("Segoe UI", 16, "bold"),
-            bg=HELPER_BG,
-            fg=HELPER_FG,
-        ).pack(pady=(14, 4))
+        self.logo = create_stake_logo_header(self.root)
+        self.logo.pack(fill="x", padx=16, pady=(14, 2))
         Label(
             self.root,
             text=(
@@ -473,6 +469,61 @@ def _button_style() -> dict[str, str | int]:
         "borderwidth": 0,
         "highlightthickness": 0,
     }
+
+
+def create_stake_logo_header(parent) -> Canvas:
+    canvas = Canvas(
+        parent,
+        height=92,
+        bg=HELPER_BG,
+        bd=0,
+        highlightthickness=0,
+        relief="flat",
+    )
+
+    def redraw(_event=None) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 1)
+        center_x = width // 2
+        baseline_y = 45
+        font = (LOGO_FONT_FAMILY, 50, "bold italic")
+
+        canvas.create_text(
+            center_x + 4,
+            baseline_y + 6,
+            text="Stake",
+            font=font,
+            fill="#01020D",
+            anchor="center",
+        )
+        canvas.create_text(
+            center_x + 2,
+            baseline_y + 3,
+            text="Stake",
+            font=font,
+            fill="#111324",
+            anchor="center",
+        )
+        canvas.create_text(
+            center_x,
+            baseline_y,
+            text="Stake",
+            font=font,
+            fill="#FFFFFF",
+            anchor="center",
+        )
+        canvas.create_text(
+            center_x - 1,
+            baseline_y - 1,
+            text="Stake",
+            font=font,
+            fill="#F8F6FF",
+            anchor="center",
+        )
+
+    canvas.bind("<Configure>", redraw)
+    canvas.after(1, redraw)
+    return canvas
 
 
 def main() -> int:

@@ -234,6 +234,19 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     request_body=_stake_ui_remove_sidebar_group_request_body(),
                 )
             },
+            "/mlb/stake-ui/clear-sidebar": {
+                "post": _operation(
+                    "clearStakeUiSidebar",
+                    "Clear Stake UI sidebar",
+                    (
+                        "Optional recovery action. Clears the whole visible right-sidebar "
+                        "review slip by clicking Stake's Clear Bet/Clear Bets control. "
+                        "Use only when the user asks to wipe the visible slip. It never "
+                        "enters stake amount or clicks Place Bet."
+                    ),
+                    request_body=_stake_ui_clear_sidebar_request_body(),
+                )
+            },
             "/mlb/stake-ui/review-slip": {
                 "post": _operation(
                     "buildStakeUiReviewSlip",
@@ -2651,6 +2664,32 @@ def _stake_ui_remove_sidebar_group_request_body() -> dict[str, Any]:
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
                         "scheduleLimit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    "required": ["reviewOnly"],
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
+def _stake_ui_clear_sidebar_request_body() -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "reviewOnly": {
+                            "type": "boolean",
+                            "const": True,
+                            "description": (
+                                "Must be true. The helper can clear the visible review "
+                                "slip, but cannot enter stake amount or place a bet."
+                            ),
+                        },
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
                     },
                     "required": ["reviewOnly"],
                     "additionalProperties": True,

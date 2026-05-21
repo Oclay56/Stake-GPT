@@ -261,6 +261,39 @@ def test_process_job_runs_sidebar_group_remover(monkeypatch):
     assert store.completed[0][1]["status"] == "removed"
 
 
+def test_process_job_runs_sidebar_clearer(monkeypatch):
+    def fake_clear_stake_sidebar(*, cdp_url: str):
+        assert cdp_url == "http://127.0.0.1:9222"
+        return {
+            "source": "stake_ui_clear_sidebar",
+            "status": "cleared",
+        }
+
+    monkeypatch.setattr(
+        local_stake_helper,
+        "clear_stake_sidebar",
+        fake_clear_stake_sidebar,
+    )
+    store = FakeJobStore()
+    job = {
+        "jobId": "job-clear-sidebar",
+        "jobType": "stake_ui_clear_sidebar",
+        "request": {},
+    }
+
+    asyncio.run(
+        local_stake_helper.process_job(
+            store,
+            job,
+            cdp_url="http://127.0.0.1:9222",
+        )
+    )
+
+    assert not store.failed
+    assert store.completed[0][0] == "job-clear-sidebar"
+    assert store.completed[0][1]["status"] == "cleared"
+
+
 def test_process_job_does_not_crash_when_failure_reporting_fails(monkeypatch, capsys):
     def fake_read_stake_sgm_board(fixture_slug: str, *, cdp_url: str):
         raise RuntimeError("Stake is still region-blocked in this browser session.")

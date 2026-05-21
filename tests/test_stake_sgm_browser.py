@@ -5,6 +5,7 @@ import pytest
 from app.stake_sgm_browser import (
     _add_bet_confirmed,
     _check_page_ready,
+    _sidebar_clear_confirmed,
     _fixture_matchup_from_slug,
     _find_or_open_fixture_page,
     _normalize_mlb_game_link,
@@ -277,4 +278,41 @@ def test_sidebar_remove_confirmed_accepts_disappeared_target_or_sidebar_shrink()
         remove_result={"status": "not_removed"},
         before_state=before,
         after_state=after,
+    )
+
+
+def test_sidebar_clear_confirmed_requires_empty_or_selection_drop_to_zero():
+    before = {
+        "rightPanelTextDigest": "abc",
+        "rightPanelTextLength": 220,
+        "rightPanelSelectionCount": 4,
+        "rightPanelEmpty": False,
+    }
+    cleared_after = {
+        "rightPanelTextDigest": "def",
+        "rightPanelTextLength": 80,
+        "rightPanelSelectionCount": 0,
+        "rightPanelEmpty": True,
+    }
+    unchanged_after = {
+        "rightPanelTextDigest": "abc",
+        "rightPanelTextLength": 220,
+        "rightPanelSelectionCount": 4,
+        "rightPanelEmpty": False,
+    }
+
+    assert _sidebar_clear_confirmed(
+        clear_result={"status": "clicked"},
+        before_state=before,
+        after_state=cleared_after,
+    )
+    assert not _sidebar_clear_confirmed(
+        clear_result={"status": "clicked"},
+        before_state=before,
+        after_state=unchanged_after,
+    )
+    assert not _sidebar_clear_confirmed(
+        clear_result={"status": "not_cleared"},
+        before_state=before,
+        after_state=cleared_after,
     )

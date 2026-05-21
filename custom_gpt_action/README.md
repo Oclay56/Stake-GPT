@@ -40,6 +40,7 @@ Authentication can stay `None` unless `AZP_GPT_API_KEY` is set on Render. If tha
 - `getStakeUiMlbGames`: request the local helper to read visible MLB fixture links from the actual Stake UI
 - `readStakeUiState`: optional diagnostic action for failed/unclear UI helper states; reports page, fixture, SGM visibility, login/region/Cloudflare state, and sidebar state
 - `clearStakeUiSgmSelections`: optional recovery action for clearing pending SGM working selections before a retry; it does not clear placed sidebar slip legs
+- `clearStakeUiSidebar`: optional recovery action for clearing the entire visible right-sidebar review slip; use only when the user asks to wipe the whole slip
 - `buildStakeUiReviewSlipBatch`: build multiple exact UI-backed SGM groups into one visible Stake review slip using one shared browser page; prefer passing `rowIds`
 - `getPlayerMlbContext`: return MLB season and recent-window context for a player
 - `getSpecificPropContext`: enrich one Stake prop selection with MLB context for the exact requested side
@@ -63,7 +64,7 @@ Authentication can stay `None` unless `AZP_GPT_API_KEY` is set on Render. If tha
 10. If validation passes, call `saveGptDecision`.
 11. For Same Game Multi review slips, pass the selected rows' `rowIds` to `buildStakeUiReviewSlip` or `buildStakeUiReviewSlipBatch`. Do not reconstruct the build request from player name, line, and odds when a `rowId` exists.
 12. For multi-game Same Game Multi review slips, use `buildStakeUiReviewSlipBatch` once instead of separate one-game slip builds.
-13. Use `readStakeUiState` or `clearStakeUiSgmSelections` only after a UI helper failure, unclear status, or stuck pending SGM selection. Do not spend action calls on diagnostics during a successful normal flow.
+13. Use `readStakeUiState` or `clearStakeUiSgmSelections` only after a UI helper failure, unclear status, or stuck pending SGM selection. Use `clearStakeUiSidebar` only when the user explicitly asks to clear the whole visible slip. Do not spend action calls on diagnostics during a successful normal flow.
 14. Do not recommend props that fail validation.
 
 Stake availability comes first. MLB context can support or reject a pick, but it cannot create a pick that Stake does not currently offer. Feed validation is not the same as a final Stake bet-slip quote; if a line or price differs in the UI, the UI/quote wins.

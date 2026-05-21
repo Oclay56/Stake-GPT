@@ -269,6 +269,42 @@ def remove_stake_sidebar_group(
         }
 
 
+def clear_stake_sidebar(
+    *,
+    cdp_url: str = DEFAULT_CDP_URL,
+) -> dict[str, Any]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(cdp_url)
+        if not browser.contexts:
+            raise RuntimeError("No Chrome context found on the debug port.")
+
+        page = _diagnostic_page(browser.contexts[0], fixture_slug=None)
+        state_before = _read_stake_ui_state_from_page(page)
+        clear_result = _clear_sidebar_from_page(page)
+        state_after = _read_stake_ui_state_from_page(page)
+        cleared = _sidebar_clear_confirmed(
+            clear_result=clear_result,
+            before_state=state_before.get("slip") or {},
+            after_state=state_after.get("slip") or {},
+        )
+        return {
+            "source": "stake_ui_clear_sidebar",
+            "capturedAt": datetime.now(timezone.utc).isoformat(),
+            "status": "cleared" if cleared else "not_cleared",
+            "clearResult": clear_result,
+            "stateBefore": state_before,
+            "stateAfter": state_after,
+            "slip": state_after.get("slip") or {},
+            "safety": {
+                "enteredStakeAmount": False,
+                "clickedPlaceBet": False,
+                "clearedEntireSidebar": cleared,
+            },
+        }
+
+
 def build_stake_sgm_review_slip(
     fixture_slug: str,
     selections: list[dict[str, Any]],
@@ -1152,6 +1188,139 @@ def _sidebar_remove_confirmed(
     if before_count and after_count < before_count:
         return True
     return bool(before_digest and before_digest != after_digest and after_length + 10 < before_length)
+
+
+def _clear_sidebar_from_page(page: Any) -> dict[str, Any]:
+    try:
+        result = page.evaluate(
+            """
+            async () => {
+              const norm = (value) => String(value || "")
+                .normalize("NFD")
+                .replace(/[\\u0300-\\u036f]/g, "")
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, " ")
+                .replace(/\\s+/g, " ")
+                .trim();
+              const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.visibility !== "hidden"
+                  && style.display !== "none"
+                  && rect.width > 0
+                  && rect.height > 0;
+              };
+              const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+              const textDigest = (text) => {
+                let hash = 0;
+                for (let index = 0; index < text.length; index += 1) {
+                  hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+                }
+                return String(hash);
+              };
+              const rightPanel = document.querySelector("#right-sidebar") || Array.from(document.querySelectorAll("aside,[role='complementary'],body *"))
+                .filter(visible)
+                .find((el) => {
+                  const rect = el.getBoundingClientRect();
+                  const text = norm(el.innerText || el.textContent || "");
+                  return rect.width >= 220
+                    && rect.x > window.innerWidth * 0.55
+                    && (text.includes("bet slip") || text.includes("betting slip") || text.includes("wettschein"));
+                });
+              if (!rightPanel) {
+                return { status: "not_cleared", reason: "right_panel_missing" };
+              }
+
+              const panelTextBefore = norm(rightPanel.innerText || rightPanel.textContent || "");
+              const emptyPhrases = [
+                "bet slip is empty",
+                "betting slip is empty",
+                "wettschein ist leer",
+              ];
+              if (emptyPhrases.some((phrase) => panelTextBefore.includes(phrase))) {
+                return {
+                  status: "already_empty",
+                  sidebarDigestBefore: textDigest(panelTextBefore),
+                };
+              }
+
+              const buttonCandidates = Array.from(rightPanel.querySelectorAll("button,[role='button']"))
+                .filter(visible)
+                .map((el) => {
+                  const text = norm(`${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""} ${el.innerText || el.textContent || ""}`);
+                  const rect = el.getBoundingClientRect();
+                  return {
+                    el,
+                    text,
+                    y: rect.y,
+                    area: rect.width * rect.height,
+                    disabled: Boolean(el.disabled || el.getAttribute("aria-disabled") === "true"),
+                  };
+                })
+                .filter((item) => !item.disabled)
+                .filter((item) => {
+                  if (!item.text) return false;
+                  if (item.text.includes("place bet") || item.text.includes("placing bets")) return false;
+                  return item.text === "clear bet"
+                    || item.text === "clear bets"
+                    || item.text === "delete bet"
+                    || item.text === "delete bets"
+                    || item.text.includes("clear bet")
+                    || item.text.includes("delete bet")
+                    || item.text.includes("remove all bets");
+                });
+              if (!buttonCandidates.length) {
+                return {
+                  status: "not_cleared",
+                  reason: "clear_button_not_found",
+                  rightPanelTextDigest: textDigest(panelTextBefore),
+                  rightPanelTextSample: panelTextBefore.slice(0, 260),
+                };
+              }
+
+              buttonCandidates.sort((a, b) => (b.y - a.y) || (b.area - a.area));
+              const selected = buttonCandidates[0];
+              selected.el.scrollIntoView({ block: "center", inline: "center" });
+              selected.el.click();
+              await sleep(900);
+              const panelTextAfter = norm(rightPanel.innerText || rightPanel.textContent || "");
+              return {
+                status: "clicked",
+                clickedButtonText: selected.text,
+                sidebarDigestBefore: textDigest(panelTextBefore),
+                sidebarDigestAfter: textDigest(panelTextAfter),
+              };
+            }
+            """
+        )
+        page.wait_for_timeout(300)
+        return dict(result or {})
+    except Exception as exc:
+        return {"status": "not_cleared", "reason": str(exc)}
+
+
+def _sidebar_clear_confirmed(
+    *,
+    clear_result: dict[str, Any],
+    before_state: dict[str, Any],
+    after_state: dict[str, Any],
+) -> bool:
+    if clear_result.get("status") == "already_empty":
+        return bool(after_state.get("rightPanelEmpty", True))
+    if clear_result.get("status") != "clicked":
+        return False
+
+    after_count = _int_or_none(after_state.get("rightPanelSelectionCount"))
+    if after_state.get("rightPanelEmpty") is True:
+        return True
+    if after_count == 0:
+        return True
+
+    before_digest = str(before_state.get("rightPanelTextDigest") or "")
+    after_digest = str(after_state.get("rightPanelTextDigest") or "")
+    before_length = _int_or_none(before_state.get("rightPanelTextLength")) or 0
+    after_length = _int_or_none(after_state.get("rightPanelTextLength")) or 0
+    return bool(before_digest and after_digest != before_digest and after_length + 10 < before_length)
 
 
 def _clear_sgm_working_selection(page: Any) -> None:

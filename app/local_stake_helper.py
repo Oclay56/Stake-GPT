@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .local_ui_bridge import (
+    STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
     STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
@@ -23,6 +24,7 @@ from .stake_sgm_browser import (
     DEFAULT_CDP_URL,
     build_stake_sgm_review_slip_batch,
     build_stake_sgm_review_slip,
+    clear_stake_sidebar,
     clear_stake_sgm_selections,
     read_stake_mlb_games,
     read_stake_sgm_board,
@@ -99,6 +101,7 @@ async def process_job(
         STAKE_UI_STATE_JOB_TYPE,
         STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
         STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
+        STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     }
     if job_type not in fixture_optional_types and not fixture_slug:
         await store.fail_job(job_id, "Job request is missing fixtureSlug.")
@@ -132,6 +135,11 @@ async def process_job(
                 cdp_url=cdp_url,
                 fixture_slug=fixture_slug or None,
                 matchup=str(request.get("matchup") or "").strip() or None,
+            )
+        elif job_type == STAKE_CLEAR_SIDEBAR_JOB_TYPE:
+            result = await asyncio.to_thread(
+                clear_stake_sidebar,
+                cdp_url=cdp_url,
             )
         elif job_type == STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE:
             result = await asyncio.to_thread(
@@ -257,6 +265,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
             STAKE_SGM_BOARD_JOB_TYPE,
             STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
             STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
+            STAKE_CLEAR_SIDEBAR_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
         ]
@@ -267,6 +276,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
             STAKE_SGM_BOARD_JOB_TYPE,
             STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
             STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
+            STAKE_CLEAR_SIDEBAR_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
         ]
@@ -282,6 +292,8 @@ def _job_label(job_type: str) -> str:
         return "Clearing SGM selections"
     if job_type == STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE:
         return "Removing sidebar group"
+    if job_type == STAKE_CLEAR_SIDEBAR_JOB_TYPE:
+        return "Clearing sidebar"
     if job_type == STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE:
         return "Building batch review slip"
     if job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE:

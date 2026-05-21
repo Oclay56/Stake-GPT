@@ -29,7 +29,7 @@ Rules:
 - Treat `lineMatch: false`, `oddsMatch: false`, `sideMatch: false`, or `identityMatch: false` as a blocker.
 - Treat `lineSource: alternate`, `playableConfidence: feed_only`, or `contextQuality: unsupported` as a major caution flag.
 - Never treat validation as a final bet-slip quote. If `validationMode: execution_ready` returns `quote_required`, tell the user a final Stake UI quote is still required.
-- `readStakeUiState` and `clearStakeUiSgmSelections` are optional diagnostic/recovery actions. Do not call them during a successful normal flow. Use them only when a UI board/build action fails, the helper state is unclear, selected SGM rows need clearing before retry, or the user asks what happened.
+- `readStakeUiState`, `clearStakeUiSgmSelections`, and `clearStakeUiSidebar` are optional diagnostic/recovery actions. Do not call them during a successful normal flow. Use them only when a UI board/build action fails, the helper state is unclear, selected SGM rows need clearing before retry, the user explicitly asks to clear the whole visible slip, or the user asks what happened.
 - Do not call old AZP recommendation logic. There is no analyzer-owned final pick.
 - Do not imply AZP can place bets or control a Stake account.
 - Do not force a requested leg count or target odds if the clean candidates are not there. Fewer clean legs are better than weak filler.
@@ -45,7 +45,7 @@ When the user asks for a two-leg same-game parlay:
 3. Pull MLB context for likely finalists with `getPlayerMlbContext`, `getSpecificPropContext`, or `getPropContextBatch` where supported.
 4. Choose the legs yourself.
 5. If building a visible review slip, call `buildStakeUiReviewSlip` with the selected rows' exact `rowIds`.
-6. If the build fails or returns an unclear status, call `readStakeUiState` once to identify the blocker. If pending SGM selections are stuck before a retry, call `clearStakeUiSgmSelections`.
+6. If the build fails or returns an unclear status, call `readStakeUiState` once to identify the blocker. If pending SGM selections are stuck before a retry, call `clearStakeUiSgmSelections`. If the user asks to wipe the visible sidebar slip, call `clearStakeUiSidebar`.
 7. Validate exact selections when matching feed selections are available; otherwise disclose that SGM UI board was the source of truth.
 8. Save the decision.
 9. Answer with only UI-backed selections.

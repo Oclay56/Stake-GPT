@@ -14,6 +14,7 @@ from .local_archive import (
     archive_status,
 )
 from .local_ui_bridge import (
+    STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
     STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
@@ -731,6 +732,96 @@ async def mlb_stake_ui_remove_sidebar_group(
         "fixtureSlug": fixture_slug,
         "bridge": _local_ui_bridge_summary(completed),
         "result": _compact_remove_sidebar_group_result(result),
+    }
+
+
+@app.post("/mlb/stake-ui/clear-sidebar")
+async def mlb_stake_ui_clear_sidebar(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    _: None = Depends(require_gpt_api_key),
+    job_store: SupabaseLocalUiJobStore = Depends(get_local_ui_job_store),
+) -> Any:
+    if not job_store.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "source": "local_ui_bridge",
+                "message": (
+                    "Supabase local UI bridge is not configured. Set SUPABASE_URL "
+                    "and SUPABASE_SERVICE_ROLE_KEY on Render and the local helper."
+                ),
+            },
+        )
+
+    review_only = _bool_from_body(payload, "reviewOnly", "review_only", True)
+    if not review_only:
+        raise HTTPException(
+            status_code=422,
+            detail="reviewOnly must be true. AZP will not place bets or enter stake amounts.",
+        )
+
+    timeout_seconds = _clean_int_from_body(
+        payload,
+        "timeoutSeconds",
+        20,
+        minimum=1,
+        maximum=60,
+    )
+    request = {
+        "requestedBy": "custom_gpt",
+        "purpose": "stake_ui_clear_sidebar",
+        "reviewOnly": True,
+        "forbiddenActions": ["enter_stake_amount", "click_place_bet"],
+    }
+    job: dict[str, Any] | None = None
+    try:
+        job = await job_store.create_job(
+            job_type=STAKE_CLEAR_SIDEBAR_JOB_TYPE,
+            request=request,
+            timeout_seconds=timeout_seconds,
+        )
+        completed = await job_store.wait_for_completed_result(
+            job["jobId"],
+            timeout_seconds=timeout_seconds,
+        )
+    except LocalUiBridgeDisabled as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+    except LocalUiBridgeTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "source": "local_ui_bridge",
+                "message": str(exc),
+                "jobId": (job or {}).get("jobId"),
+            },
+        ) from exc
+    except LocalUiBridgeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+
+    if completed.get("status") != "completed":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "source": "local_ui_bridge",
+                "message": completed.get("error") or "Local helper job did not complete.",
+                "status": completed.get("status"),
+                "jobId": completed.get("jobId"),
+            },
+        )
+
+    result = completed.get("result") or {}
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_ui_clear_sidebar_via_local_helper",
+        "purpose": "stake_ui_review_slip_sidebar_clear",
+        "bridge": _local_ui_bridge_summary(completed),
+        "result": _compact_clear_sidebar_result(result),
     }
 
 
@@ -1701,6 +1792,22 @@ def _compact_remove_sidebar_group_result(result: dict[str, Any]) -> dict[str, An
             "enteredStakeAmount": False,
             "clickedPlaceBet": False,
             "removedSidebarGroupOnly": True,
+            **(result.get("safety") or {}),
+        },
+    }
+
+
+def _compact_clear_sidebar_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": result.get("source"),
+        "capturedAt": result.get("capturedAt"),
+        "status": result.get("status"),
+        "clearResult": result.get("clearResult") or {},
+        "slip": result.get("slip") or {},
+        "safety": {
+            "enteredStakeAmount": False,
+            "clickedPlaceBet": False,
+            "clearedEntireSidebar": bool(result.get("status") == "cleared"),
             **(result.get("safety") or {}),
         },
     }

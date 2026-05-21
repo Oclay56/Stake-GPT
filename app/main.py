@@ -48,6 +48,7 @@ from .mlb_schedule import build_mlb_schedule_stake_map, build_mlb_schedule_view
 from .mlb_props import slug_key
 from .slate import DEFAULT_TIMEZONE
 from .stake_client import StakeAPIError, StakeClient, build_http_client
+from .stake_sgm_browser import make_sgm_selection_row_id
 from .storage import GptActionStore
 from .supabase_ledger import (
     supabase_ledger_enabled,
@@ -1218,11 +1219,25 @@ def _clean_int_from_body(
 
 
 def _review_slip_selections_from_body(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_selections = payload.get("selections")
+    raw_selection_value = payload.get("selections")
+    if raw_selection_value is None:
+        raw_selections: list[Any] = []
+    elif isinstance(raw_selection_value, list):
+        raw_selections = list(raw_selection_value)
+    else:
+        raise HTTPException(status_code=422, detail="selections must be a list")
+
+    raw_row_ids = payload.get("rowIds") or payload.get("row_ids")
+    if raw_row_ids is not None and not isinstance(raw_row_ids, list):
+        raise HTTPException(status_code=422, detail="rowIds must be a list")
+    for row_id in raw_row_ids or []:
+        if str(row_id or "").strip():
+            raw_selections.append({"rowId": str(row_id).strip()})
+
     if not isinstance(raw_selections, list) or not raw_selections:
         raise HTTPException(
             status_code=422,
-            detail="selections must be a non-empty list of exact Stake UI-backed legs",
+            detail="selections or rowIds must be a non-empty list of exact Stake UI-backed legs",
         )
     if len(raw_selections) > 20:
         raise HTTPException(status_code=422, detail="selections cannot contain more than 20 legs")
@@ -1232,6 +1247,33 @@ def _review_slip_selections_from_body(payload: dict[str, Any]) -> list[dict[str,
     for index, raw_selection in enumerate(raw_selections, start=1):
         if not isinstance(raw_selection, dict):
             raise HTTPException(status_code=422, detail=f"selection {index} must be an object")
+
+        row_id = _clean_nullable_text(
+            raw_selection.get("rowId")
+            or raw_selection.get("row_id")
+            or (
+                raw_selection.get("selectionId")
+                if str(raw_selection.get("selectionId") or "").startswith("sgm_")
+                else None
+            )
+        )
+        if row_id:
+            cleaned_selection: dict[str, Any] = {"rowId": row_id}
+            for output_key, input_key in (
+                ("player", "player"),
+                ("team", "team"),
+                ("market", "market"),
+                ("side", "side"),
+                ("scope", "scope"),
+            ):
+                text_value = _clean_nullable_text(raw_selection.get(input_key))
+                if text_value:
+                    cleaned_selection[output_key] = text_value
+            for numeric_key in ("line", "odds"):
+                if raw_selection.get(numeric_key) is not None:
+                    cleaned_selection[numeric_key] = raw_selection.get(numeric_key)
+            cleaned.append(cleaned_selection)
+            continue
 
         missing = [
             field
@@ -1315,7 +1357,10 @@ async def _review_slip_groups_from_body(
             )
 
         selections = _review_slip_selections_from_body(
-            {"selections": raw_group.get("selections")}
+            {
+                "selections": raw_group.get("selections"),
+                "rowIds": raw_group.get("rowIds") or raw_group.get("row_ids"),
+            }
         )
         groups.append(
             {
@@ -1502,8 +1547,14 @@ def _stake_ui_selection_rows(
             odds = row.get(row_side)
             if odds is None:
                 continue
+            row_id = make_sgm_selection_row_id(
+                str(board.get("fixtureSlug") or ""),
+                row,
+                row_side,
+            )
             compact_rows.append(
                 {
+                    "rowId": row_id,
                     "selectionId": f"{row.get('lineId') or ''}:{row_side}",
                     "propId": row.get("lineId"),
                     "player": row.get("player"),

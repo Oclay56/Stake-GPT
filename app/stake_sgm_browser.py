@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from hashlib import sha1
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -281,7 +282,7 @@ def build_stake_sgm_review_slip_batch(
             warnings = _check_page_ready(page, fixture_slug=fixture_slug)
             response = _fetch_sgm_board_in_browser(page, fixture_slug)
             board = normalize_sgm_response(fixture_slug, response, warnings)
-            selections = list(group.get("selections") or [])
+            selections = _group_review_selections(group)
             if _has_logged_out_warning(warnings):
                 result = _review_slip_result(
                     fixture_slug=fixture_slug,
@@ -379,9 +380,19 @@ def match_sgm_review_selections(
     missing_selections: list[dict[str, Any]] = []
 
     for selection in selections:
+        match = _find_selection_row_by_row_id(
+            source_rows,
+            str(board.get("fixtureSlug") or ""),
+            selection,
+        )
+        if match:
+            matched_rows.append(match)
+            continue
+
         match = _find_exact_selection_row(
             source_rows,
             selection,
+            fixture_slug=str(board.get("fixtureSlug") or ""),
             odds_tolerance=odds_tolerance,
         )
         if match:
@@ -395,6 +406,49 @@ def match_sgm_review_selections(
             )
 
     return {"matchedRows": matched_rows, "missingSelections": missing_selections}
+
+
+def _group_review_selections(group: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_selections = group.get("selections")
+    selections = list(raw_selections) if isinstance(raw_selections, list) else []
+    raw_row_ids = group.get("rowIds") or group.get("row_ids")
+    if raw_row_ids is not None and not isinstance(raw_row_ids, list):
+        return selections
+    for row_id in raw_row_ids or []:
+        if str(row_id or "").strip():
+            selections.append({"rowId": str(row_id).strip()})
+    return selections
+
+
+def _find_selection_row_by_row_id(
+    source_rows: list[dict[str, Any]],
+    fixture_slug: str,
+    selection: dict[str, Any],
+) -> dict[str, Any] | None:
+    row_id = str(
+        selection.get("rowId")
+        or selection.get("row_id")
+        or (
+            selection.get("selectionId")
+            if str(selection.get("selectionId") or "").startswith("sgm_")
+            else ""
+        )
+        or ""
+    ).strip()
+    if not row_id:
+        return None
+
+    for row in source_rows:
+        if not row.get("playable"):
+            continue
+        for side in ("over", "under"):
+            if row.get(side) is None:
+                continue
+            current_row_id = make_sgm_selection_row_id(fixture_slug, row, side)
+            if current_row_id == row_id:
+                return _matched_selection_row(row, side, current_row_id)
+
+    return None
 
 
 def normalize_sgm_response(
@@ -457,6 +511,7 @@ def _find_exact_selection_row(
     source_rows: list[dict[str, Any]],
     selection: dict[str, Any],
     *,
+    fixture_slug: str,
     odds_tolerance: float,
 ) -> dict[str, Any] | None:
     side = str(selection.get("side") or "").strip().lower()
@@ -486,26 +541,35 @@ def _find_exact_selection_row(
         if abs(selection_odds - row_odds) > odds_tolerance:
             continue
 
-        return {
-            "player": row.get("player"),
-            "team": row.get("team"),
-            "position": row.get("position"),
-            "scope": row.get("scope"),
-            "market": row.get("market"),
-            "side": side,
-            "line": row.get("line"),
-            "odds": row_odds,
-            "playable": bool(row.get("playable")),
-            "suspended": bool(row.get("suspended")),
-            "customBet": bool(row.get("customBet")),
-            "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
-            "playerId": row.get("playerId"),
-            "marketId": row.get("marketId"),
-            "lineId": row.get("lineId"),
-            "swishStatId": row.get("swishStatId"),
-        }
+        return _matched_selection_row(
+            row,
+            side,
+            make_sgm_selection_row_id(fixture_slug, row, side),
+        )
 
     return None
+
+
+def _matched_selection_row(row: dict[str, Any], side: str, row_id: str) -> dict[str, Any]:
+    return {
+        "rowId": row_id,
+        "player": row.get("player"),
+        "team": row.get("team"),
+        "position": row.get("position"),
+        "scope": row.get("scope"),
+        "market": row.get("market"),
+        "side": side,
+        "line": row.get("line"),
+        "odds": _float_or_none(row.get(side)),
+        "playable": bool(row.get("playable")),
+        "suspended": bool(row.get("suspended")),
+        "customBet": bool(row.get("customBet")),
+        "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
+        "playerId": row.get("playerId"),
+        "marketId": row.get("marketId"),
+        "lineId": row.get("lineId"),
+        "swishStatId": row.get("swishStatId"),
+    }
 
 
 def _click_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1183,6 +1247,7 @@ def _review_slip_result(
 
 def _compact_click_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
+        "rowId": row.get("rowId"),
         "player": row.get("player"),
         "team": row.get("team"),
         "market": row.get("market"),
@@ -1194,6 +1259,22 @@ def _compact_click_row(row: dict[str, Any]) -> dict[str, Any]:
         "marketId": row.get("marketId"),
         "lineId": row.get("lineId"),
     }
+
+
+def make_sgm_selection_row_id(fixture_slug: str, row: dict[str, Any], side: str) -> str:
+    identity_parts = [
+        str(fixture_slug or ""),
+        str(row.get("scope") or ""),
+        str(row.get("team") or ""),
+        str(row.get("playerId") or row.get("player") or ""),
+        str(row.get("marketId") or row.get("market") or ""),
+        str(row.get("swishStatId") or row.get("statId") or ""),
+        str(row.get("lineId") or ""),
+        _display_number(row.get("line")),
+        str(side or "").lower(),
+    ]
+    canonical = "|".join(_text_key(part) for part in identity_parts)
+    return f"sgm_{sha1(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _line_rows(

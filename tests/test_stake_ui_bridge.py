@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.gpt_action import build_gpt_action_openapi_schema
-from app.main import app, get_local_ui_job_store, get_stake_client
+from app.main import app, get_local_ui_job_store, get_stake_client, _compact_stake_ui_sgm_board
 from app.stake_sgm_browser import match_sgm_review_selections, normalize_sgm_response
 
 
@@ -266,6 +266,9 @@ def test_gpt_schema_exposes_review_slip_build_action():
     assert "review" in operation["summary"].lower()
     properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert properties["reviewOnly"]["const"] is True
+    assert "rowIds" in properties
+    selection_schema = properties["selections"]["items"]
+    assert "rowId" in selection_schema["properties"]
 
 
 def test_gpt_schema_exposes_stake_ui_mlb_games_action():
@@ -287,6 +290,60 @@ def test_gpt_schema_exposes_batch_review_slip_action():
     properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert properties["reviewOnly"]["const"] is True
     assert "groups" in properties
+    group_schema = properties["groups"]["items"]
+    assert "rowIds" in group_schema["properties"]
+    assert "rowId" in group_schema["properties"]["selections"]["items"]["properties"]
+
+
+def test_compact_sgm_board_returns_stable_row_ids_for_duplicate_odds():
+    board = {
+        "source": "stake_ui_sgm",
+        "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+        "playerProps": [
+            {
+                "team": "New York Yankees",
+                "player": "Austin Wells",
+                "scope": "player",
+                "market": "Hits",
+                "line": 0.5,
+                "under": 2.1,
+                "over": 1.62,
+                "playable": True,
+                "lineId": "line-a",
+                "marketId": "market-hits",
+                "playerId": "player-a",
+            },
+            {
+                "team": "Toronto Blue Jays",
+                "player": "George Springer",
+                "scope": "player",
+                "market": "Hits",
+                "line": 0.5,
+                "under": 2.1,
+                "over": 1.62,
+                "playable": True,
+                "lineId": "line-b",
+                "marketId": "market-hits",
+                "playerId": "player-b",
+            },
+        ],
+        "teamMarkets": [],
+    }
+
+    compact = _compact_stake_ui_sgm_board(
+        board,
+        limit=10,
+        side="under",
+        market="",
+        scope="",
+        playable_only=True,
+    )
+
+    rows = compact["rows"]
+    assert len(rows) == 2
+    assert all(row["rowId"] for row in rows)
+    assert rows[0]["odds"] == rows[1]["odds"]
+    assert rows[0]["rowId"] != rows[1]["rowId"]
 
 
 def test_stake_ui_mlb_games_route_creates_job_and_returns_completed_result():
@@ -374,6 +431,35 @@ def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails(
     assert created_request["reviewOnly"] is True
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
     assert len(created_request["groups"]) == 2
+
+
+def test_stake_ui_review_slip_batch_route_accepts_row_ids_without_reconstructed_fields():
+    fake_store = FakeCompletedBatchBuildJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip-batch",
+            json={
+                "reviewOnly": True,
+                "timeoutSeconds": 2,
+                "groups": [
+                    {
+                        "matchup": "Yankees vs Blue Jays",
+                        "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+                        "rowIds": ["sgm_abc123", "sgm_def456"],
+                    }
+                ],
+            },
+        )
+
+    created_request = fake_store.created_jobs[0]["request"]
+
+    assert response.status_code == 200
+    assert created_request["groups"][0]["selections"] == [
+        {"rowId": "sgm_abc123"},
+        {"rowId": "sgm_def456"},
+    ]
 
 
 def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_ui_store):
@@ -492,6 +578,28 @@ def test_stake_ui_review_slip_route_creates_build_job_with_review_only_guardrail
     assert created_request["reviewOnly"] is True
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
     assert len(created_request["selections"]) == 2
+
+
+def test_stake_ui_review_slip_route_accepts_row_ids_without_reconstructed_fields():
+    fake_store = FakeCompletedBuildJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip",
+            json={
+                "matchup": "Braves vs Marlins",
+                "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
+                "timeoutSeconds": 2,
+                "reviewOnly": True,
+                "rowIds": ["sgm_row_1", "sgm_row_2"],
+            },
+        )
+
+    created_request = fake_store.created_jobs[0]["request"]
+
+    assert response.status_code == 200
+    assert created_request["selections"] == [{"rowId": "sgm_row_1"}, {"rowId": "sgm_row_2"}]
 
 
 def test_stake_ui_review_slip_route_rejects_missing_exact_selection_fields():
@@ -683,3 +791,56 @@ def test_match_sgm_review_selections_requires_exact_playable_ui_rows():
     assert len(result["matchedRows"]) == 1
     assert result["matchedRows"][0]["lineId"] == "line-1"
     assert result["missingSelections"][0]["reason"] == "no exact playable UI row matched"
+
+
+def test_match_sgm_review_selections_can_match_by_row_id_only():
+    board = {
+        "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+        "playerProps": [
+            {
+                "team": "New York Yankees",
+                "player": "Austin Wells",
+                "scope": "player",
+                "market": "Hits",
+                "line": 0.5,
+                "under": 2.1,
+                "over": 1.62,
+                "playable": True,
+                "lineId": "line-a",
+                "marketId": "market-hits",
+                "playerId": "player-a",
+            },
+            {
+                "team": "Toronto Blue Jays",
+                "player": "George Springer",
+                "scope": "player",
+                "market": "Hits",
+                "line": 0.5,
+                "under": 2.1,
+                "over": 1.62,
+                "playable": True,
+                "lineId": "line-b",
+                "marketId": "market-hits",
+                "playerId": "player-b",
+            },
+        ],
+        "teamMarkets": [],
+    }
+    compact = _compact_stake_ui_sgm_board(
+        board,
+        limit=10,
+        side="under",
+        market="",
+        scope="",
+        playable_only=True,
+    )
+    target_row_id = compact["rows"][1]["rowId"]
+
+    result = match_sgm_review_selections(board, [{"rowId": target_row_id}])
+
+    assert result["missingSelections"] == []
+    assert len(result["matchedRows"]) == 1
+    assert result["matchedRows"][0]["player"] == "George Springer"
+    assert result["matchedRows"][0]["side"] == "under"
+    assert result["matchedRows"][0]["odds"] == 2.1
+    assert result["matchedRows"][0]["rowId"] == target_row_id

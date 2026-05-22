@@ -384,6 +384,8 @@ def build_stake_sgm_review_slip(
 def build_stake_sgm_review_slip_batch(
     groups: list[dict[str, Any]],
     *,
+    continue_on_group_failure: bool = False,
+    min_groups_required: int | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
@@ -397,6 +399,7 @@ def build_stake_sgm_review_slip_batch(
         page = _shared_stake_page(context)
         results: list[dict[str, Any]] = []
         stop_reason: str | None = None
+        required_groups = max(1, min(len(groups) or 1, int(min_groups_required or 1)))
 
         for group in groups:
             fixture_slug = str(group.get("fixtureSlug") or "").strip()
@@ -416,7 +419,9 @@ def build_stake_sgm_review_slip_batch(
                     }
                 )
                 stop_reason = "missing_fixture_slug"
-                break
+                if not continue_on_group_failure:
+                    break
+                continue
 
             page.goto(fixture_url(fixture_slug), wait_until="domcontentloaded", timeout=45_000)
             warnings = _check_page_ready(page, fixture_slug=fixture_slug)
@@ -488,7 +493,10 @@ def build_stake_sgm_review_slip_batch(
 
             result["matchup"] = group.get("matchup")
             results.append(result)
-            if result.get("status") != "built_for_review":
+            if _batch_should_stop_after_group_result(
+                result,
+                continue_on_group_failure=continue_on_group_failure,
+            ):
                 stop_reason = str(result.get("status") or "blocked")
                 break
 
@@ -498,7 +506,7 @@ def build_stake_sgm_review_slip_batch(
             "built_for_review"
             if clicked_groups == len(groups) and not stop_reason
             else "partial_review_slip"
-            if clicked_groups
+            if clicked_groups and clicked_groups >= required_groups
             else "blocked"
         )
         return {
@@ -511,6 +519,8 @@ def build_stake_sgm_review_slip_batch(
             "clickedGroups": clicked_groups,
             "clickedLegs": clicked_legs,
             "stopReason": stop_reason,
+            "continueOnGroupFailure": continue_on_group_failure,
+            "minGroupsRequired": required_groups,
             "groups": results,
             "safety": {
                 "enteredStakeAmount": False,
@@ -518,6 +528,16 @@ def build_stake_sgm_review_slip_batch(
                 "clickedPlaceBet": False,
             },
         }
+
+
+def _batch_should_stop_after_group_result(
+    result: dict[str, Any],
+    *,
+    continue_on_group_failure: bool,
+) -> bool:
+    if result.get("status") == "built_for_review":
+        return False
+    return not continue_on_group_failure
 
 
 def match_sgm_review_selections(
@@ -764,6 +784,8 @@ def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
         "oddsChanged": result.get("oddsChanged"),
         "matchedBy": result.get("matchedBy"),
         "candidateSamples": result.get("candidateSamples") or [],
+        "rowCandidateSamples": result.get("rowCandidateSamples") or [],
+        "visibleRowSamples": result.get("visibleRowSamples") or [],
         "marketMismatchSamples": result.get("marketMismatchSamples") or [],
     }
 
@@ -1746,6 +1768,43 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               matchesWanted: wantedSide && !oppositeSide,
             };
           };
+          const ownerMatchesText = (text) => {
+            if (wanted.scope === "match props" || wanted.scope === "match_props") {
+              return true;
+            }
+            return wanted.player
+              ? text.includes(wanted.player)
+              : wanted.team
+              ? text.includes(wanted.team)
+              : true;
+          };
+          const textSample = (value) => String(value || "")
+            .trim()
+            .replace(/\s+/g, " ")
+            .slice(0, 260);
+          const visibleRowSamples = () => {
+            const ownerText = wanted.player || wanted.team;
+            if (!ownerText) {
+              return [];
+            }
+            return Array.from(document.querySelectorAll("*"))
+              .filter(visible)
+              .map((el) => {
+                const rect = el.getBoundingClientRect();
+                const text = norm(el.innerText || el.textContent || "");
+                return {
+                  text,
+                  raw: textSample(el.innerText || el.textContent || ""),
+                  area: rect.width * rect.height,
+                  height: rect.height,
+                };
+              })
+              .filter((item) => item.text.includes(ownerText))
+              .filter((item) => item.height <= 900)
+              .sort((a, b) => a.area - b.area)
+              .slice(0, 8)
+              .map((item) => item.raw);
+          };
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
           const candidateElements = () => {
             const sideButtons = Array.from(document.querySelectorAll("button[data-testid='fixture-outcome']"))
@@ -1768,9 +1827,12 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
           let scopedCandidates = [];
           let lastCandidateSamples = [];
           let marketMismatchSamples = [];
+          let rowCandidateSamples = [];
+          let latestVisibleRowSamples = [];
           for (let attempt = 0; attempt < 24; attempt += 1) {
             const candidates = candidateElements();
             lastCandidateSamples = candidates.slice(0, 8).map((el) => String(el.innerText || el.textContent || "").trim());
+            latestVisibleRowSamples = visibleRowSamples();
             scopedCandidates = [];
             for (const el of candidates) {
               const buttonSide = directButtonSide(el);
@@ -1793,7 +1855,9 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
                   : sideAliases.length
                   ? sideAliases.some((side) => text.includes(side))
                   : true;
-                if (depth <= 2 && hasSide && textHasLine(text)) {
+                const lineMatchedHere = textHasLine(text);
+                const ownerMatchedHere = ownerMatchesText(text);
+                if ((hasSide || buttonSide.matchesWanted) && lineMatchedHere) {
                   lineSideMatched = true;
                 }
                 const marketMatch = rowMarketMatch(text);
@@ -1804,7 +1868,24 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
                     sample: text.slice(0, 220),
                   });
                 }
-                if (marketMatch.matched && rect.height <= 180) {
+                if (rowCandidateSamples.length < 12 && (ownerMatchedHere || marketMatch.matched || lineMatchedHere)) {
+                  rowCandidateSamples.push({
+                    buttonText: leafText,
+                    rowTextSample: textSample(current.innerText || current.textContent || ""),
+                    ownerMatched: ownerMatchedHere,
+                    marketMatched: Boolean(marketMatch.matched),
+                    blockedAlias: marketMatch.blockedAlias || null,
+                    lineMatched: lineMatchedHere,
+                    sideMatched: Boolean(hasSide || buttonSide.matchesWanted),
+                    rect: {
+                      x: Math.round(rect.x),
+                      y: Math.round(rect.y),
+                      width: Math.round(rect.width),
+                      height: Math.round(rect.height),
+                    },
+                  });
+                }
+                if (marketMatch.matched && rect.height <= 720) {
                   marketMatched = true;
                 }
                 combinedText = `${text} ${combinedText}`.slice(0, 1000);
@@ -1873,6 +1954,8 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               marketMismatchSamples: marketMismatchSamples.slice(0, 5),
               matchedBy: "player_or_scope_market_line_side",
               candidateSamples: lastCandidateSamples,
+              rowCandidateSamples: rowCandidateSamples.slice(0, 8),
+              visibleRowSamples: latestVisibleRowSamples,
             };
           }
 
@@ -1887,6 +1970,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               requestedOdds: scopedCandidates[0].requestedOdds,
               oddsChanged: scopedCandidates[0].oddsChanged,
               clickedRect: scopedCandidates[0].rect,
+              rowCandidateSamples: rowCandidateSamples.slice(0, 8),
             };
           }
           scopedCandidates[0].el.click();
@@ -1899,6 +1983,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             requestedOdds: scopedCandidates[0].requestedOdds,
             oddsChanged: scopedCandidates[0].oddsChanged,
             clickedRect: scopedCandidates[0].rect,
+            rowCandidateSamples: rowCandidateSamples.slice(0, 8),
           };
         }
         """,

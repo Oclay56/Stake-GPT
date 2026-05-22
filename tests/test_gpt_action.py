@@ -437,6 +437,38 @@ def test_prop_context_batch_returns_exact_side_context_for_finalists():
     assert result["contexts"][0]["recent"]["windows"]["5"]["gamesUsed"] == 5
 
 
+def test_prop_context_batch_marks_ui_sgm_rows_as_unsupported_when_not_feed_mapped():
+    result = asyncio.run(
+        build_prop_context_batch(
+            stake_client=FakeStakeClient(),
+            mlb_engine=FakeMLBEngine(),
+            matchup="Blue Jays vs Angels",
+            selections=[
+                {
+                    "rowId": "sgm_e9c6ca71532acf15",
+                    "propId": "b7db51e3-80ac-4434-b5ee-c9645bef3c8a",
+                    "selectionId": "b7db51e3-80ac-4434-b5ee-c9645bef3c8a",
+                    "player": "Aaron Judge",
+                    "market": "Hits",
+                    "side": "under",
+                    "line": 0.5,
+                }
+            ],
+            slate_date=date(2026, 5, 8),
+            timezone_name="America/New_York",
+            limit=10,
+            markets="hits",
+            season=2026,
+            history_limit=15,
+        )
+    )
+
+    assert result["contextCount"] == 0
+    assert result["missing"][0]["status"] == "unsupported_ui_only_row"
+    assert result["missing"][0]["reason"] == "ui_sgm_selection_not_found_in_feed_board"
+    assert result["missing"][0]["requested"]["rowId"] == "sgm_e9c6ca71532acf15"
+
+
 def test_player_prop_context_adds_mlb_recent_and_season_context():
     board = asyncio.run(
         build_matchup_prop_board(

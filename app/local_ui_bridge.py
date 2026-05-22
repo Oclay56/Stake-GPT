@@ -295,6 +295,14 @@ class SupabaseLocalUiJobStore:
 
 
 def _row_to_job(row: dict[str, Any]) -> dict[str, Any]:
+    created_at = row.get("created_at")
+    completed_at = row.get("completed_at")
+    if created_at and completed_at:
+        created_dt = _parse_utc_datetime(created_at)
+        completed_dt = _parse_utc_datetime(completed_at)
+        if created_dt and completed_dt and completed_dt < created_dt:
+            completed_at = created_at
+
     return {
         "jobId": row.get("job_id"),
         "jobType": row.get("job_type"),
@@ -303,9 +311,9 @@ def _row_to_job(row: dict[str, Any]) -> dict[str, Any]:
         "result": row.get("result_json"),
         "error": row.get("error_message"),
         "workerId": row.get("worker_id"),
-        "createdAt": row.get("created_at"),
+        "createdAt": created_at,
         "claimedAt": row.get("claimed_at"),
-        "completedAt": row.get("completed_at"),
+        "completedAt": completed_at,
         "updatedAt": row.get("updated_at"),
         "expiresAt": row.get("expires_at"),
     }

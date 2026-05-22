@@ -4,7 +4,9 @@ import pytest
 
 from app.stake_sgm_browser import (
     _add_bet_confirmed,
+    _batch_should_stop_after_group_result,
     _check_page_ready,
+    _compact_preflight_result,
     _sidebar_clear_confirmed,
     _fixture_matchup_from_slug,
     _find_or_open_fixture_page,
@@ -401,3 +403,43 @@ def test_transactional_selection_plan_blocks_when_replacement_cannot_fill_group(
     assert plan["selectedRows"] == []
     assert plan["buildableRows"][0]["rowId"] == "sgm_a"
     assert plan["missingLegs"] == 1
+
+
+def test_compact_preflight_result_keeps_row_context_diagnostics():
+    compact = _compact_preflight_result(
+        {
+            "status": "not_clicked",
+            "reason": "no visible exact clickable selection button found",
+            "candidateSamples": ["Under\n2.87"],
+            "rowCandidateSamples": [
+                {
+                    "buttonText": "Under\n2.87",
+                    "rowTextSample": "Aaron Judge Hits 0.5 Over 1.35 Under 2.87",
+                    "ownerMatched": True,
+                    "marketMatched": True,
+                    "lineMatched": True,
+                }
+            ],
+            "visibleRowSamples": ["Aaron Judge Hits 0.5 Over 1.35 Under 2.87"],
+        }
+    )
+
+    assert compact["rowCandidateSamples"][0]["rowTextSample"].startswith("Aaron Judge")
+    assert compact["visibleRowSamples"] == [
+        "Aaron Judge Hits 0.5 Over 1.35 Under 2.87"
+    ]
+
+
+def test_batch_should_continue_after_failed_group_when_partial_mode_enabled():
+    assert not _batch_should_stop_after_group_result(
+        {"status": "blocked_preflight_failed"},
+        continue_on_group_failure=True,
+    )
+    assert _batch_should_stop_after_group_result(
+        {"status": "blocked_preflight_failed"},
+        continue_on_group_failure=False,
+    )
+    assert not _batch_should_stop_after_group_result(
+        {"status": "built_for_review"},
+        continue_on_group_failure=False,
+    )

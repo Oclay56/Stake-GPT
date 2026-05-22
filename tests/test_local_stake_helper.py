@@ -101,8 +101,16 @@ def test_process_job_runs_mlb_game_reader(monkeypatch):
 
 
 def test_process_job_runs_batch_review_builder(monkeypatch):
-    def fake_build_stake_sgm_review_slip_batch(groups: list[dict], *, cdp_url: str):
+    def fake_build_stake_sgm_review_slip_batch(
+        groups: list[dict],
+        *,
+        continue_on_group_failure: bool,
+        min_groups_required: int | None,
+        cdp_url: str,
+    ):
         assert cdp_url == "http://127.0.0.1:9222"
+        assert continue_on_group_failure is True
+        assert min_groups_required == 1
         assert groups[0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
         return {
             "source": "stake_ui_sgm_review_slip_batch",
@@ -121,6 +129,8 @@ def test_process_job_runs_batch_review_builder(monkeypatch):
         "jobId": "job-batch",
         "jobType": "stake_ui_sgm_build_slip_batch",
         "request": {
+            "continueOnGroupFailure": True,
+            "minGroupsRequired": 1,
             "groups": [
                 {
                     "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",

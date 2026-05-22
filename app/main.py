@@ -921,13 +921,12 @@ async def mlb_stake_ui_sgm_board(
     except LocalUiBridgeTimeout as exc:
         raise HTTPException(
             status_code=504,
-            detail={
-                "source": "local_ui_bridge",
-                "message": str(exc),
-                "fixtureSlug": fixture_slug,
-                "matchup": matchup,
-                "jobId": (job or {}).get("jobId"),
-            },
+            detail=_local_ui_timeout_detail(
+                message=str(exc),
+                job=job,
+                fixture_slug=fixture_slug,
+                matchup=matchup,
+            ),
         ) from exc
     except LocalUiBridgeError as exc:
         raise HTTPException(
@@ -1075,13 +1074,12 @@ async def mlb_stake_ui_review_slip(
     except LocalUiBridgeTimeout as exc:
         raise HTTPException(
             status_code=504,
-            detail={
-                "source": "local_ui_bridge",
-                "message": str(exc),
-                "fixtureSlug": fixture_slug,
-                "matchup": matchup,
-                "jobId": (job or {}).get("jobId"),
-            },
+            detail=_local_ui_timeout_detail(
+                message=str(exc),
+                job=job,
+                fixture_slug=fixture_slug,
+                matchup=matchup,
+            ),
         ) from exc
     except LocalUiBridgeError as exc:
         raise HTTPException(
@@ -1166,6 +1164,20 @@ async def mlb_stake_ui_review_slip_batch(
         slate_date=slate_date,
         schedule_limit=schedule_limit,
     )
+    continue_on_group_failure = _bool_from_body(
+        payload,
+        "continueOnGroupFailure",
+        "continue_on_group_failure",
+        False,
+    )
+    min_groups_required = _clean_optional_int(
+        payload,
+        "minGroupsRequired",
+        "min_groups_required",
+        default=1,
+        minimum=1,
+        maximum=15,
+    )
     request = {
         "date": slate_date.isoformat() if slate_date else None,
         "requestedBy": "custom_gpt",
@@ -1173,6 +1185,8 @@ async def mlb_stake_ui_review_slip_batch(
         "reviewOnly": True,
         "forbiddenActions": ["enter_stake_amount", "click_place_bet"],
         "groups": groups,
+        "continueOnGroupFailure": continue_on_group_failure,
+        "minGroupsRequired": min_groups_required,
     }
 
     job: dict[str, Any] | None = None
@@ -1194,11 +1208,7 @@ async def mlb_stake_ui_review_slip_batch(
     except LocalUiBridgeTimeout as exc:
         raise HTTPException(
             status_code=504,
-            detail={
-                "source": "local_ui_bridge",
-                "message": str(exc),
-                "jobId": (job or {}).get("jobId"),
-            },
+            detail=_local_ui_timeout_detail(message=str(exc), job=job),
         ) from exc
     except LocalUiBridgeError as exc:
         raise HTTPException(
@@ -1585,6 +1595,31 @@ def _date_from_body(payload: dict[str, Any]) -> date | None:
         return date.fromisoformat(str(raw_date))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD") from exc
+
+
+def _local_ui_timeout_detail(
+    *,
+    message: str,
+    job: dict[str, Any] | None,
+    fixture_slug: str | None = None,
+    matchup: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "source": "local_ui_bridge",
+        "status": "timeout",
+        "phase": "local_helper_wait",
+        "message": message,
+        "jobId": (job or {}).get("jobId"),
+        "clickedLegs": 0,
+        "lastAction": "waiting_for_local_helper_result",
+        "lastKnownFixtureSlug": fixture_slug,
+        "matchup": matchup,
+        "diagnostics": {
+            "helperReturned": False,
+            "enteredStakeAmount": False,
+            "clickedPlaceBet": False,
+        },
+    }
 
 
 def _bool_from_body(

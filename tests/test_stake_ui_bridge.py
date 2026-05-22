@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
+from app.local_ui_bridge import LocalUiBridgeTimeout, _row_to_job
 from app.gpt_action import build_gpt_action_openapi_schema
 from app.main import app, get_local_ui_job_store, get_stake_client, _compact_stake_ui_sgm_board
 from app.stake_sgm_browser import match_sgm_review_selections, normalize_sgm_response
@@ -235,6 +236,18 @@ class FakeCompletedBatchBuildJobStore(FakeCompletedUiJobStore):
         }
 
 
+class FakeTimeoutBuildJobStore(FakeCompletedUiJobStore):
+    async def wait_for_completed_result(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: int,
+        poll_interval_seconds: float = 1.0,
+    ):
+        assert job_id == "job-123"
+        raise LocalUiBridgeTimeout("Timed out waiting for the local helper.")
+
+
 class FakeCompletedStateJobStore(FakeCompletedUiJobStore):
     async def wait_for_completed_result(
         self,
@@ -433,6 +446,8 @@ def test_gpt_schema_exposes_batch_review_slip_action():
     group_schema = properties["groups"]["items"]
     assert "rowIds" in group_schema["properties"]
     assert "rowId" in group_schema["properties"]["selections"]["items"]["properties"]
+    assert "continueOnGroupFailure" in properties
+    assert "minGroupsRequired" in properties
 
 
 def test_gpt_schema_exposes_optional_stake_ui_state_actions():
@@ -449,6 +464,23 @@ def test_gpt_schema_exposes_optional_stake_ui_state_actions():
     assert clear_sidebar_operation["operationId"] == "clearStakeUiSidebar"
     properties = clear_sidebar_operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert properties["reviewOnly"]["const"] is True
+
+
+def test_local_ui_bridge_row_to_job_clamps_completed_at_before_created_at():
+    job = _row_to_job(
+        {
+            "job_id": "job-123",
+            "job_type": "stake_sgm_board",
+            "status": "completed",
+            "request_json": {},
+            "result_json": {},
+            "created_at": "2026-05-22T15:48:17.352361+00:00",
+            "completed_at": "2026-05-22T15:48:14.575827+00:00",
+            "updated_at": "2026-05-22T15:48:14.575827+00:00",
+        }
+    )
+
+    assert job["completedAt"] == job["createdAt"]
 
 
 def test_compact_sgm_board_returns_stable_row_ids_for_duplicate_odds():
@@ -534,6 +566,8 @@ def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails(
             json={
                 "reviewOnly": True,
                 "timeoutSeconds": 2,
+                "continueOnGroupFailure": True,
+                "minGroupsRequired": 1,
                 "groups": [
                     {
                         "matchup": "Yankees vs Blue Jays",
@@ -586,6 +620,8 @@ def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails(
     assert body["result"]["safety"]["enteredStakeAmount"] is False
     assert created_request["reviewOnly"] is True
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
+    assert created_request["continueOnGroupFailure"] is True
+    assert created_request["minGroupsRequired"] == 1
     assert len(created_request["groups"]) == 2
 
 
@@ -859,6 +895,31 @@ def test_stake_ui_review_slip_route_accepts_row_ids_without_reconstructed_fields
 
     assert response.status_code == 200
     assert created_request["selections"] == [{"rowId": "sgm_row_1"}, {"rowId": "sgm_row_2"}]
+
+
+def test_stake_ui_review_slip_timeout_returns_structured_terminal_state():
+    fake_store = FakeTimeoutBuildJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip",
+            json={
+                "matchup": "Braves vs Marlins",
+                "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
+                "timeoutSeconds": 2,
+                "reviewOnly": True,
+                "rowIds": ["sgm_row_1"],
+            },
+        )
+
+    body = response.json()
+
+    assert response.status_code == 504
+    assert body["detail"]["status"] == "timeout"
+    assert body["detail"]["phase"] == "local_helper_wait"
+    assert body["detail"]["clickedLegs"] == 0
+    assert body["detail"]["lastKnownFixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
 
 
 def test_stake_ui_review_slip_route_rejects_missing_exact_selection_fields():

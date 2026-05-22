@@ -777,7 +777,23 @@ async def build_prop_context_batch(
         requested_side = _clean_side(request.get("side") or "any")
         selection = _find_selection(all_selections, identifier, side=requested_side)
         if not selection:
-            missing.append({"index": index, "requested": request, "status": "missing_selection"})
+            status = (
+                "unsupported_ui_only_row"
+                if _looks_like_ui_sgm_selection_request(request)
+                else "missing_selection"
+            )
+            missing.append(
+                {
+                    "index": index,
+                    "requested": request,
+                    "status": status,
+                    "reason": (
+                        "ui_sgm_selection_not_found_in_feed_board"
+                        if status == "unsupported_ui_only_row"
+                        else "selection_not_found_in_feed_board"
+                    ),
+                }
+            )
             continue
         prop = _find_prop(props_payload.get("props") or [], selection.get("propId"))
         if not prop:
@@ -824,6 +840,18 @@ async def build_prop_context_batch(
         "contexts": contexts,
         "generatedAt": _utc_now(),
     }
+
+
+def _looks_like_ui_sgm_selection_request(request: dict[str, Any]) -> bool:
+    if str(request.get("rowId") or request.get("row_id") or "").startswith("sgm_"):
+        return True
+    if str(request.get("selectionId") or "").startswith("sgm_"):
+        return True
+    ui_identity_keys = ("lineId", "marketId", "swishStatId")
+    if any(request.get(key) for key in ui_identity_keys):
+        return True
+    descriptive_keys = ("player", "team", "market", "line")
+    return bool(request.get("propId") and any(request.get(key) is not None for key in descriptive_keys))
 
 
 async def build_player_mlb_context(
@@ -2897,6 +2925,22 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 180},
                         "scheduleLimit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "continueOnGroupFailure": {
+                            "type": "boolean",
+                            "description": (
+                                "Optional partial-build mode. When true, the helper continues "
+                                "to later groups if one game blocks during preflight or build."
+                            ),
+                        },
+                        "minGroupsRequired": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 15,
+                            "description": (
+                                "Minimum number of groups that must be built for a partial "
+                                "review slip to count as useful when continueOnGroupFailure is true."
+                            ),
+                        },
                     },
                     "required": ["reviewOnly", "groups"],
                     "additionalProperties": True,

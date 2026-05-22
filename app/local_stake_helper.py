@@ -163,6 +163,8 @@ async def process_job(
             result = await asyncio.to_thread(
                 build_stake_sgm_review_slip_batch,
                 list(request.get("groups") or []),
+                continue_on_group_failure=bool(request.get("continueOnGroupFailure")),
+                min_groups_required=request.get("minGroupsRequired"),
                 cdp_url=cdp_url,
             )
         elif job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE:

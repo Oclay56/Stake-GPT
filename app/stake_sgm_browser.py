@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from hashlib import sha1
 from datetime import datetime, timezone
 from typing import Any
@@ -311,10 +312,12 @@ def build_stake_sgm_review_slip(
     *,
     fallback_selections: list[dict[str, Any]] | None = None,
     required_legs: int | None = None,
+    execution_timeout_seconds: int | float | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
+    deadline = _build_execution_deadline(execution_timeout_seconds)
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(cdp_url)
         if not browser.contexts:
@@ -339,7 +342,15 @@ def build_stake_sgm_review_slip(
             selections,
             fallback_selections=fallback_selections or [],
             required_legs=required_legs,
+            deadline=deadline,
         )
+        if transaction["status"] == "timeout":
+            return _review_build_timeout_result(
+                source="stake_ui_sgm_build_slip",
+                fixture_slug=fixture_slug,
+                phase="preflight",
+                transaction=transaction,
+            )
 
         if transaction["status"] != "ready":
             return _review_slip_result(
@@ -353,7 +364,28 @@ def build_stake_sgm_review_slip(
             )
 
         selected_rows = transaction["selectedRows"]
-        click_results = _click_sgm_review_selections(page, selected_rows)
+        if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+            return _review_build_timeout_result(
+                source="stake_ui_sgm_build_slip",
+                fixture_slug=fixture_slug,
+                phase="click",
+                transaction=transaction,
+                selected_rows=selected_rows,
+            )
+        click_results = _click_sgm_review_selections(
+            page,
+            selected_rows,
+            deadline=deadline,
+        )
+        if any(result.get("status") == "timeout" for result in click_results):
+            return _review_build_timeout_result(
+                source="stake_ui_sgm_build_slip",
+                fixture_slug=fixture_slug,
+                phase="click",
+                transaction=transaction,
+                selected_rows=selected_rows,
+                click_results=click_results,
+            )
         failed_clicks = [row for row in click_results if row.get("status") != "clicked"]
         if failed_clicks:
             _clear_sgm_working_selection(page)
@@ -386,10 +418,12 @@ def build_stake_sgm_review_slip_batch(
     *,
     continue_on_group_failure: bool = False,
     min_groups_required: int | None = None,
+    execution_timeout_seconds: int | float | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
+    deadline = _build_execution_deadline(execution_timeout_seconds)
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(cdp_url)
         if not browser.contexts:
@@ -402,6 +436,9 @@ def build_stake_sgm_review_slip_batch(
         required_groups = max(1, min(len(groups) or 1, int(min_groups_required or 1)))
 
         for group in groups:
+            if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+                stop_reason = "local_helper_execution_timeout"
+                break
             fixture_slug = str(group.get("fixtureSlug") or "").strip()
             if not fixture_slug:
                 results.append(
@@ -446,8 +483,17 @@ def build_stake_sgm_review_slip_batch(
                     selections,
                     fallback_selections=fallback_selections,
                     required_legs=required_legs,
+                    deadline=deadline,
                 )
-                if transaction["status"] != "ready":
+                if transaction["status"] == "timeout":
+                    result = _review_build_timeout_result(
+                        source="stake_ui_sgm_build_slip",
+                        fixture_slug=fixture_slug,
+                        matchup=group.get("matchup"),
+                        phase="preflight",
+                        transaction=transaction,
+                    )
+                elif transaction["status"] != "ready":
                     result = _review_slip_result(
                         fixture_slug=fixture_slug,
                         status=transaction["status"],
@@ -459,37 +505,65 @@ def build_stake_sgm_review_slip_batch(
                     )
                 else:
                     selected_rows = transaction["selectedRows"]
-                    click_results = _click_sgm_review_selections(page, selected_rows)
-                    failed_clicks = [
-                        row for row in click_results if row.get("status") != "clicked"
-                    ]
-                    if failed_clicks:
-                        _clear_sgm_working_selection(page)
-                    add_bet_result = (
-                        _click_sgm_add_bet_button(
-                            page,
-                            expected_legs=len(selected_rows),
+                    if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+                        result = _review_build_timeout_result(
+                            source="stake_ui_sgm_build_slip",
+                            fixture_slug=fixture_slug,
+                            matchup=group.get("matchup"),
+                            phase="click",
+                            transaction=transaction,
+                            selected_rows=selected_rows,
                         )
-                        if not failed_clicks
-                        else {"status": "not_attempted", "reason": "selection_click_failed"}
-                    )
-                    status = (
-                        "built_for_review"
-                        if not failed_clicks and add_bet_result.get("status") == "clicked"
-                        else "blocked_add_bet_failed"
-                        if not failed_clicks
-                        else "blocked_click_failed"
-                    )
-                    result = _review_slip_result(
-                        fixture_slug=fixture_slug,
-                        status=status,
-                        board=board,
-                        selected_rows=selected_rows,
-                        missing_selections=transaction["missingSelections"],
-                        click_results=click_results,
-                        add_bet_result=add_bet_result,
-                        transaction_plan=transaction["plan"],
-                    )
+                    else:
+                        click_results = _click_sgm_review_selections(
+                            page,
+                            selected_rows,
+                            deadline=deadline,
+                        )
+                        if any(result.get("status") == "timeout" for result in click_results):
+                            result = _review_build_timeout_result(
+                                source="stake_ui_sgm_build_slip",
+                                fixture_slug=fixture_slug,
+                                matchup=group.get("matchup"),
+                                phase="click",
+                                transaction=transaction,
+                                selected_rows=selected_rows,
+                                click_results=click_results,
+                            )
+                            result["matchup"] = group.get("matchup")
+                            results.append(result)
+                            stop_reason = "local_helper_execution_timeout"
+                            break
+                        failed_clicks = [
+                            row for row in click_results if row.get("status") != "clicked"
+                        ]
+                        if failed_clicks:
+                            _clear_sgm_working_selection(page)
+                        add_bet_result = (
+                            _click_sgm_add_bet_button(
+                                page,
+                                expected_legs=len(selected_rows),
+                            )
+                            if not failed_clicks
+                            else {"status": "not_attempted", "reason": "selection_click_failed"}
+                        )
+                        status = (
+                            "built_for_review"
+                            if not failed_clicks and add_bet_result.get("status") == "clicked"
+                            else "blocked_add_bet_failed"
+                            if not failed_clicks
+                            else "blocked_click_failed"
+                        )
+                        result = _review_slip_result(
+                            fixture_slug=fixture_slug,
+                            status=status,
+                            board=board,
+                            selected_rows=selected_rows,
+                            missing_selections=transaction["missingSelections"],
+                            click_results=click_results,
+                            add_bet_result=add_bet_result,
+                            transaction_plan=transaction["plan"],
+                        )
 
             result["matchup"] = group.get("matchup")
             results.append(result)
@@ -497,7 +571,11 @@ def build_stake_sgm_review_slip_batch(
                 result,
                 continue_on_group_failure=continue_on_group_failure,
             ):
-                stop_reason = str(result.get("status") or "blocked")
+                stop_reason = (
+                    "local_helper_execution_timeout"
+                    if result.get("status") == "timeout"
+                    else str(result.get("status") or "blocked")
+                )
                 break
 
         clicked_groups = sum(1 for result in results if result.get("status") == "built_for_review")
@@ -507,6 +585,8 @@ def build_stake_sgm_review_slip_batch(
             if clicked_groups == len(groups) and not stop_reason
             else "partial_review_slip"
             if clicked_groups and clicked_groups >= required_groups
+            else "timeout"
+            if stop_reason == "local_helper_execution_timeout"
             else "blocked"
         )
         return {
@@ -538,6 +618,91 @@ def _batch_should_stop_after_group_result(
     if result.get("status") == "built_for_review":
         return False
     return not continue_on_group_failure
+
+
+def _build_execution_deadline(execution_timeout_seconds: int | float | None) -> float | None:
+    seconds = _float_or_none(execution_timeout_seconds)
+    if seconds is None or seconds <= 0:
+        return None
+    return time.monotonic() + max(seconds, 1.0)
+
+
+def _execution_deadline_expired(
+    deadline: float | None,
+    *,
+    reserve_seconds: float = 0.0,
+) -> bool:
+    if deadline is None:
+        return False
+    return time.monotonic() + max(reserve_seconds, 0.0) >= deadline
+
+
+def _preflight_timeout_result(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "timeout",
+        "phase": "preflight",
+        "reason": "local_helper_execution_timeout",
+        "lastAction": "preflight_row_match",
+        "lastAttemptedRowId": row.get("rowId"),
+    }
+
+
+def _review_build_timeout_result(
+    *,
+    source: str,
+    fixture_slug: str | None,
+    phase: str,
+    matchup: Any = None,
+    transaction: dict[str, Any] | None = None,
+    selected_rows: list[dict[str, Any]] | None = None,
+    click_results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    transaction_plan = (transaction or {}).get("plan") or {}
+    attempted_rows = [_compact_click_row(row) for row in selected_rows or []]
+    clicked_legs = sum(1 for result in click_results or [] if result.get("status") == "clicked")
+    last_attempted_row_id = _last_attempted_row_id(transaction_plan, attempted_rows)
+    return {
+        "source": source,
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "status": "timeout",
+        "phase": phase,
+        "reason": "local_helper_execution_timeout",
+        "lastAction": f"{phase}_timeout",
+        "fixtureSlug": fixture_slug,
+        "currentFixtureSlug": fixture_slug,
+        "matchup": matchup,
+        "reviewOnly": True,
+        "clickedLegs": clicked_legs,
+        "attemptedRows": attempted_rows,
+        "clickResults": click_results or [],
+        "lastAttemptedRowId": last_attempted_row_id,
+        "missingSelections": (transaction or {}).get("missingSelections") or [],
+        "transactionPlan": transaction_plan,
+        "safety": {
+            "enteredStakeAmount": False,
+            "clickedAddBet": False,
+            "clickedPlaceBet": False,
+        },
+    }
+
+
+def _last_attempted_row_id(
+    transaction_plan: dict[str, Any],
+    attempted_rows: list[dict[str, Any]],
+) -> Any:
+    for group_name in ("preflightFailures", "fallbackFailures"):
+        for failure in reversed(transaction_plan.get(group_name) or []):
+            preflight = failure.get("preflight") or {}
+            row_id = preflight.get("lastAttemptedRowId")
+            if row_id:
+                return row_id
+            selection = failure.get("selection") or {}
+            row_id = selection.get("rowId")
+            if row_id:
+                return row_id
+    if attempted_rows:
+        return attempted_rows[-1].get("rowId")
+    return None
 
 
 def match_sgm_review_selections(
@@ -636,6 +801,7 @@ def _prepare_transactional_review_rows(
     *,
     fallback_selections: list[dict[str, Any]] | None = None,
     required_legs: int | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     requested_required_legs = max(1, min(20, int(required_legs or len(selections) or 1)))
     primary_match = match_sgm_review_selections(board, selections)
@@ -643,7 +809,11 @@ def _prepare_transactional_review_rows(
     primary_rows = primary_match["matchedRows"]
     fallback_rows = fallback_match["matchedRows"]
 
-    primary_preflight = _preflight_sgm_review_selections(page, primary_rows)
+    primary_preflight = _preflight_sgm_review_selections(
+        page,
+        primary_rows,
+        deadline=deadline,
+    )
     plan = _transactional_selection_plan(
         primary_rows=primary_rows,
         primary_preflight=primary_preflight,
@@ -653,7 +823,11 @@ def _prepare_transactional_review_rows(
         primary_missing=primary_match["missingSelections"],
     )
     if plan["status"] != "ready" and fallback_rows:
-        fallback_preflight = _preflight_sgm_review_selections(page, fallback_rows)
+        fallback_preflight = _preflight_sgm_review_selections(
+            page,
+            fallback_rows,
+            deadline=deadline,
+        )
         plan = _transactional_selection_plan(
             primary_rows=primary_rows,
             primary_preflight=primary_preflight,
@@ -690,6 +864,7 @@ def _transactional_selection_plan(
     preflight_failures: list[dict[str, Any]] = []
     replacements: list[dict[str, Any]] = []
     used_row_ids: set[str] = set()
+    timed_out = False
 
     for missing in primary_missing or []:
         preflight_failures.append(
@@ -707,6 +882,7 @@ def _transactional_selection_plan(
                 selected_rows.append(row)
                 used_row_ids.add(str(row.get("rowId") or ""))
         else:
+            timed_out = timed_out or str(check.get("status") or "") == "timeout"
             preflight_failures.append(
                 {
                     "selection": _compact_click_row(row),
@@ -723,6 +899,7 @@ def _transactional_selection_plan(
         if row_id and row_id in used_row_ids:
             continue
         if not _preflight_result_is_buildable(check):
+            timed_out = timed_out or str(check.get("status") or "") == "timeout"
             continue
         selected_rows.append(row)
         buildable_rows.append(row)
@@ -738,6 +915,7 @@ def _transactional_selection_plan(
     for row, check in zip(fallback_rows, fallback_preflight):
         if _preflight_result_is_buildable(check):
             continue
+        timed_out = timed_out or str(check.get("status") or "") == "timeout"
         fallback_failures.append(
             {
                 "selection": _compact_click_row(row),
@@ -757,7 +935,7 @@ def _transactional_selection_plan(
 
     ready = len(selected_rows) >= required
     return {
-        "status": "ready" if ready else "blocked_preflight_failed",
+        "status": "ready" if ready else "timeout" if timed_out else "blocked_preflight_failed",
         "requiredLegs": required,
         "selectedRows": selected_rows if ready else [],
         "buildableRows": [_compact_click_row(row) for row in buildable_rows],
@@ -776,7 +954,10 @@ def _preflight_result_is_buildable(result: dict[str, Any]) -> bool:
 def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": result.get("status"),
+        "phase": result.get("phase"),
         "reason": result.get("reason"),
+        "lastAction": result.get("lastAction"),
+        "lastAttemptedRowId": result.get("lastAttemptedRowId"),
         "candidateCount": result.get("candidateCount"),
         "requestedMarket": result.get("requestedMarket"),
         "clickedOdds": result.get("clickedOdds"),
@@ -942,12 +1123,29 @@ def _matched_selection_row(row: dict[str, Any], side: str, row_id: str) -> dict[
     }
 
 
-def _click_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _click_sgm_review_selections(
+    page: Any,
+    rows: list[dict[str, Any]],
+    *,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     click_results: list[dict[str, Any]] = []
     _open_same_game_multi_tab(page)
     _clear_sgm_working_selection(page)
 
     for row in rows:
+        if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+            if click_results:
+                _clear_sgm_working_selection(page)
+            click_results.append(
+                {
+                    "selection": _compact_click_row(row),
+                    **_preflight_timeout_result(row),
+                    "phase": "click",
+                    "lastAction": "click_row_selection",
+                }
+            )
+            break
         result = _click_one_sgm_selection(page, row)
         click_results.append(result)
         if result.get("status") != "clicked":
@@ -955,12 +1153,20 @@ def _click_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[
     return click_results
 
 
-def _preflight_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _preflight_sgm_review_selections(
+    page: Any,
+    rows: list[dict[str, Any]],
+    *,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     preflight_results: list[dict[str, Any]] = []
     _open_same_game_multi_tab(page)
     _clear_sgm_working_selection(page)
 
     for row in rows:
+        if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+            preflight_results.append(_preflight_timeout_result(row))
+            break
         preflight_results.append(_preflight_one_sgm_selection(page, row))
     _clear_sgm_working_selection(page)
     return preflight_results
@@ -1780,7 +1986,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
           };
           const textSample = (value) => String(value || "")
             .trim()
-            .replace(/\s+/g, " ")
+            .replace(/\\s+/g, " ")
             .slice(0, 260);
           const visibleRowSamples = () => {
             const ownerText = wanted.player || wanted.team;

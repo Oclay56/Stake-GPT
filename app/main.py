@@ -1053,6 +1053,9 @@ async def mlb_stake_ui_review_slip(
         "selections": selections,
         "fallbackSelections": fallback_selections,
         "requiredLegs": required_legs,
+        "localExecutionTimeoutSeconds": _local_helper_execution_timeout_seconds(
+            timeout_seconds
+        ),
     }
 
     job: dict[str, Any] | None = None
@@ -1187,6 +1190,9 @@ async def mlb_stake_ui_review_slip_batch(
         "groups": groups,
         "continueOnGroupFailure": continue_on_group_failure,
         "minGroupsRequired": min_groups_required,
+        "localExecutionTimeoutSeconds": _local_helper_execution_timeout_seconds(
+            timeout_seconds
+        ),
     }
 
     job: dict[str, Any] | None = None
@@ -1620,6 +1626,14 @@ def _local_ui_timeout_detail(
             "clickedPlaceBet": False,
         },
     }
+
+
+def _local_helper_execution_timeout_seconds(timeout_seconds: int) -> int:
+    if timeout_seconds <= 2:
+        return 1
+    if timeout_seconds <= 10:
+        return max(1, timeout_seconds - 1)
+    return max(1, timeout_seconds - 5)
 
 
 def _bool_from_body(

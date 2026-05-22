@@ -106,11 +106,13 @@ def test_process_job_runs_batch_review_builder(monkeypatch):
         *,
         continue_on_group_failure: bool,
         min_groups_required: int | None,
+        execution_timeout_seconds: int | None,
         cdp_url: str,
     ):
         assert cdp_url == "http://127.0.0.1:9222"
         assert continue_on_group_failure is True
         assert min_groups_required == 1
+        assert execution_timeout_seconds == 175
         assert groups[0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
         return {
             "source": "stake_ui_sgm_review_slip_batch",
@@ -131,6 +133,7 @@ def test_process_job_runs_batch_review_builder(monkeypatch):
         "request": {
             "continueOnGroupFailure": True,
             "minGroupsRequired": 1,
+            "localExecutionTimeoutSeconds": 175,
             "groups": [
                 {
                     "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",

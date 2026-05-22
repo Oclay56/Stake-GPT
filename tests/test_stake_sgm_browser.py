@@ -15,6 +15,7 @@ from app.stake_sgm_browser import (
     _market_display_aliases,
     _market_click_identity,
     _market_search_text,
+    _preflight_sgm_review_selections,
     _review_add_summary,
     _sidebar_group_target,
     _sidebar_remove_confirmed,
@@ -403,6 +404,32 @@ def test_transactional_selection_plan_blocks_when_replacement_cannot_fill_group(
     assert plan["selectedRows"] == []
     assert plan["buildableRows"][0]["rowId"] == "sgm_a"
     assert plan["missingLegs"] == 1
+
+
+def test_preflight_returns_structured_timeout_when_local_budget_is_exhausted():
+    rows = [{"rowId": "sgm_a", "player": "Player A", "market": "Hits"}]
+
+    results = _preflight_sgm_review_selections(page=object(), rows=rows, deadline=0)
+
+    assert results == [
+        {
+            "status": "timeout",
+            "phase": "preflight",
+            "reason": "local_helper_execution_timeout",
+            "lastAction": "preflight_row_match",
+            "lastAttemptedRowId": "sgm_a",
+        }
+    ]
+
+    plan = _transactional_selection_plan(
+        primary_rows=rows,
+        primary_preflight=results,
+        fallback_rows=[],
+        fallback_preflight=[],
+        required_legs=1,
+    )
+    assert plan["status"] == "timeout"
+    assert plan["preflightFailures"][0]["phase"] == "primary_preflight"
 
 
 def test_compact_preflight_result_keeps_row_context_diagnostics():

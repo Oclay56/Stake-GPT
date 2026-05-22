@@ -165,6 +165,7 @@ async def process_job(
                 list(request.get("groups") or []),
                 continue_on_group_failure=bool(request.get("continueOnGroupFailure")),
                 min_groups_required=request.get("minGroupsRequired"),
+                execution_timeout_seconds=request.get("localExecutionTimeoutSeconds"),
                 cdp_url=cdp_url,
             )
         elif job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE:
@@ -174,6 +175,7 @@ async def process_job(
                 list(request.get("selections") or []),
                 fallback_selections=list(request.get("fallbackSelections") or []),
                 required_legs=request.get("requiredLegs"),
+                execution_timeout_seconds=request.get("localExecutionTimeoutSeconds"),
                 cdp_url=cdp_url,
             )
         else:

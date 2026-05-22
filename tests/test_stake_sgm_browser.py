@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import app.stake_sgm_browser as sgm_browser
 from app.stake_sgm_browser import (
     _add_bet_confirmed,
     _batch_should_stop_after_group_result,
@@ -16,6 +17,7 @@ from app.stake_sgm_browser import (
     _market_click_identity,
     _market_search_text,
     _preflight_sgm_review_selections,
+    _preflight_result_is_buildable,
     _review_add_summary,
     _sidebar_group_target,
     _sidebar_remove_confirmed,
@@ -430,6 +432,61 @@ def test_preflight_returns_structured_timeout_when_local_budget_is_exhausted():
     )
     assert plan["status"] == "timeout"
     assert plan["preflightFailures"][0]["phase"] == "primary_preflight"
+
+
+def test_preflight_blocks_visible_button_with_wrong_odds():
+    result = {
+        "status": "buildable",
+        "clickedOdds": 1.93,
+        "requestedOdds": 2.8465,
+        "oddsChanged": True,
+    }
+
+    assert not _preflight_result_is_buildable(result)
+
+
+def test_click_selection_downgrades_odds_mismatch_before_add_bet(monkeypatch):
+    rows = [
+        {
+            "rowId": "sgm_xavier",
+            "player": "Xavier Edwards",
+            "market": "Hits",
+            "side": "under",
+            "line": 0.5,
+            "odds": 2.8465,
+        }
+    ]
+
+    def fake_click_one_sgm_selection(page, row):
+        return {
+            "selection": sgm_browser._compact_click_row(row),
+            "status": "clicked",
+            "clickedOdds": 1.93,
+            "requestedOdds": 2.8465,
+            "oddsChanged": True,
+            "clickedLeafText": "Under\n1.93",
+        }
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_click_one_sgm_selection",
+        fake_click_one_sgm_selection,
+    )
+
+    results = sgm_browser._click_sgm_review_selections(object(), rows)
+
+    assert results[0]["status"] == "clicked_but_odds_mismatch_unverified"
+    assert results[0]["reason"] == "clicked_odds_mismatch"
+
+
+def test_selected_outcome_audit_rejects_unexpected_count():
+    audit = {
+        "expectedLegs": 5,
+        "selectedOutcomeCount": 22,
+        "selectedOutcomes": [],
+    }
+
+    assert not sgm_browser._selected_outcome_audit_is_valid(audit, expected_legs=5)
 
 
 def test_compact_preflight_result_keeps_row_context_diagnostics():

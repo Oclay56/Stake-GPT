@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
+CLICK_ODDS_TOLERANCE = 0.006
 
 MLB_TEAM_SLUGS = {
     "arizona-diamondbacks": "Arizona Diamondbacks",
@@ -948,7 +949,21 @@ def _transactional_selection_plan(
 
 
 def _preflight_result_is_buildable(result: dict[str, Any]) -> bool:
-    return str(result.get("status") or "") in {"buildable", "clicked"}
+    return str(result.get("status") or "") in {"buildable", "clicked"} and _click_result_identity_verified(
+        result
+    )
+
+
+def _click_result_identity_verified(result: dict[str, Any]) -> bool:
+    if result.get("oddsChanged") is True:
+        return False
+    requested_odds = _float_or_none(result.get("requestedOdds"))
+    clicked_odds = _float_or_none(result.get("clickedOdds"))
+    if requested_odds is None:
+        return True
+    if clicked_odds is None:
+        return False
+    return abs(requested_odds - clicked_odds) <= CLICK_ODDS_TOLERANCE
 
 
 def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -968,6 +983,7 @@ def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
         "rowCandidateSamples": result.get("rowCandidateSamples") or [],
         "visibleRowSamples": result.get("visibleRowSamples") or [],
         "marketMismatchSamples": result.get("marketMismatchSamples") or [],
+        "oddsMismatchSamples": result.get("oddsMismatchSamples") or [],
     }
 
 
@@ -1147,6 +1163,12 @@ def _click_sgm_review_selections(
             )
             break
         result = _click_one_sgm_selection(page, row)
+        if result.get("status") == "clicked" and not _click_result_identity_verified(result):
+            result = {
+                **result,
+                "status": "clicked_but_odds_mismatch_unverified",
+                "reason": "clicked_odds_mismatch",
+            }
         click_results.append(result)
         if result.get("status") != "clicked":
             break
@@ -1175,6 +1197,15 @@ def _preflight_sgm_review_selections(
 def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any]:
     try:
         before_state = _read_bet_slip_state(page)
+        outcome_audit = _wait_for_selected_outcome_audit(page, expected_legs=expected_legs)
+        if not _selected_outcome_audit_is_valid(outcome_audit, expected_legs=expected_legs):
+            return {
+                "status": "not_clicked",
+                "reason": "selected_outcome_count_mismatch",
+                "expectedLegs": expected_legs,
+                "selectedOutcomeAudit": outcome_audit,
+                "beforeClick": before_state,
+            }
         sticky_result = _click_custom_bet_sticky_add(page, before_state=before_state)
         if sticky_result.get("status") == "clicked":
             return sticky_result
@@ -1336,6 +1367,104 @@ def _click_custom_bet_sticky_add(
         }
     except Exception as exc:
         return {"status": "not_clicked", "reason": f"custom_bet_sticky_add_click_failed: {exc}"}
+
+
+def _wait_for_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
+    for _ in range(16):
+        latest = _read_sgm_selected_outcome_audit(page, expected_legs=expected_legs)
+        if _selected_outcome_audit_is_valid(latest, expected_legs=expected_legs):
+            return latest
+        try:
+            page.wait_for_timeout(250)
+        except Exception:
+            break
+    return latest
+
+
+def _selected_outcome_audit_is_valid(audit: dict[str, Any], *, expected_legs: int) -> bool:
+    selected_count = _int_or_none(audit.get("selectedOutcomeCount"))
+    return selected_count == expected_legs
+
+
+def _read_sgm_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[str, Any]:
+    try:
+        return dict(
+            page.evaluate(
+                """
+                ({ expectedLegs }) => {
+                  const norm = (value) => String(value || "")
+                    .normalize("NFD")
+                    .replace(/[\\u0300-\\u036f]/g, "")
+                    .toLowerCase()
+                    .replace(/\\s+/g, " ")
+                    .trim();
+                  const sample = (value) => String(value || "")
+                    .trim()
+                    .replace(/\\s+/g, " ")
+                    .slice(0, 280);
+                  const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== "hidden"
+                      && style.display !== "none"
+                      && rect.width > 0
+                      && rect.height > 0;
+                  };
+                  const selected = (button) => {
+                    const classText = norm(button.className || "");
+                    const dataState = norm(button.getAttribute("data-state") || "");
+                    const dataSelected = norm(button.getAttribute("data-selected") || "");
+                    const ariaPressed = button.getAttribute("aria-pressed") === "true";
+                    const ariaSelected = button.getAttribute("aria-selected") === "true";
+                    const background = window.getComputedStyle(button).backgroundColor;
+                    const isStakeBlue = background.includes("33, 126, 226")
+                      || background.includes("29, 110, 201")
+                      || background.includes("20, 117, 225");
+                    return ariaPressed
+                      || ariaSelected
+                      || dataState === "checked"
+                      || dataSelected === "true"
+                      || classText.split(" ").includes("active")
+                      || classText.split(" ").includes("selected")
+                      || isStakeBlue;
+                  };
+                  const buttons = Array.from(document.querySelectorAll('button[data-testid="fixture-outcome"]'))
+                    .filter(visible);
+                  const selectedButtons = buttons.filter(selected);
+                  return {
+                    expectedLegs,
+                    selectedOutcomeCount: selectedButtons.length,
+                    visibleOutcomeCount: buttons.length,
+                    selectedOutcomes: selectedButtons.slice(0, 20).map((button, index) => {
+                      let current = button;
+                      const ancestors = [];
+                      for (let depth = 0; depth < 8 && current; depth += 1) {
+                        ancestors.push(sample(current.innerText || current.textContent || ""));
+                        current = current.parentElement;
+                      }
+                      return {
+                        index,
+                        text: sample(button.innerText || button.textContent || ""),
+                        ariaPressed: button.getAttribute("aria-pressed"),
+                        ariaSelected: button.getAttribute("aria-selected"),
+                        className: sample(button.className || ""),
+                        rowTextSample: ancestors.find((text) => text.length > 20) || ancestors[0] || "",
+                      };
+                    }),
+                  };
+                }
+                """,
+                {"expectedLegs": expected_legs},
+            )
+        )
+    except Exception as exc:
+        return {
+            "expectedLegs": expected_legs,
+            "selectedOutcomeCount": None,
+            "selectedOutcomes": [],
+            "error": str(exc),
+        }
 
 
 def _add_bet_confirmed(before_state: dict[str, Any], after_state: dict[str, Any]) -> bool:
@@ -2033,6 +2162,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
           let scopedCandidates = [];
           let lastCandidateSamples = [];
           let marketMismatchSamples = [];
+          let oddsMismatchSamples = [];
           let rowCandidateSamples = [];
           let latestVisibleRowSamples = [];
           for (let attempt = 0; attempt < 24; attempt += 1) {
@@ -2118,6 +2248,17 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
                 current = current.parentElement;
               }
               if (ownerMatched) {
+                const oddsMismatch = targetOdds != null
+                  && (clickedOdds == null || Math.abs(targetOdds - clickedOdds) > 0.006);
+                if (oddsMismatch) {
+                  oddsMismatchSamples.push({
+                    requestedOdds: targetOdds,
+                    clickedOdds,
+                    buttonText: leafText,
+                    rowTextSample: textSample(rowContainer.innerText || rowContainer.textContent || ""),
+                  });
+                  continue;
+                }
                 const rect = el.getBoundingClientRect();
                 scopedCandidates.push({
                   el,
@@ -2151,6 +2292,8 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               status: "not_clicked",
               reason: marketMismatchSamples.length
                 ? "market_mismatch_requested_visible_row_conflict"
+                : oddsMismatchSamples.length
+                ? "odds_mismatch_requested_visible_button"
                 : "no visible exact clickable selection button found",
               requestedMarket: row.market,
               candidateCount: scopedCandidates.length,
@@ -2158,6 +2301,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               marketAliases: aliases,
               blockedMarketAliases: blockedAliases,
               marketMismatchSamples: marketMismatchSamples.slice(0, 5),
+              oddsMismatchSamples: oddsMismatchSamples.slice(0, 5),
               matchedBy: "player_or_scope_market_line_side",
               candidateSamples: lastCandidateSamples,
               rowCandidateSamples: rowCandidateSamples.slice(0, 8),

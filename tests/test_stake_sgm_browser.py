@@ -16,6 +16,7 @@ from app.stake_sgm_browser import (
     _review_add_summary,
     _sidebar_group_target,
     _sidebar_remove_confirmed,
+    _transactional_selection_plan,
     fixture_url,
 )
 
@@ -328,3 +329,75 @@ def test_sidebar_clear_confirmed_requires_empty_or_selection_drop_to_zero():
         before_state=before,
         after_state=cleared_after,
     )
+
+
+def test_transactional_selection_plan_replaces_failed_primary_before_clicking():
+    primary_rows = [
+        {"rowId": "sgm_a", "player": "Player A", "market": "Outs"},
+        {"rowId": "sgm_b", "player": "Player B", "market": "Outs"},
+        {"rowId": "sgm_c", "player": "Player C", "market": "Walks"},
+    ]
+    primary_preflight = [
+        {"status": "buildable"},
+        {"status": "not_clicked", "reason": "row_not_visible"},
+        {"status": "buildable"},
+    ]
+    fallback_rows = [
+        {"rowId": "sgm_d", "player": "Player D", "market": "Strikeouts"},
+        {"rowId": "sgm_e", "player": "Player E", "market": "Runs"},
+    ]
+    fallback_preflight = [
+        {"status": "buildable"},
+        {"status": "not_clicked", "reason": "market_mismatch"},
+    ]
+
+    plan = _transactional_selection_plan(
+        primary_rows=primary_rows,
+        primary_preflight=primary_preflight,
+        fallback_rows=fallback_rows,
+        fallback_preflight=fallback_preflight,
+        required_legs=3,
+    )
+
+    assert plan["status"] == "ready"
+    assert [row["rowId"] for row in plan["selectedRows"]] == ["sgm_a", "sgm_c", "sgm_d"]
+    assert plan["replacements"] == [
+        {
+            "reason": "primary_not_buildable",
+            "replacement": {
+                "rowId": "sgm_d",
+                "player": "Player D",
+                "team": None,
+                "market": "Strikeouts",
+                "side": None,
+                "line": None,
+                "odds": None,
+                "scope": None,
+                "playerId": None,
+                "marketId": None,
+                "lineId": None,
+            },
+        }
+    ]
+    assert plan["preflightFailures"][0]["reason"] == "row_not_visible"
+
+
+def test_transactional_selection_plan_blocks_when_replacement_cannot_fill_group():
+    plan = _transactional_selection_plan(
+        primary_rows=[
+            {"rowId": "sgm_a", "player": "Player A", "market": "Outs"},
+            {"rowId": "sgm_b", "player": "Player B", "market": "Outs"},
+        ],
+        primary_preflight=[
+            {"status": "buildable"},
+            {"status": "not_clicked", "reason": "row_not_visible"},
+        ],
+        fallback_rows=[{"rowId": "sgm_c", "player": "Player C", "market": "Runs"}],
+        fallback_preflight=[{"status": "not_clicked", "reason": "market_mismatch"}],
+        required_legs=2,
+    )
+
+    assert plan["status"] == "blocked_preflight_failed"
+    assert plan["selectedRows"] == []
+    assert plan["buildableRows"][0]["rowId"] == "sgm_a"
+    assert plan["missingLegs"] == 1

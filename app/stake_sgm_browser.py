@@ -308,6 +308,9 @@ def clear_stake_sidebar(
 def build_stake_sgm_review_slip(
     fixture_slug: str,
     selections: list[dict[str, Any]],
+    *,
+    fallback_selections: list[dict[str, Any]] | None = None,
+    required_legs: int | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
@@ -330,24 +333,32 @@ def build_stake_sgm_review_slip(
                 missing_selections=[],
                 click_results=[],
             )
-        match_result = match_sgm_review_selections(board, selections)
+        transaction = _prepare_transactional_review_rows(
+            page,
+            board,
+            selections,
+            fallback_selections=fallback_selections or [],
+            required_legs=required_legs,
+        )
 
-        if match_result["missingSelections"]:
+        if transaction["status"] != "ready":
             return _review_slip_result(
                 fixture_slug=fixture_slug,
-                status="blocked_exact_ui_match_failed",
+                status=transaction["status"],
                 board=board,
-                selected_rows=match_result["matchedRows"],
-                missing_selections=match_result["missingSelections"],
+                selected_rows=[],
+                missing_selections=transaction["missingSelections"],
                 click_results=[],
+                transaction_plan=transaction["plan"],
             )
 
-        click_results = _click_sgm_review_selections(page, match_result["matchedRows"])
+        selected_rows = transaction["selectedRows"]
+        click_results = _click_sgm_review_selections(page, selected_rows)
         failed_clicks = [row for row in click_results if row.get("status") != "clicked"]
         if failed_clicks:
             _clear_sgm_working_selection(page)
         add_bet_result = (
-            _click_sgm_add_bet_button(page, expected_legs=len(match_result["matchedRows"]))
+            _click_sgm_add_bet_button(page, expected_legs=len(selected_rows))
             if not failed_clicks
             else {"status": "not_attempted", "reason": "selection_click_failed"}
         )
@@ -362,10 +373,11 @@ def build_stake_sgm_review_slip(
             fixture_slug=fixture_slug,
             status=status,
             board=board,
-            selected_rows=match_result["matchedRows"],
-            missing_selections=[],
+            selected_rows=selected_rows,
+            missing_selections=transaction["missingSelections"],
             click_results=click_results,
             add_bet_result=add_bet_result,
+            transaction_plan=transaction["plan"],
         )
 
 
@@ -411,6 +423,8 @@ def build_stake_sgm_review_slip_batch(
             response = _fetch_sgm_board_in_browser(page, fixture_slug)
             board = normalize_sgm_response(fixture_slug, response, warnings)
             selections = _group_review_selections(group)
+            fallback_selections = _group_review_fallback_selections(group)
+            required_legs = _group_required_legs(group, len(selections))
             if _has_logged_out_warning(warnings):
                 result = _review_slip_result(
                     fixture_slug=fixture_slug,
@@ -421,18 +435,26 @@ def build_stake_sgm_review_slip_batch(
                     click_results=[],
                 )
             else:
-                match_result = match_sgm_review_selections(board, selections)
-                if match_result["missingSelections"]:
+                transaction = _prepare_transactional_review_rows(
+                    page,
+                    board,
+                    selections,
+                    fallback_selections=fallback_selections,
+                    required_legs=required_legs,
+                )
+                if transaction["status"] != "ready":
                     result = _review_slip_result(
                         fixture_slug=fixture_slug,
-                        status="blocked_exact_ui_match_failed",
+                        status=transaction["status"],
                         board=board,
-                        selected_rows=match_result["matchedRows"],
-                        missing_selections=match_result["missingSelections"],
+                        selected_rows=[],
+                        missing_selections=transaction["missingSelections"],
                         click_results=[],
+                        transaction_plan=transaction["plan"],
                     )
                 else:
-                    click_results = _click_sgm_review_selections(page, match_result["matchedRows"])
+                    selected_rows = transaction["selectedRows"]
+                    click_results = _click_sgm_review_selections(page, selected_rows)
                     failed_clicks = [
                         row for row in click_results if row.get("status") != "clicked"
                     ]
@@ -441,7 +463,7 @@ def build_stake_sgm_review_slip_batch(
                     add_bet_result = (
                         _click_sgm_add_bet_button(
                             page,
-                            expected_legs=len(match_result["matchedRows"]),
+                            expected_legs=len(selected_rows),
                         )
                         if not failed_clicks
                         else {"status": "not_attempted", "reason": "selection_click_failed"}
@@ -457,10 +479,11 @@ def build_stake_sgm_review_slip_batch(
                         fixture_slug=fixture_slug,
                         status=status,
                         board=board,
-                        selected_rows=match_result["matchedRows"],
-                        missing_selections=[],
+                        selected_rows=selected_rows,
+                        missing_selections=transaction["missingSelections"],
                         click_results=click_results,
                         add_bet_result=add_bet_result,
+                        transaction_plan=transaction["plan"],
                     )
 
             result["matchup"] = group.get("matchup")
@@ -546,6 +569,203 @@ def _group_review_selections(group: dict[str, Any]) -> list[dict[str, Any]]:
         if str(row_id or "").strip():
             selections.append({"rowId": str(row_id).strip()})
     return selections
+
+
+def _group_review_fallback_selections(group: dict[str, Any]) -> list[dict[str, Any]]:
+    selections: list[dict[str, Any]] = []
+    for key in ("fallbackSelections", "replacementSelections", "backupSelections"):
+        raw_selections = group.get(key)
+        if isinstance(raw_selections, list):
+            selections.extend(item for item in raw_selections if isinstance(item, dict))
+
+    for key in ("fallbackRowIds", "replacementRowIds", "backupRowIds"):
+        raw_row_ids = group.get(key) or group.get(_snake_case_key(key))
+        if not isinstance(raw_row_ids, list):
+            continue
+        for row_id in raw_row_ids:
+            if str(row_id or "").strip():
+                selections.append({"rowId": str(row_id).strip()})
+    return selections
+
+
+def _group_required_legs(group: dict[str, Any], default_count: int) -> int:
+    for key in ("requiredLegs", "targetLegs", "legCount"):
+        raw_value = group.get(key) or group.get(_snake_case_key(key))
+        if raw_value is None:
+            continue
+        try:
+            return max(1, min(20, int(raw_value)))
+        except (TypeError, ValueError):
+            continue
+    return max(1, min(20, default_count))
+
+
+def _snake_case_key(value: str) -> str:
+    chars: list[str] = []
+    for char in value:
+        if char.isupper() and chars:
+            chars.append("_")
+        chars.append(char.lower())
+    return "".join(chars)
+
+
+def _prepare_transactional_review_rows(
+    page: Any,
+    board: dict[str, Any],
+    selections: list[dict[str, Any]],
+    *,
+    fallback_selections: list[dict[str, Any]] | None = None,
+    required_legs: int | None = None,
+) -> dict[str, Any]:
+    requested_required_legs = max(1, min(20, int(required_legs or len(selections) or 1)))
+    primary_match = match_sgm_review_selections(board, selections)
+    fallback_match = match_sgm_review_selections(board, fallback_selections or [])
+    primary_rows = primary_match["matchedRows"]
+    fallback_rows = fallback_match["matchedRows"]
+
+    primary_preflight = _preflight_sgm_review_selections(page, primary_rows)
+    plan = _transactional_selection_plan(
+        primary_rows=primary_rows,
+        primary_preflight=primary_preflight,
+        fallback_rows=[],
+        fallback_preflight=[],
+        required_legs=requested_required_legs,
+        primary_missing=primary_match["missingSelections"],
+    )
+    if plan["status"] != "ready" and fallback_rows:
+        fallback_preflight = _preflight_sgm_review_selections(page, fallback_rows)
+        plan = _transactional_selection_plan(
+            primary_rows=primary_rows,
+            primary_preflight=primary_preflight,
+            fallback_rows=fallback_rows,
+            fallback_preflight=fallback_preflight,
+            required_legs=requested_required_legs,
+            primary_missing=primary_match["missingSelections"],
+            fallback_missing=fallback_match["missingSelections"],
+        )
+    missing = list(primary_match["missingSelections"])
+    if plan["status"] != "ready":
+        missing.extend(fallback_match["missingSelections"])
+    return {
+        "status": "ready" if plan["status"] == "ready" else plan["status"],
+        "selectedRows": plan["selectedRows"],
+        "missingSelections": missing,
+        "plan": plan,
+    }
+
+
+def _transactional_selection_plan(
+    *,
+    primary_rows: list[dict[str, Any]],
+    primary_preflight: list[dict[str, Any]],
+    fallback_rows: list[dict[str, Any]],
+    fallback_preflight: list[dict[str, Any]],
+    required_legs: int,
+    primary_missing: list[dict[str, Any]] | None = None,
+    fallback_missing: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    required = max(1, min(20, int(required_legs or len(primary_rows) or 1)))
+    selected_rows: list[dict[str, Any]] = []
+    buildable_rows: list[dict[str, Any]] = []
+    preflight_failures: list[dict[str, Any]] = []
+    replacements: list[dict[str, Any]] = []
+    used_row_ids: set[str] = set()
+
+    for missing in primary_missing or []:
+        preflight_failures.append(
+            {
+                "selection": missing.get("selection"),
+                "reason": missing.get("reason") or "no exact playable UI row matched",
+                "phase": "primary_match",
+            }
+        )
+
+    for row, check in zip(primary_rows, primary_preflight):
+        if _preflight_result_is_buildable(check):
+            buildable_rows.append(row)
+            if len(selected_rows) < required:
+                selected_rows.append(row)
+                used_row_ids.add(str(row.get("rowId") or ""))
+        else:
+            preflight_failures.append(
+                {
+                    "selection": _compact_click_row(row),
+                    "reason": check.get("reason") or check.get("status") or "not_buildable",
+                    "phase": "primary_preflight",
+                    "preflight": _compact_preflight_result(check),
+                }
+            )
+
+    for row, check in zip(fallback_rows, fallback_preflight):
+        row_id = str(row.get("rowId") or "")
+        if len(selected_rows) >= required:
+            break
+        if row_id and row_id in used_row_ids:
+            continue
+        if not _preflight_result_is_buildable(check):
+            continue
+        selected_rows.append(row)
+        buildable_rows.append(row)
+        used_row_ids.add(row_id)
+        replacements.append(
+            {
+                "reason": "primary_not_buildable",
+                "replacement": _compact_click_row(row),
+            }
+        )
+
+    fallback_failures = []
+    for row, check in zip(fallback_rows, fallback_preflight):
+        if _preflight_result_is_buildable(check):
+            continue
+        fallback_failures.append(
+            {
+                "selection": _compact_click_row(row),
+                "reason": check.get("reason") or check.get("status") or "not_buildable",
+                "phase": "fallback_preflight",
+                "preflight": _compact_preflight_result(check),
+            }
+        )
+    for missing in fallback_missing or []:
+        fallback_failures.append(
+            {
+                "selection": missing.get("selection"),
+                "reason": missing.get("reason") or "no exact playable UI row matched",
+                "phase": "fallback_match",
+            }
+        )
+
+    ready = len(selected_rows) >= required
+    return {
+        "status": "ready" if ready else "blocked_preflight_failed",
+        "requiredLegs": required,
+        "selectedRows": selected_rows if ready else [],
+        "buildableRows": [_compact_click_row(row) for row in buildable_rows],
+        "missingLegs": max(0, required - len(selected_rows)),
+        "preflightFailures": preflight_failures,
+        "fallbackFailures": fallback_failures,
+        "replacements": replacements,
+        "transactionalBuild": True,
+    }
+
+
+def _preflight_result_is_buildable(result: dict[str, Any]) -> bool:
+    return str(result.get("status") or "") in {"buildable", "clicked"}
+
+
+def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": result.get("status"),
+        "reason": result.get("reason"),
+        "candidateCount": result.get("candidateCount"),
+        "requestedMarket": result.get("requestedMarket"),
+        "clickedOdds": result.get("clickedOdds"),
+        "requestedOdds": result.get("requestedOdds"),
+        "oddsChanged": result.get("oddsChanged"),
+        "matchedBy": result.get("matchedBy"),
+        "candidateSamples": result.get("candidateSamples") or [],
+        "marketMismatchSamples": result.get("marketMismatchSamples") or [],
+    }
 
 
 def _find_selection_row_by_row_id(
@@ -711,6 +931,17 @@ def _click_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[
         if result.get("status") != "clicked":
             break
     return click_results
+
+
+def _preflight_sgm_review_selections(page: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    preflight_results: list[dict[str, Any]] = []
+    _open_same_game_multi_tab(page)
+    _clear_sgm_working_selection(page)
+
+    for row in rows:
+        preflight_results.append(_preflight_one_sgm_selection(page, row))
+    _clear_sgm_working_selection(page)
+    return preflight_results
 
 
 def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any]:
@@ -1369,6 +1600,14 @@ def _open_same_game_multi_tab(page: Any) -> None:
 
 
 def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
+    return _interact_one_sgm_selection(page, row, click=True)
+
+
+def _preflight_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
+    return _interact_one_sgm_selection(page, row, click=False)
+
+
+def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) -> dict[str, Any]:
     player_or_team = "" if row.get("scope") == "match_props" else row.get("player") or row.get("team") or ""
     click_row = {
         **row,
@@ -1384,7 +1623,7 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
 
     click_result = page.evaluate(
         """
-        async ({ row, oddsText }) => {
+        async ({ row, oddsText, click }) => {
           const norm = (value) => String(value || "")
             .replace(/[üÜ]/g, "u")
             .toLowerCase()
@@ -1638,6 +1877,18 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
           }
 
           scopedCandidates[0].el.scrollIntoView({ block: "center", inline: "center" });
+          if (!click) {
+            return {
+              status: "buildable",
+              candidateCount: scopedCandidates.length,
+              clickedSample: scopedCandidates[0].text,
+              clickedLeafText: scopedCandidates[0].leafText,
+              clickedOdds: scopedCandidates[0].clickedOdds,
+              requestedOdds: scopedCandidates[0].requestedOdds,
+              oddsChanged: scopedCandidates[0].oddsChanged,
+              clickedRect: scopedCandidates[0].rect,
+            };
+          }
           scopedCandidates[0].el.click();
           return {
             status: "clicked",
@@ -1651,7 +1902,7 @@ def _click_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, Any]:
           };
         }
         """,
-        {"row": click_row, "oddsText": _display_number(row.get("odds"))},
+        {"row": click_row, "oddsText": _display_number(row.get("odds")), "click": click},
     )
     return {
         "selection": _compact_click_row(row),
@@ -1887,6 +2138,7 @@ def _review_slip_result(
     missing_selections: list[dict[str, Any]],
     click_results: list[dict[str, Any]],
     add_bet_result: dict[str, Any] | None = None,
+    transaction_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matchup = _fixture_matchup_from_slug(fixture_slug).get("matchup")
     add_summary = _review_add_summary(
@@ -1909,6 +2161,7 @@ def _review_slip_result(
         "clickResults": click_results,
         "addBetResult": add_bet_result or {},
         "addSummary": add_summary,
+        "transactionPlan": transaction_plan or {},
         "warnings": board.get("warnings") or [],
         "safety": {
             "enteredStakeAmount": False,

@@ -26,6 +26,7 @@ Rules:
 - Never change a line. If Stake says `0.5`, do not answer with `1.5`.
 - For SGM requests, never answer from feed-only props when `getStakeUiSgmBoard` is unavailable. Say the UI helper is not ready instead.
 - For multi-game SGM review slips, gather each game's exact UI-backed SGM rows first, then call `buildStakeUiReviewSlipBatch` once with `rowIds` copied from those rows. Do not call one single-game review-slip action per game unless the user explicitly wants separate slips.
+- For SGM review-slip builds, include a few `fallbackRowIds` or `fallbackSelections` when clean backup rows exist, and set `requiredLegs` to the number of legs you actually want built. The helper uses backups only if a primary row becomes stale, hidden, or not buildable during preflight.
 - Never reconstruct an SGM build request from player name, odds, or line text when a `rowId` is available. The `rowId` is the clickable identity.
 - Treat `playable: false`, suspicious odds, stale status, or validation failure as a blocker.
 - Treat `lineMatch: false`, `oddsMatch: false`, `sideMatch: false`, or `identityMatch: false` as a blocker.
@@ -50,7 +51,7 @@ When the user asks for a two-leg same-game parlay:
 3. Read any Stake-provided row stats or recent stat chips for those rows, especially when the UI exposes last-5 style data.
 4. Pull MLB context for likely finalists with `getPlayerMlbContext`, `getSpecificPropContext`, or `getPropContextBatch` where supported, and compare last 5, last 10, last 15, season, and role/matchup context. Treat `metrics.evidenceCheck` as the guardrail against last-5 overreaction.
 5. Choose the legs yourself.
-6. If building a visible review slip, call `buildStakeUiReviewSlip` with the selected rows' exact `rowIds`.
+6. If building a visible review slip, call `buildStakeUiReviewSlip` with the selected rows' exact `rowIds`. Include `fallbackRowIds` when reasonable and set `requiredLegs` to the requested leg count.
 7. If the build fails or returns an unclear status, call `readStakeUiState` once to identify the blocker. If pending SGM selections are stuck before a retry, call `clearStakeUiSgmSelections`. If the user asks to wipe the visible sidebar slip, call `clearStakeUiSidebar`.
 8. Validate exact selections when matching feed selections are available; otherwise disclose that SGM UI board was the source of truth.
 9. Save the decision.
@@ -63,7 +64,7 @@ When the user asks for multiple games in one review slip:
 3. Use Stake row stats/recent stat chips to understand the UI context for each row.
 4. Pull MLB context for finalists where supported, including last 5/10/15, season, probable pitcher, and role context. Use `metrics.evidenceCheck` to avoid last-5-only legs unless the user explicitly accepts that risk.
 5. Choose the legs yourself.
-6. Call `buildStakeUiReviewSlipBatch` once with every game's selected `rowIds` so the local helper uses one shared Stake page/slip.
+6. Call `buildStakeUiReviewSlipBatch` once with every game's selected `rowIds` so the local helper uses one shared Stake page/slip. Include per-game `fallbackRowIds` when clean backups exist and set each group's `requiredLegs` to the intended number of legs for that game.
 7. If the batch fails, use `readStakeUiState` to explain the page/sidebar state before retrying. Use `clearStakeUiSgmSelections` only if the working SGM area has stuck selected rows.
 8. Report the batch result, including any failed game, and remind the user no stake amount was entered and Place Bet was not clicked.
 

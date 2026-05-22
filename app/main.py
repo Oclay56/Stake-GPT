@@ -1012,6 +1012,37 @@ async def mlb_stake_ui_review_slip(
         )
 
     selections = _review_slip_selections_from_body(payload)
+    fallback_selections = _review_slip_selections_from_body(
+        {
+            "selections": (
+                payload.get("fallbackSelections")
+                or payload.get("fallback_selections")
+                or payload.get("replacementSelections")
+                or payload.get("replacement_selections")
+                or payload.get("backupSelections")
+                or payload.get("backup_selections")
+            ),
+            "rowIds": (
+                payload.get("fallbackRowIds")
+                or payload.get("fallback_row_ids")
+                or payload.get("replacementRowIds")
+                or payload.get("replacement_row_ids")
+                or payload.get("backupRowIds")
+                or payload.get("backup_row_ids")
+            ),
+        },
+        required=False,
+    )
+    required_legs = _clean_optional_int(
+        payload,
+        "requiredLegs",
+        "required_legs",
+        "targetLegs",
+        "target_legs",
+        default=len(selections),
+        minimum=1,
+        maximum=20,
+    )
     request = {
         "matchup": matchup,
         "fixtureSlug": fixture_slug,
@@ -1021,6 +1052,8 @@ async def mlb_stake_ui_review_slip(
         "reviewOnly": True,
         "forbiddenActions": ["enter_stake_amount", "click_place_bet"],
         "selections": selections,
+        "fallbackSelections": fallback_selections,
+        "requiredLegs": required_legs,
     }
 
     job: dict[str, Any] | None = None
@@ -1596,7 +1629,11 @@ def _clean_int_from_body(
     return max(minimum, min(value, maximum))
 
 
-def _review_slip_selections_from_body(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _review_slip_selections_from_body(
+    payload: dict[str, Any],
+    *,
+    required: bool = True,
+) -> list[dict[str, Any]]:
     raw_selection_value = payload.get("selections")
     if raw_selection_value is None:
         raw_selections: list[Any] = []
@@ -1613,6 +1650,8 @@ def _review_slip_selections_from_body(payload: dict[str, Any]) -> list[dict[str,
             raw_selections.append({"rowId": str(row_id).strip()})
 
     if not isinstance(raw_selections, list) or not raw_selections:
+        if not required:
+            return []
         raise HTTPException(
             status_code=422,
             detail="selections or rowIds must be a non-empty list of exact Stake UI-backed legs",
@@ -1740,14 +1779,64 @@ async def _review_slip_groups_from_body(
                 "rowIds": raw_group.get("rowIds") or raw_group.get("row_ids"),
             }
         )
+        fallback_selections = _review_slip_selections_from_body(
+            {
+                "selections": (
+                    raw_group.get("fallbackSelections")
+                    or raw_group.get("fallback_selections")
+                    or raw_group.get("replacementSelections")
+                    or raw_group.get("replacement_selections")
+                    or raw_group.get("backupSelections")
+                    or raw_group.get("backup_selections")
+                ),
+                "rowIds": (
+                    raw_group.get("fallbackRowIds")
+                    or raw_group.get("fallback_row_ids")
+                    or raw_group.get("replacementRowIds")
+                    or raw_group.get("replacement_row_ids")
+                    or raw_group.get("backupRowIds")
+                    or raw_group.get("backup_row_ids")
+                ),
+            },
+            required=False,
+        )
+        required_legs = _clean_optional_int(
+            raw_group,
+            "requiredLegs",
+            "required_legs",
+            "targetLegs",
+            "target_legs",
+            default=len(selections),
+            minimum=1,
+            maximum=20,
+        )
         groups.append(
             {
                 "matchup": matchup or None,
                 "fixtureSlug": fixture_slug,
                 "selections": selections,
+                "fallbackSelections": fallback_selections,
+                "requiredLegs": required_legs,
             }
         )
     return groups
+
+
+def _clean_optional_int(
+    payload: dict[str, Any],
+    *keys: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    for key in keys:
+        if payload.get(key) is None:
+            continue
+        try:
+            return max(minimum, min(maximum, int(payload.get(key))))
+        except (TypeError, ValueError):
+            continue
+    return max(minimum, min(maximum, int(default)))
 
 
 def _clean_nullable_text(value: Any) -> str | None:
@@ -1769,6 +1858,7 @@ def _compact_review_slip_result(result: dict[str, Any]) -> dict[str, Any]:
         "missingSelections": result.get("missingSelections") or [],
         "clickResults": result.get("clickResults") or [],
         "addBetResult": result.get("addBetResult") or {},
+        "transactionPlan": result.get("transactionPlan") or {},
         "warnings": result.get("warnings") or [],
         "safety": {
             "enteredStakeAmount": False,
@@ -1842,6 +1932,7 @@ def _compact_batch_review_slip_result(result: dict[str, Any]) -> dict[str, Any]:
                 "missingSelections": group.get("missingSelections") or [],
                 "clickResults": group.get("clickResults") or [],
                 "addBetResult": group.get("addBetResult") or {},
+                "transactionPlan": group.get("transactionPlan") or {},
                 "warnings": group.get("warnings") or [],
             }
         )

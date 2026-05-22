@@ -2772,6 +2772,15 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                             "items": exact_selection_schema,
                             "description": "Exact UI-backed legs returned from getStakeUiSgmBoard. Prefer rowId-only objects.",
                         },
+                        "fallbackSelections": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": exact_selection_schema,
+                            "description": (
+                                "Optional backup UI-backed legs. The helper may use these only when "
+                                "a primary row is stale, hidden, or not buildable during preflight."
+                            ),
+                        },
                         "rowIds": {
                             "type": "array",
                             "minItems": 1,
@@ -2779,6 +2788,21 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                             "items": {"type": "string"},
                             "description": (
                                 "Preferred shorthand: rowId values copied exactly from getStakeUiSgmBoard rows."
+                            ),
+                        },
+                        "fallbackRowIds": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": {"type": "string"},
+                            "description": "Optional backup rowIds copied exactly from getStakeUiSgmBoard rows.",
+                        },
+                        "requiredLegs": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "description": (
+                                "How many legs must be buildable before clicking. Defaults to the "
+                                "number of primary selections."
                             ),
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
@@ -2834,6 +2858,15 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                         "items": exact_selection_schema,
                                         "description": "Exact UI-backed legs. Prefer rowId-only objects.",
                                     },
+                                    "fallbackSelections": {
+                                        "type": "array",
+                                        "maxItems": 20,
+                                        "items": exact_selection_schema,
+                                        "description": (
+                                            "Optional backup UI-backed legs for this game. Used only "
+                                            "when a primary row is stale, hidden, or not buildable."
+                                        ),
+                                    },
                                     "rowIds": {
                                         "type": "array",
                                         "minItems": 1,
@@ -2841,6 +2874,21 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                         "items": {"type": "string"},
                                         "description": (
                                             "Preferred shorthand: rowId values copied exactly from this game's getStakeUiSgmBoard rows."
+                                        ),
+                                    },
+                                    "fallbackRowIds": {
+                                        "type": "array",
+                                        "maxItems": 20,
+                                        "items": {"type": "string"},
+                                        "description": "Optional backup rowIds for this game.",
+                                    },
+                                    "requiredLegs": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 20,
+                                        "description": (
+                                            "How many legs from primary plus fallback rows must be "
+                                            "confirmed buildable before the helper clicks anything."
                                         ),
                                     },
                                 },

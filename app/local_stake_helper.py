@@ -170,6 +170,8 @@ async def process_job(
                 build_stake_sgm_review_slip,
                 fixture_slug,
                 list(request.get("selections") or []),
+                fallback_selections=list(request.get("fallbackSelections") or []),
+                required_legs=request.get("requiredLegs"),
                 cdp_url=cdp_url,
             )
         else:

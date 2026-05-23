@@ -966,6 +966,12 @@ def _click_result_identity_verified(result: dict[str, Any]) -> bool:
     return abs(requested_odds - clicked_odds) <= CLICK_ODDS_TOLERANCE
 
 
+def _click_result_selection_verified(result: dict[str, Any]) -> bool:
+    if "selectedAfterClick" not in result:
+        return True
+    return result.get("selectedAfterClick") is True
+
+
 def _compact_preflight_result(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": result.get("status"),
@@ -1169,6 +1175,12 @@ def _click_sgm_review_selections(
                 "status": "clicked_but_odds_mismatch_unverified",
                 "reason": "clicked_odds_mismatch",
             }
+        if result.get("status") == "clicked" and not _click_result_selection_verified(result):
+            result = {
+                **result,
+                "status": "clicked_but_selection_unverified",
+                "reason": "clicked_selection_not_verified",
+            }
         click_results.append(result)
         if result.get("status") != "clicked":
             break
@@ -1229,6 +1241,18 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
               const disabled = (el) => Boolean(el.disabled)
                 || el.getAttribute("aria-disabled") === "true"
                 || el.classList.contains("disabled");
+              const selectionEvidence = (button) => {
+                const classText = norm(button.className || "");
+                const classes = classText.split(" ").filter(Boolean);
+                const evidence = [];
+                if (button.getAttribute("aria-pressed") === "true") evidence.push("aria_pressed");
+                if (button.getAttribute("aria-selected") === "true") evidence.push("aria_selected");
+                if (norm(button.getAttribute("data-state") || "") === "checked") evidence.push("data_state_checked");
+                if (norm(button.getAttribute("data-selected") || "") === "true") evidence.push("data_selected");
+                if (classes.includes("active")) evidence.push("class_active");
+                if (classes.includes("selected")) evidence.push("class_selected");
+                return evidence;
+              };
               const ancestorText = (el, depthLimit = 8) => {
                 let current = el;
                 const parts = [];
@@ -1252,16 +1276,8 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
                   const context = ancestorText(el);
                   const selectedOutcomeCount = Array.from(document.querySelectorAll('button[data-testid="fixture-outcome"]'))
                     .filter(visible)
-                    .filter((button) => {
-                      const text = norm(button.innerText || button.textContent || "");
-                      const classText = norm(button.className || "");
-                      const ariaPressed = button.getAttribute("aria-pressed") === "true";
-                      const ariaSelected = button.getAttribute("aria-selected") === "true";
-                      const isBlue = window.getComputedStyle(button).backgroundColor.includes("33, 126, 226")
-                        || window.getComputedStyle(button).backgroundColor.includes("29, 110, 201");
-                      return (text.includes("over") || text.includes("under") || text.includes("uber") || text.includes("über") || text.includes("unter"))
-                        && (ariaPressed || ariaSelected || classText.includes("active") || classText.includes("selected") || isBlue);
-                    }).length;
+                    .filter((button) => selectionEvidence(button).length > 0)
+                    .length;
                   return {
                     el,
                     disabled: disabled(el),
@@ -1384,7 +1400,24 @@ def _wait_for_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[s
 
 def _selected_outcome_audit_is_valid(audit: dict[str, Any], *, expected_legs: int) -> bool:
     selected_count = _int_or_none(audit.get("selectedOutcomeCount"))
-    return selected_count == expected_legs
+    if selected_count != expected_legs:
+        return False
+    selected_outcomes = audit.get("selectedOutcomes")
+    if not isinstance(selected_outcomes, list) or len(selected_outcomes) != expected_legs:
+        return False
+    reliable_evidence = {
+        "aria_pressed",
+        "aria_selected",
+        "data_state_checked",
+        "data_selected",
+        "class_active",
+        "class_selected",
+    }
+    for outcome in selected_outcomes:
+        evidence = set(outcome.get("selectionEvidence") or [])
+        if not evidence.intersection(reliable_evidence):
+            return False
+    return True
 
 
 def _read_sgm_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[str, Any]:
@@ -1411,32 +1444,30 @@ def _read_sgm_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[s
                       && rect.width > 0
                       && rect.height > 0;
                   };
-                  const selected = (button) => {
+                  const selectionEvidence = (button) => {
                     const classText = norm(button.className || "");
+                    const classes = classText.split(" ").filter(Boolean);
                     const dataState = norm(button.getAttribute("data-state") || "");
                     const dataSelected = norm(button.getAttribute("data-selected") || "");
-                    const ariaPressed = button.getAttribute("aria-pressed") === "true";
-                    const ariaSelected = button.getAttribute("aria-selected") === "true";
-                    const background = window.getComputedStyle(button).backgroundColor;
-                    const isStakeBlue = background.includes("33, 126, 226")
-                      || background.includes("29, 110, 201")
-                      || background.includes("20, 117, 225");
-                    return ariaPressed
-                      || ariaSelected
-                      || dataState === "checked"
-                      || dataSelected === "true"
-                      || classText.split(" ").includes("active")
-                      || classText.split(" ").includes("selected")
-                      || isStakeBlue;
+                    const evidence = [];
+                    if (button.getAttribute("aria-pressed") === "true") evidence.push("aria_pressed");
+                    if (button.getAttribute("aria-selected") === "true") evidence.push("aria_selected");
+                    if (dataState === "checked") evidence.push("data_state_checked");
+                    if (dataSelected === "true") evidence.push("data_selected");
+                    if (classes.includes("active")) evidence.push("class_active");
+                    if (classes.includes("selected")) evidence.push("class_selected");
+                    return evidence;
                   };
                   const buttons = Array.from(document.querySelectorAll('button[data-testid="fixture-outcome"]'))
                     .filter(visible);
-                  const selectedButtons = buttons.filter(selected);
+                  const selectedButtons = buttons
+                    .map((button) => ({ button, evidence: selectionEvidence(button) }))
+                    .filter((item) => item.evidence.length > 0);
                   return {
                     expectedLegs,
                     selectedOutcomeCount: selectedButtons.length,
                     visibleOutcomeCount: buttons.length,
-                    selectedOutcomes: selectedButtons.slice(0, 20).map((button, index) => {
+                    selectedOutcomes: selectedButtons.slice(0, 20).map(({ button, evidence }, index) => {
                       let current = button;
                       const ancestors = [];
                       for (let depth = 0; depth < 8 && current; depth += 1) {
@@ -1449,6 +1480,7 @@ def _read_sgm_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[s
                         ariaPressed: button.getAttribute("aria-pressed"),
                         ariaSelected: button.getAttribute("aria-selected"),
                         className: sample(button.className || ""),
+                        selectionEvidence: evidence,
                         rowTextSample: ancestors.find((text) => text.length > 20) || ancestors[0] || "",
                       };
                     }),
@@ -2103,6 +2135,29 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               matchesWanted: wantedSide && !oppositeSide,
             };
           };
+          const selectionEvidence = (button) => {
+            const classText = norm(button.className || "");
+            const classes = classText.split(" ").filter(Boolean);
+            const evidence = [];
+            if (button.getAttribute("aria-pressed") === "true") evidence.push("aria_pressed");
+            if (button.getAttribute("aria-selected") === "true") evidence.push("aria_selected");
+            if (norm(button.getAttribute("data-state") || "") === "checked") evidence.push("data_state_checked");
+            if (norm(button.getAttribute("data-selected") || "") === "true") evidence.push("data_selected");
+            if (classes.includes("active")) evidence.push("class_active");
+            if (classes.includes("selected")) evidence.push("class_selected");
+            return evidence;
+          };
+          const isCompactOutcomeButton = (el) => {
+            const rect = el.getBoundingClientRect();
+            const text = String(el.innerText || el.textContent || "").trim();
+            const normalizedText = norm(text);
+            return rect.width <= 360
+              && rect.height <= 100
+              && text.length <= 90
+              && wanted.side
+              && sideAliases.some((side) => normalizedText.includes(side))
+              && (targetOdds == null || textHasNumber(text, targetOdds, 0.006));
+          };
           const ownerMatchesText = (text) => {
             if (wanted.scope === "match props" || wanted.scope === "match_props") {
               return true;
@@ -2143,20 +2198,14 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
           const candidateElements = () => {
             const sideButtons = Array.from(document.querySelectorAll("button[data-testid='fixture-outcome']"))
-              .filter(visible);
+              .filter(visible)
+              .filter(isCompactOutcomeButton);
             if (sideButtons.length) {
               return sideButtons;
             }
-            return Array.from(document.querySelectorAll("button,[role='button'],[tabindex='0'],body *"))
+            return Array.from(document.querySelectorAll("button,[role='button']"))
               .filter(visible)
-              .filter((el) => {
-                const rect = el.getBoundingClientRect();
-                const text = String(el.innerText || el.textContent || "").trim();
-                return rect.width <= 360
-                  && rect.height <= 100
-                  && wanted.side
-                  && sideAliases.some((side) => norm(text).includes(side));
-              });
+              .filter(isCompactOutcomeButton);
           };
 
           let scopedCandidates = [];
@@ -2324,6 +2373,8 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             };
           }
           scopedCandidates[0].el.click();
+          await sleep(250);
+          const postClickEvidence = selectionEvidence(scopedCandidates[0].el);
           return {
             status: "clicked",
             candidateCount: scopedCandidates.length,
@@ -2333,6 +2384,8 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             requestedOdds: scopedCandidates[0].requestedOdds,
             oddsChanged: scopedCandidates[0].oddsChanged,
             clickedRect: scopedCandidates[0].rect,
+            selectedAfterClick: postClickEvidence.length > 0,
+            selectionEvidence: postClickEvidence,
             rowCandidateSamples: rowCandidateSamples.slice(0, 8),
           };
         }

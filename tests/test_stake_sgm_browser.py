@@ -479,6 +479,42 @@ def test_click_selection_downgrades_odds_mismatch_before_add_bet(monkeypatch):
     assert results[0]["reason"] == "clicked_odds_mismatch"
 
 
+def test_click_selection_downgrades_unverified_click_before_add_bet(monkeypatch):
+    rows = [
+        {
+            "rowId": "sgm_xavier",
+            "player": "Xavier Edwards",
+            "market": "Hits",
+            "side": "under",
+            "line": 0.5,
+            "odds": 2.8465,
+        }
+    ]
+
+    def fake_click_one_sgm_selection(page, row):
+        return {
+            "selection": sgm_browser._compact_click_row(row),
+            "status": "clicked",
+            "clickedOdds": 2.8465,
+            "requestedOdds": 2.8465,
+            "oddsChanged": False,
+            "clickedLeafText": "Under\n2.85",
+            "selectedAfterClick": False,
+            "selectionEvidence": [],
+        }
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_click_one_sgm_selection",
+        fake_click_one_sgm_selection,
+    )
+
+    results = sgm_browser._click_sgm_review_selections(object(), rows)
+
+    assert results[0]["status"] == "clicked_but_selection_unverified"
+    assert results[0]["reason"] == "clicked_selection_not_verified"
+
+
 def test_selected_outcome_audit_rejects_unexpected_count():
     audit = {
         "expectedLegs": 5,
@@ -487,6 +523,58 @@ def test_selected_outcome_audit_rejects_unexpected_count():
     }
 
     assert not sgm_browser._selected_outcome_audit_is_valid(audit, expected_legs=5)
+
+
+def test_selected_outcome_audit_rejects_background_only_evidence():
+    audit = {
+        "expectedLegs": 5,
+        "selectedOutcomeCount": 5,
+        "selectedOutcomes": [
+            {"text": "Under\n2.85", "selectionEvidence": ["background_color"]}
+            for _ in range(5)
+        ],
+    }
+
+    assert not sgm_browser._selected_outcome_audit_is_valid(audit, expected_legs=5)
+
+
+def test_sgm_click_matcher_does_not_allow_generic_body_elements():
+    class EmptyLocator:
+        def count(self):
+            return 0
+
+    class InteractionPage:
+        def __init__(self):
+            self.scripts: list[str] = []
+
+        def get_by_placeholder(self, value):
+            return EmptyLocator()
+
+        def locator(self, value):
+            return EmptyLocator()
+
+        def evaluate(self, script, arg=None):
+            self.scripts.append(script)
+            if "const wanted = norm(value)" in script:
+                return True
+            return {"status": "not_clicked", "reason": "test_stop"}
+
+    page = InteractionPage()
+    sgm_browser._interact_one_sgm_selection(
+        page,
+        {
+            "rowId": "sgm_xavier",
+            "player": "Xavier Edwards",
+            "market": "Hits",
+            "side": "under",
+            "line": 0.5,
+            "odds": 2.8465,
+        },
+        click=True,
+    )
+
+    interaction_script = page.scripts[-1]
+    assert "body *" not in interaction_script
 
 
 def test_compact_preflight_result_keeps_row_context_diagnostics():

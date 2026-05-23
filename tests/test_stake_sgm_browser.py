@@ -538,6 +538,156 @@ def test_selected_outcome_audit_rejects_background_only_evidence():
     assert not sgm_browser._selected_outcome_audit_is_valid(audit, expected_legs=5)
 
 
+def test_selected_outcome_audit_accepts_reliable_ancestor_evidence():
+    audit = {
+        "expectedLegs": 5,
+        "selectedOutcomeCount": 5,
+        "selectedOutcomes": [
+            {"text": "Under\n2.85", "selectionEvidence": ["ancestor_class_selected"]}
+            for _ in range(5)
+        ],
+    }
+
+    assert sgm_browser._selected_outcome_audit_is_valid(audit, expected_legs=5)
+
+
+def test_sgm_row_id_does_not_change_when_provider_line_id_changes():
+    base_row = {
+        "team": "Miami Marlins",
+        "player": "Xavier Edwards",
+        "playerId": "player-xavier",
+        "scope": "player",
+        "market": "Hits",
+        "marketId": "market-hits",
+        "swishStatId": "stat-hits",
+        "line": 0.5,
+        "lineId": "line-old",
+    }
+    refreshed_row = {**base_row, "lineId": "line-new"}
+
+    assert sgm_browser.make_sgm_selection_row_id(
+        "46459719-miami-marlins-new-york-mets",
+        base_row,
+        "under",
+    ) == sgm_browser.make_sgm_selection_row_id(
+        "46459719-miami-marlins-new-york-mets",
+        refreshed_row,
+        "under",
+    )
+
+
+def test_match_sgm_review_selections_accepts_legacy_line_id_based_row_id():
+    sgm_browser._SGM_ROW_ID_CACHE.clear()
+    old_row = {
+        "team": "Miami Marlins",
+        "player": "Xavier Edwards",
+        "playerId": "player-xavier",
+        "scope": "player",
+        "market": "Hits",
+        "marketId": "market-hits",
+        "swishStatId": "stat-hits",
+        "line": 0.5,
+        "lineId": "line-old",
+        "under": 2.84,
+        "over": 1.35,
+        "playable": True,
+    }
+    old_row_id = sgm_browser._make_sgm_selection_row_id(
+        "46459719-miami-marlins-new-york-mets",
+        old_row,
+        "under",
+        include_provider_line_id=True,
+    )
+    sgm_browser._remember_sgm_board_rows(
+        {
+            "fixtureSlug": "46459719-miami-marlins-new-york-mets",
+            "playerProps": [old_row],
+            "teamMarkets": [],
+        }
+    )
+    board = {
+        "fixtureSlug": "46459719-miami-marlins-new-york-mets",
+        "playerProps": [
+            {
+                "team": "Miami Marlins",
+                "player": "Xavier Edwards",
+                "playerId": "player-xavier",
+                "scope": "player",
+                "market": "Hits",
+                "marketId": "market-hits",
+                "swishStatId": "stat-hits",
+                "line": 0.5,
+                "lineId": "line-new",
+                "under": 2.84,
+                "over": 1.35,
+                "playable": True,
+            }
+        ],
+        "teamMarkets": [],
+    }
+
+    result = sgm_browser.match_sgm_review_selections(
+        board,
+        [{"rowId": old_row_id}],
+    )
+
+    assert result["missingSelections"] == []
+    assert result["matchedRows"][0]["player"] == "Xavier Edwards"
+    assert result["matchedRows"][0]["side"] == "under"
+
+
+def test_add_bet_clicks_enabled_sticky_button_before_blocking_on_audit(monkeypatch):
+    class StickyButton:
+        def __init__(self, page):
+            self.page = page
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def scroll_into_view_if_needed(self, *, timeout):
+            return None
+
+        def click(self, *, timeout):
+            self.page.clicked_sticky = True
+
+    class AddBetPage:
+        def __init__(self):
+            self.clicked_sticky = False
+
+        def locator(self, selector):
+            assert selector == "#custom-bet-sticky-add"
+            return StickyButton(self)
+
+        def wait_for_timeout(self, ms):
+            return None
+
+    page = AddBetPage()
+
+    def fake_read_bet_slip_state(current_page):
+        return {
+            "rightPanelEmpty": not current_page.clicked_sticky,
+            "rightPanelSelectionCount": 5 if current_page.clicked_sticky else 0,
+            "rightPanelTextDigest": "after" if current_page.clicked_sticky else "before",
+            "rightPanelTextLength": 100 if current_page.clicked_sticky else 10,
+        }
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("audit should not block an enabled Add Bet control")
+
+    monkeypatch.setattr(sgm_browser, "_read_bet_slip_state", fake_read_bet_slip_state)
+    monkeypatch.setattr(sgm_browser, "_wait_for_selected_outcome_audit", fail_if_called)
+
+    result = sgm_browser._click_sgm_add_bet_button(page, expected_legs=5)
+
+    assert result["status"] == "clicked"
+    assert result["clickedBy"] == "playwright_locator"
+    assert result["addBetConfirmed"] is True
+
+
 def test_sgm_click_matcher_does_not_allow_generic_body_elements():
     class EmptyLocator:
         def count(self):

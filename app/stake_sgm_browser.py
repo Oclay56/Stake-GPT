@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
 CLICK_ODDS_TOLERANCE = 0.006
+_SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
 MLB_TEAM_SLUGS = {
     "arizona-diamondbacks": "Arizona Diamondbacks",
@@ -1017,11 +1018,79 @@ def _find_selection_row_by_row_id(
         for side in ("over", "under"):
             if row.get(side) is None:
                 continue
-            current_row_id = make_sgm_selection_row_id(fixture_slug, row, side)
-            if current_row_id == row_id:
-                return _matched_selection_row(row, side, current_row_id)
+            row_id_aliases = _sgm_selection_row_id_aliases(fixture_slug, row, side)
+            if row_id in row_id_aliases:
+                return _matched_selection_row(
+                    row,
+                    side,
+                    make_sgm_selection_row_id(fixture_slug, row, side),
+                )
+
+    cached_row = _find_cached_selection_row_by_row_id(source_rows, fixture_slug, row_id)
+    if cached_row:
+        return cached_row
 
     return None
+
+
+def _find_cached_selection_row_by_row_id(
+    source_rows: list[dict[str, Any]],
+    fixture_slug: str,
+    row_id: str,
+) -> dict[str, Any] | None:
+    cached = _SGM_ROW_ID_CACHE.get((fixture_slug, row_id))
+    if not cached:
+        return None
+    side = str(cached.get("side") or "").strip().lower()
+    if side not in {"over", "under"}:
+        return None
+
+    cached_line = _float_or_none(cached.get("line"))
+    cached_player = _text_key(cached.get("player"))
+    cached_team = _text_key(cached.get("team"))
+    cached_market = _text_key(cached.get("market"))
+    cached_scope = _text_key(cached.get("scope"))
+
+    for row in source_rows:
+        if not row.get("playable") or row.get(side) is None:
+            continue
+        if cached_scope and cached_scope != _text_key(row.get("scope")):
+            continue
+        if cached_team and cached_team != _text_key(row.get("team")):
+            continue
+        if cached_player and cached_player != _text_key(row.get("player")):
+            continue
+        if cached_market and cached_market != _text_key(row.get("market")):
+            continue
+        if cached_line is None or not _numbers_equal(cached_line, row.get("line")):
+            continue
+        return _matched_selection_row(
+            row,
+            side,
+            make_sgm_selection_row_id(fixture_slug, row, side),
+        )
+
+    return None
+
+
+def _remember_sgm_board_rows(board: dict[str, Any]) -> None:
+    fixture_slug = str(board.get("fixtureSlug") or "").strip()
+    if not fixture_slug:
+        return
+    source_rows = list(board.get("playerProps") or []) + list(board.get("teamMarkets") or [])
+    for row in source_rows:
+        if not row.get("playable"):
+            continue
+        for side in ("over", "under"):
+            if row.get(side) is None:
+                continue
+            matched = _matched_selection_row(
+                row,
+                side,
+                make_sgm_selection_row_id(fixture_slug, row, side),
+            )
+            for row_id in _sgm_selection_row_id_aliases(fixture_slug, row, side):
+                _SGM_ROW_ID_CACHE[(fixture_slug, row_id)] = matched
 
 
 def normalize_sgm_response(
@@ -1056,7 +1125,7 @@ def normalize_sgm_response(
                     _line_rows(market.get("lines") or [], market, team_name, player)
                 )
 
-    return {
+    board = {
         "source": "stake_ui_sgm",
         "fixtureSlug": fixture_slug,
         "capturedAt": datetime.now(timezone.utc).isoformat(),
@@ -1078,6 +1147,8 @@ def normalize_sgm_response(
         "teamMarkets": team_markets,
         "playerProps": player_props,
     }
+    _remember_sgm_board_rows(board)
+    return board
 
 
 def _find_exact_selection_row(
@@ -1209,6 +1280,10 @@ def _preflight_sgm_review_selections(
 def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any]:
     try:
         before_state = _read_bet_slip_state(page)
+        sticky_result = _click_custom_bet_sticky_add(page, before_state=before_state)
+        if sticky_result.get("status") == "clicked":
+            return sticky_result
+
         outcome_audit = _wait_for_selected_outcome_audit(page, expected_legs=expected_legs)
         if not _selected_outcome_audit_is_valid(outcome_audit, expected_legs=expected_legs):
             return {
@@ -1217,10 +1292,8 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
                 "expectedLegs": expected_legs,
                 "selectedOutcomeAudit": outcome_audit,
                 "beforeClick": before_state,
+                "initialStickyClick": sticky_result,
             }
-        sticky_result = _click_custom_bet_sticky_add(page, before_state=before_state)
-        if sticky_result.get("status") == "clicked":
-            return sticky_result
 
         result = page.evaluate(
             """
@@ -1251,6 +1324,18 @@ def _click_sgm_add_bet_button(page: Any, *, expected_legs: int) -> dict[str, Any
                 if (norm(button.getAttribute("data-selected") || "") === "true") evidence.push("data_selected");
                 if (classes.includes("active")) evidence.push("class_active");
                 if (classes.includes("selected")) evidence.push("class_selected");
+                let current = button.parentElement;
+                for (let depth = 0; depth < 5 && current; depth += 1) {
+                  const ancestorClassText = norm(current.className || "");
+                  const ancestorClasses = ancestorClassText.split(" ").filter(Boolean);
+                  if (current.getAttribute("aria-pressed") === "true") evidence.push("ancestor_aria_pressed");
+                  if (current.getAttribute("aria-selected") === "true") evidence.push("ancestor_aria_selected");
+                  if (norm(current.getAttribute("data-state") || "") === "checked") evidence.push("ancestor_data_state_checked");
+                  if (norm(current.getAttribute("data-selected") || "") === "true") evidence.push("ancestor_data_selected");
+                  if (ancestorClasses.includes("active")) evidence.push("ancestor_class_active");
+                  if (ancestorClasses.includes("selected")) evidence.push("ancestor_class_selected");
+                  current = current.parentElement;
+                }
                 return evidence;
               };
               const ancestorText = (el, depthLimit = 8) => {
@@ -1412,6 +1497,12 @@ def _selected_outcome_audit_is_valid(audit: dict[str, Any], *, expected_legs: in
         "data_selected",
         "class_active",
         "class_selected",
+        "ancestor_aria_pressed",
+        "ancestor_aria_selected",
+        "ancestor_data_state_checked",
+        "ancestor_data_selected",
+        "ancestor_class_active",
+        "ancestor_class_selected",
     }
     for outcome in selected_outcomes:
         evidence = set(outcome.get("selectionEvidence") or [])
@@ -1456,6 +1547,18 @@ def _read_sgm_selected_outcome_audit(page: Any, *, expected_legs: int) -> dict[s
                     if (dataSelected === "true") evidence.push("data_selected");
                     if (classes.includes("active")) evidence.push("class_active");
                     if (classes.includes("selected")) evidence.push("class_selected");
+                    let current = button.parentElement;
+                    for (let depth = 0; depth < 5 && current; depth += 1) {
+                      const ancestorClassText = norm(current.className || "");
+                      const ancestorClasses = ancestorClassText.split(" ").filter(Boolean);
+                      if (current.getAttribute("aria-pressed") === "true") evidence.push("ancestor_aria_pressed");
+                      if (current.getAttribute("aria-selected") === "true") evidence.push("ancestor_aria_selected");
+                      if (norm(current.getAttribute("data-state") || "") === "checked") evidence.push("ancestor_data_state_checked");
+                      if (norm(current.getAttribute("data-selected") || "") === "true") evidence.push("ancestor_data_selected");
+                      if (ancestorClasses.includes("active")) evidence.push("ancestor_class_active");
+                      if (ancestorClasses.includes("selected")) evidence.push("ancestor_class_selected");
+                      current = current.parentElement;
+                    }
                     return evidence;
                   };
                   const buttons = Array.from(document.querySelectorAll('button[data-testid="fixture-outcome"]'))
@@ -2145,6 +2248,18 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             if (norm(button.getAttribute("data-selected") || "") === "true") evidence.push("data_selected");
             if (classes.includes("active")) evidence.push("class_active");
             if (classes.includes("selected")) evidence.push("class_selected");
+            let current = button.parentElement;
+            for (let depth = 0; depth < 5 && current; depth += 1) {
+              const ancestorClassText = norm(current.className || "");
+              const ancestorClasses = ancestorClassText.split(" ").filter(Boolean);
+              if (current.getAttribute("aria-pressed") === "true") evidence.push("ancestor_aria_pressed");
+              if (current.getAttribute("aria-selected") === "true") evidence.push("ancestor_aria_selected");
+              if (norm(current.getAttribute("data-state") || "") === "checked") evidence.push("ancestor_data_state_checked");
+              if (norm(current.getAttribute("data-selected") || "") === "true") evidence.push("ancestor_data_selected");
+              if (ancestorClasses.includes("active")) evidence.push("ancestor_class_active");
+              if (ancestorClasses.includes("selected")) evidence.push("ancestor_class_selected");
+              current = current.parentElement;
+            }
             return evidence;
           };
           const isCompactOutcomeButton = (el) => {
@@ -2723,6 +2838,23 @@ def _compact_click_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_sgm_selection_row_id(fixture_slug: str, row: dict[str, Any], side: str) -> str:
+    return _make_sgm_selection_row_id(fixture_slug, row, side, include_provider_line_id=False)
+
+
+def _sgm_selection_row_id_aliases(fixture_slug: str, row: dict[str, Any], side: str) -> set[str]:
+    return {
+        _make_sgm_selection_row_id(fixture_slug, row, side, include_provider_line_id=False),
+        _make_sgm_selection_row_id(fixture_slug, row, side, include_provider_line_id=True),
+    }
+
+
+def _make_sgm_selection_row_id(
+    fixture_slug: str,
+    row: dict[str, Any],
+    side: str,
+    *,
+    include_provider_line_id: bool,
+) -> str:
     identity_parts = [
         str(fixture_slug or ""),
         str(row.get("scope") or ""),
@@ -2730,10 +2862,11 @@ def make_sgm_selection_row_id(fixture_slug: str, row: dict[str, Any], side: str)
         str(row.get("playerId") or row.get("player") or ""),
         str(row.get("marketId") or row.get("market") or ""),
         str(row.get("swishStatId") or row.get("statId") or ""),
-        str(row.get("lineId") or ""),
         _display_number(row.get("line")),
         str(side or "").lower(),
     ]
+    if include_provider_line_id:
+        identity_parts.insert(6, str(row.get("lineId") or ""))
     canonical = "|".join(_text_key(part) for part in identity_parts)
     return f"sgm_{sha1(canonical.encode('utf-8')).hexdigest()[:16]}"
 

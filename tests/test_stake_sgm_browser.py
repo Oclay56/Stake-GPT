@@ -95,6 +95,54 @@ def test_find_or_open_fixture_page_reuses_clean_fixture_tab():
     assert page.navigated_to == []
 
 
+def test_find_or_open_mlb_page_navigates_from_fixture_to_index():
+    page = FakePage(
+        "https://stake.com/sports/baseball/usa/mlb/"
+        "46459719-miami-marlins-new-york-mets"
+    )
+    context = FakeContext([page])
+
+    found = sgm_browser._find_or_open_mlb_page(context)
+
+    assert found is page
+    assert page.navigated_to == [sgm_browser.STAKE_MLB_URL]
+
+
+def test_expand_mlb_game_list_clicks_load_more_until_limit():
+    class LoadMorePage:
+        def __init__(self) -> None:
+            self.visible_games = 4
+            self.clicks = 0
+
+        def evaluate(self, script, arg=None):
+            if "querySelectorAll('a[href*=" in script:
+                return [
+                    {
+                        "href": f"https://stake.com/sports/baseball/usa/mlb/{index}-team-a-team-b",
+                        "text": "Team A Team B",
+                    }
+                    for index in range(self.visible_games)
+                ]
+            if "load more" in script.lower():
+                if self.visible_games >= 10:
+                    return {"status": "not_found", "visibleGameCount": self.visible_games}
+                self.clicks += 1
+                self.visible_games += 3
+                return {"status": "clicked", "visibleGameCount": self.visible_games}
+            raise AssertionError("unexpected script")
+
+        def wait_for_timeout(self, ms):
+            return None
+
+    page = LoadMorePage()
+
+    result = sgm_browser._expand_mlb_game_list(page, limit=10)
+
+    assert result["status"] == "expanded"
+    assert page.clicks == 2
+    assert page.visible_games == 10
+
+
 def test_check_page_ready_reports_cloudflare_verification():
     page = FakeReadyPage(
         "stake.com\nPerforming security verification\n"
@@ -725,6 +773,70 @@ def test_sgm_click_matcher_does_not_allow_generic_body_elements():
 
     interaction_script = page.scripts[-1]
     assert "body *" not in interaction_script
+
+
+def test_team_and_match_sgm_rows_clear_search_and_expand_market(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_clear_sgm_search_filter",
+        lambda page: calls.append(("clear_search",)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_filter_sgm_board",
+        lambda page, value: calls.append(("filter", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_owner",
+        lambda page, value: calls.append(("expand_owner", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_market",
+        lambda page, value: calls.append(("expand_market", value)),
+    )
+
+    class InteractionPage:
+        def evaluate(self, script, arg=None):
+            return {"status": "not_clicked", "reason": "test_stop"}
+
+    page = InteractionPage()
+    sgm_browser._interact_one_sgm_selection(
+        page,
+        {
+            "rowId": "sgm_team_hits",
+            "team": "Chicago Cubs",
+            "scope": "team_props",
+            "market": "Team Hits",
+            "side": "under",
+            "line": 6.5,
+            "odds": 2.1,
+        },
+        click=False,
+    )
+    sgm_browser._interact_one_sgm_selection(
+        page,
+        {
+            "rowId": "sgm_match_home_runs",
+            "scope": "match_props",
+            "market": "Match Home Runs",
+            "side": "under",
+            "line": 1.5,
+            "odds": 2.3,
+        },
+        click=False,
+    )
+
+    assert calls == [
+        ("clear_search",),
+        ("expand_owner", "Chicago Cubs"),
+        ("expand_market", "Team Hits"),
+        ("clear_search",),
+        ("expand_market", "Match Home Runs"),
+    ]
 
 
 def test_compact_preflight_result_keeps_row_context_diagnostics():

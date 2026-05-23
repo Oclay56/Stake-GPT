@@ -164,6 +164,7 @@ def read_stake_mlb_games(
 
         page = _find_or_open_mlb_page(browser.contexts[0])
         warnings = _check_stake_page_access(page)
+        expansion = _expand_mlb_game_list(page, limit=limit)
         games = _extract_mlb_game_links(page, limit=limit)
         if not games:
             warnings.append(
@@ -176,6 +177,7 @@ def read_stake_mlb_games(
             "url": page.url,
             "returnedGames": len(games),
             "games": games,
+            "expansion": expansion,
             "warnings": warnings,
         }
 
@@ -2100,18 +2102,28 @@ def _preflight_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, An
 
 
 def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) -> dict[str, Any]:
-    player_or_team = "" if row.get("scope") == "match_props" else row.get("player") or row.get("team") or ""
+    scope = _text_key(row.get("scope"))
+    player = str(row.get("player") or "").strip()
+    team = str(row.get("team") or "").strip()
+    market = str(row.get("market") or "").strip()
     click_row = {
         **row,
-        "marketAliases": _market_display_aliases(str(row.get("market") or "")),
-        "marketClickIdentity": _market_click_identity(str(row.get("market") or "")),
+        "marketAliases": _market_display_aliases(market),
+        "marketClickIdentity": _market_click_identity(market),
     }
-    if player_or_team:
-        _filter_sgm_board(page, str(player_or_team))
-        _expand_sgm_owner(page, str(player_or_team))
-    elif row.get("market"):
-        _filter_sgm_board(page, _market_search_text(str(row.get("market"))))
-        _expand_sgm_market(page, str(row.get("market")))
+    if player:
+        _filter_sgm_board(page, player)
+        _expand_sgm_owner(page, player)
+    elif scope == "team props" or team:
+        _clear_sgm_search_filter(page)
+        if team:
+            _expand_sgm_owner(page, team)
+        if market:
+            _expand_sgm_market(page, market)
+    elif scope == "match props" or market:
+        _clear_sgm_search_filter(page)
+        if market:
+            _expand_sgm_market(page, market)
 
     click_result = page.evaluate(
         """
@@ -2585,6 +2597,39 @@ def _filter_sgm_board(page: Any, value: str) -> None:
         return
 
 
+def _clear_sgm_search_filter(page: Any) -> None:
+    try:
+        search = page.get_by_placeholder("Search")
+        if search.count():
+            search.first.fill("", timeout=3_000)
+            page.wait_for_timeout(250)
+            return
+    except Exception:
+        pass
+
+    try:
+        page.evaluate(
+            """
+            () => {
+              const searchInputs = Array.from(document.querySelectorAll("input"))
+                .filter((input) => {
+                  const label = `${input.getAttribute("placeholder") || ""} ${input.getAttribute("aria-label") || ""}`.toLowerCase();
+                  return label.includes("search") || input.value;
+                });
+              for (const input of searchInputs) {
+                input.value = "";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              return searchInputs.length;
+            }
+            """
+        )
+        page.wait_for_timeout(250)
+    except Exception:
+        return
+
+
 def _expand_sgm_market(page: Any, value: str) -> None:
     try:
         result = page.evaluate(
@@ -2946,7 +2991,7 @@ def _shared_stake_page(context: Any) -> Any:
 def _find_or_open_mlb_page(context: Any) -> Any:
     for page in context.pages:
         if "stake.com" in str(page.url) and "/sports/baseball/usa/mlb" in str(page.url):
-            if _restricted_region_url(page.url):
+            if _restricted_region_url(page.url) or _fixture_slug_from_url(str(page.url or "")):
                 page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
             return page
 
@@ -3102,6 +3147,76 @@ def _extract_mlb_game_links(page: Any, *, limit: int) -> list[dict[str, Any]]:
         if len(games) >= max(limit, 1):
             break
     return games
+
+
+def _expand_mlb_game_list(page: Any, *, limit: int) -> dict[str, Any]:
+    target = max(1, int(limit or 1))
+    last_count = 0
+    clicks = 0
+    for _ in range(12):
+        result = page.evaluate(
+            """
+            async ({ target }) => {
+              const norm = (value) => String(value || "")
+                .toLowerCase()
+                .replace(/\\s+/g, " ")
+                .trim();
+              const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.visibility !== "hidden"
+                  && style.display !== "none"
+                  && rect.width > 0
+                  && rect.height > 0;
+              };
+              const visibleGameCount = () => Array.from(document.links || [])
+                .filter((anchor) => String(anchor.href || anchor.getAttribute("href") || "").includes("/sports/baseball/usa/mlb/"))
+                .length;
+              const beforeCount = visibleGameCount();
+              if (beforeCount >= target) {
+                return { status: "already_expanded", visibleGameCount: beforeCount };
+              }
+              window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" });
+              const loadMore = Array.from(document.querySelectorAll("button,[role='button'],a"))
+                .filter(visible)
+                .find((el) => {
+                  const text = norm(el.innerText || el.textContent || el.getAttribute("aria-label") || "");
+                  return text === "load more"
+                    || text.includes("load more")
+                    || text.includes("show more")
+                    || text.includes("view more");
+                });
+              if (!loadMore) {
+                return { status: "not_found", visibleGameCount: beforeCount };
+              }
+              loadMore.scrollIntoView({ block: "center", inline: "center" });
+              loadMore.click();
+              return { status: "clicked", visibleGameCount: beforeCount };
+            }
+            """,
+            {"target": target},
+        )
+        status = str((result or {}).get("status") or "")
+        visible_count = _int_or_none((result or {}).get("visibleGameCount")) or last_count
+        last_count = max(last_count, visible_count)
+        if status != "clicked":
+            return {
+                "status": "expanded" if last_count >= target else status or "not_found",
+                "clicks": clicks,
+                "visibleGameCount": last_count,
+                "targetGameCount": target,
+            }
+        clicks += 1
+        try:
+            page.wait_for_timeout(750)
+        except Exception:
+            break
+    return {
+        "status": "expanded" if last_count >= target else "max_attempts_reached",
+        "clicks": clicks,
+        "visibleGameCount": last_count,
+        "targetGameCount": target,
+    }
 
 
 def _normalize_mlb_game_link(href: Any) -> dict[str, Any] | None:

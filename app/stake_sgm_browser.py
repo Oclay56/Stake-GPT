@@ -2102,28 +2102,18 @@ def _preflight_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, An
 
 
 def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) -> dict[str, Any]:
-    scope = _text_key(row.get("scope"))
-    player = str(row.get("player") or "").strip()
-    team = str(row.get("team") or "").strip()
-    market = str(row.get("market") or "").strip()
+    player_or_team = "" if row.get("scope") == "match_props" else row.get("player") or row.get("team") or ""
     click_row = {
         **row,
-        "marketAliases": _market_display_aliases(market),
-        "marketClickIdentity": _market_click_identity(market),
+        "marketAliases": _market_display_aliases(str(row.get("market") or "")),
+        "marketClickIdentity": _market_click_identity(str(row.get("market") or "")),
     }
-    if player:
-        _filter_sgm_board(page, player)
-        _expand_sgm_owner(page, player)
-    elif scope == "team props" or team:
-        _clear_sgm_search_filter(page)
-        if team:
-            _expand_sgm_owner(page, team)
-        if market:
-            _expand_sgm_market(page, market)
-    elif scope == "match props" or market:
-        _clear_sgm_search_filter(page)
-        if market:
-            _expand_sgm_market(page, market)
+    if player_or_team:
+        _filter_sgm_board(page, str(player_or_team))
+        _expand_sgm_owner(page, str(player_or_team))
+    elif row.get("market"):
+        _filter_sgm_board(page, _market_search_text(str(row.get("market"))))
+        _expand_sgm_market(page, str(row.get("market")))
 
     click_result = page.evaluate(
         """
@@ -2597,39 +2587,6 @@ def _filter_sgm_board(page: Any, value: str) -> None:
         return
 
 
-def _clear_sgm_search_filter(page: Any) -> None:
-    try:
-        search = page.get_by_placeholder("Search")
-        if search.count():
-            search.first.fill("", timeout=3_000)
-            page.wait_for_timeout(250)
-            return
-    except Exception:
-        pass
-
-    try:
-        page.evaluate(
-            """
-            () => {
-              const searchInputs = Array.from(document.querySelectorAll("input"))
-                .filter((input) => {
-                  const label = `${input.getAttribute("placeholder") || ""} ${input.getAttribute("aria-label") || ""}`.toLowerCase();
-                  return label.includes("search") || input.value;
-                });
-              for (const input of searchInputs) {
-                input.value = "";
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-                input.dispatchEvent(new Event("change", { bubbles: true }));
-              }
-              return searchInputs.length;
-            }
-            """
-        )
-        page.wait_for_timeout(250)
-    except Exception:
-        return
-
-
 def _expand_sgm_market(page: Any, value: str) -> None:
     try:
         result = page.evaluate(
@@ -2991,7 +2948,7 @@ def _shared_stake_page(context: Any) -> Any:
 def _find_or_open_mlb_page(context: Any) -> Any:
     for page in context.pages:
         if "stake.com" in str(page.url) and "/sports/baseball/usa/mlb" in str(page.url):
-            if _restricted_region_url(page.url) or _fixture_slug_from_url(str(page.url or "")):
+            if _restricted_region_url(page.url):
                 page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
             return page
 

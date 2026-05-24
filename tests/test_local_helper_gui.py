@@ -372,11 +372,11 @@ def test_color_dialog_offers_named_preset_controls():
 
         preset_body = app.color_dialog.winfo_children()[2]
         dialog_texts = child_texts(preset_body)
-        control_texts = child_texts(preset_body.winfo_children()[2])
+        preset_controls = preset_body.winfo_children()[2]
+        control_texts = child_texts(preset_controls)
 
         assert "Preset name" in dialog_texts
-        assert "Save Preset" in control_texts
-        assert "Load Preset" in control_texts
+        assert control_texts == ["Save Preset", "Load Preset"]
     finally:
         dialog = getattr(app, "color_dialog", None)
         if dialog is not None and dialog.winfo_exists():
@@ -385,22 +385,83 @@ def test_color_dialog_offers_named_preset_controls():
         app.root.destroy()
 
 
-def test_loading_color_preset_prefers_dropdown_selection():
+def test_save_named_color_preset_writes_current_colors(tmp_path, monkeypatch):
     try:
         app = AzpHelperGui()
     except Exception as exc:
         pytest.skip(f"Tkinter GUI unavailable: {exc}")
 
     app.root.withdraw()
+    monkeypatch.setattr(
+        "app.local_helper_gui.helper_color_presets_dir",
+        lambda: tmp_path,
+    )
     try:
         app.choose_button_color()
         assert app.color_preset_name_var is not None
-        assert app.color_preset_choice_var is not None
+        app.color_preset_name_var.set("Night Red")
 
-        app.color_preset_name_var.set("Typed Name")
-        app.color_preset_choice_var.set("Dropdown Name")
+        app.button_accent_bg = "#DD0011"
+        app.helper_bg = "#101010"
+        app.card_border_color = "#222222"
+        app.cmd_text_color = "#EEEEEE"
+        app._save_named_color_preset()
 
-        assert app._preset_name_for_load() == "Dropdown Name"
+        assert load_helper_color_preset("Night Red", tmp_path) == {
+            "outlineColor": "#DD0011",
+            "backgroundColor": "#101010",
+            "borderColor": "#222222",
+            "cmdColor": "#EEEEEE",
+        }
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()
+
+
+def test_load_named_color_preset_opens_preset_folder(tmp_path, monkeypatch):
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    preset_path = save_helper_color_preset(
+        "Night Red",
+        {
+            "outlineColor": "#DD0011",
+            "backgroundColor": "#101010",
+            "borderColor": "#222222",
+            "cmdColor": "#EEEEEE",
+        },
+        tmp_path,
+    )
+    calls = []
+
+    def fake_open_file(**kwargs):
+        calls.append(kwargs)
+        return str(preset_path)
+
+    app.root.withdraw()
+    monkeypatch.setattr(
+        "app.local_helper_gui.helper_color_presets_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "app.local_helper_gui.filedialog.askopenfilename",
+        fake_open_file,
+    )
+    try:
+        app.choose_button_color()
+        app._load_named_color_preset()
+
+        assert calls
+        assert calls[0]["initialdir"] == str(tmp_path)
+        assert app.button_accent_bg == "#DD0011"
+        assert app.helper_bg == "#101010"
+        assert app.card_border_color == "#222222"
+        assert app.cmd_text_color == "#EEEEEE"
     finally:
         dialog = getattr(app, "color_dialog", None)
         if dialog is not None and dialog.winfo_exists():

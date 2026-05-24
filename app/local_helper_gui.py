@@ -15,7 +15,6 @@ from tkinter import (
     END,
     Entry,
     LEFT,
-    OptionMenu,
     RIGHT,
     StringVar,
     Button,
@@ -26,6 +25,7 @@ from tkinter import (
     Text,
     Toplevel,
     colorchooser,
+    filedialog,
     messagebox,
 )
 from ctypes import wintypes
@@ -563,8 +563,6 @@ class AzpHelperGui:
         self._hidden_to_tray = False
         self.color_dialog: Toplevel | None = None
         self.color_preset_name_var: StringVar | None = None
-        self.color_preset_choice_var: StringVar | None = None
-        self.color_preset_menu: OptionMenu | None = None
         self.helper_bg = color_settings["backgroundColor"]
         self.button_accent_bg = color_settings["outlineColor"]
         self.card_border_color = color_settings["borderColor"]
@@ -876,30 +874,6 @@ class AzpHelperGui:
             **_button_style(self.button_accent_bg, self.button_accent_active_bg),
         ).pack(side=LEFT, padx=(0, 8))
 
-        self.color_preset_choice_var = StringVar()
-        self.color_preset_menu = OptionMenu(
-            preset_controls,
-            self.color_preset_choice_var,
-            "",
-        )
-        self.color_preset_menu.configure(
-            width=18,
-            bg=HELPER_PANEL_BG,
-            fg=HELPER_FG,
-            activebackground=self.button_accent_active_bg,
-            activeforeground=HELPER_FG,
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=self.card_border_color,
-        )
-        self.color_preset_menu["menu"].configure(
-            bg=HELPER_PANEL_BG,
-            fg=HELPER_FG,
-            activebackground=self.button_accent_active_bg,
-            activeforeground=HELPER_FG,
-        )
-        self.color_preset_menu.pack(side=LEFT, fill="x", expand=True, padx=(0, 8))
-
         Button(
             preset_controls,
             text="Load Preset",
@@ -908,7 +882,6 @@ class AzpHelperGui:
             **_button_style(self.button_accent_bg, self.button_accent_active_bg),
         ).pack(side=LEFT)
 
-        self._refresh_color_preset_menu()
         dialog.focus_set()
 
     def _close_color_dialog(self) -> None:
@@ -923,8 +896,6 @@ class AzpHelperGui:
         except Exception:
             return
         self.color_preset_name_var = None
-        self.color_preset_choice_var = None
-        self.color_preset_menu = None
 
     def _choose_helper_color(self, target: str, dialog: Toplevel | None = None) -> None:
         current_color = {
@@ -1011,36 +982,9 @@ class AzpHelperGui:
         save_helper_color_settings(self._current_helper_color_settings())
 
     def _preset_name_for_save(self) -> str:
-        name = ""
         if self.color_preset_name_var is not None:
-            name = self.color_preset_name_var.get().strip()
-        if not name and self.color_preset_choice_var is not None:
-            name = self.color_preset_choice_var.get().strip()
-        return name
-
-    def _preset_name_for_load(self) -> str:
-        name = ""
-        if self.color_preset_choice_var is not None:
-            name = self.color_preset_choice_var.get().strip()
-        if not name and self.color_preset_name_var is not None:
-            name = self.color_preset_name_var.get().strip()
-        return name
-
-    def _refresh_color_preset_menu(self, *, selected: str | None = None) -> None:
-        if self.color_preset_menu is None or self.color_preset_choice_var is None:
-            return
-        names = list_helper_color_presets()
-        menu = self.color_preset_menu["menu"]
-        menu.delete(0, END)
-        for name in names:
-            menu.add_command(
-                label=name,
-                command=lambda value=name: self.color_preset_choice_var.set(value),
-            )
-        choice = selected or self.color_preset_choice_var.get()
-        if choice not in names:
-            choice = names[0] if names else ""
-        self.color_preset_choice_var.set(choice)
+            return self.color_preset_name_var.get().strip()
+        return ""
 
     def _save_named_color_preset(self) -> None:
         name = self._preset_name_for_save()
@@ -1049,26 +993,36 @@ class AzpHelperGui:
         except ValueError as exc:
             messagebox.showerror(APP_DISPLAY_NAME, str(exc))
             return
-        self._refresh_color_preset_menu(selected=path.stem)
         if self.color_preset_name_var is not None:
             self.color_preset_name_var.set(path.stem)
         self._write_log(f"Saved color preset: {path.stem}.\n")
 
     def _load_named_color_preset(self) -> None:
-        name = self._preset_name_for_load()
-        if not name:
-            messagebox.showerror(APP_DISPLAY_NAME, "Choose a color preset to load.")
+        preset_dir = helper_color_presets_dir()
+        preset_dir.mkdir(parents=True, exist_ok=True)
+        filename = filedialog.askopenfilename(
+            parent=self.color_dialog or self.root,
+            title="Load Color Preset",
+            initialdir=str(preset_dir),
+            filetypes=(
+                ("Color presets", "*.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ),
+        )
+        if not filename:
             return
+        path = Path(filename)
         try:
-            settings = load_helper_color_preset(name)
-        except (FileNotFoundError, ValueError) as exc:
+            settings = load_helper_color_settings(path)
+        except ValueError as exc:
             messagebox.showerror(APP_DISPLAY_NAME, str(exc))
             return
         self._apply_helper_color_settings(settings)
         self._save_helper_color_settings()
         if self.color_preset_name_var is not None:
-            self.color_preset_name_var.set(safe_color_preset_name(name))
-        self._write_log(f"Loaded color preset: {safe_color_preset_name(name)}.\n")
+            self.color_preset_name_var.set(path.stem)
+        self._write_log(f"Loaded color preset: {path.stem}.\n")
 
     def start_helper(self, mode: str) -> None:
         if self.process and self.process.poll() is None:

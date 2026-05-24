@@ -2102,18 +2102,32 @@ def _preflight_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, An
 
 
 def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) -> dict[str, Any]:
-    player_or_team = "" if row.get("scope") == "match_props" else row.get("player") or row.get("team") or ""
+    scope = _text_key(row.get("scope"))
+    player = str(row.get("player") or "").strip()
+    team = str(row.get("team") or "").strip()
+    market = str(row.get("market") or "").strip()
     click_row = {
         **row,
-        "marketAliases": _market_display_aliases(str(row.get("market") or "")),
-        "marketClickIdentity": _market_click_identity(str(row.get("market") or "")),
+        "marketAliases": _market_display_aliases(market),
+        "marketClickIdentity": _market_click_identity(market),
     }
-    if player_or_team:
-        _filter_sgm_board(page, str(player_or_team))
-        _expand_sgm_owner(page, str(player_or_team))
-    elif row.get("market"):
-        _filter_sgm_board(page, _market_search_text(str(row.get("market"))))
-        _expand_sgm_market(page, str(row.get("market")))
+    if player:
+        _filter_sgm_board(page, player)
+        _expand_sgm_owner(page, player)
+    elif scope == "match props":
+        _clear_sgm_search_filter(page)
+        if market:
+            _expand_sgm_market(page, market)
+    elif scope == "team props" or team:
+        _clear_sgm_search_filter(page)
+        if team:
+            _expand_sgm_owner(page, team)
+        if market:
+            _expand_sgm_market(page, market)
+    elif market:
+        _clear_sgm_search_filter(page)
+        if market:
+            _expand_sgm_market(page, market)
 
     click_result = page.evaluate(
         """
@@ -2583,6 +2597,25 @@ def _filter_sgm_board(page: Any, value: str) -> None:
         if inputs.count():
             inputs.first.fill(value, timeout=3_000)
             page.wait_for_timeout(500)
+    except Exception:
+        return
+
+
+def _clear_sgm_search_filter(page: Any) -> None:
+    try:
+        search = page.get_by_placeholder("Search")
+        if search.count():
+            search.first.fill("", timeout=3_000)
+            page.wait_for_timeout(250)
+            return
+    except Exception:
+        pass
+
+    try:
+        inputs = page.locator("input")
+        if inputs.count():
+            inputs.first.fill("", timeout=3_000)
+            page.wait_for_timeout(250)
     except Exception:
         return
 

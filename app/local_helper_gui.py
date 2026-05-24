@@ -7,7 +7,21 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, Button, Canvas, Frame, Label, Tk, Text, messagebox
+from tkinter import (
+    BOTH,
+    END,
+    LEFT,
+    RIGHT,
+    Button,
+    Canvas,
+    Frame,
+    Label,
+    Tk,
+    Text,
+    Toplevel,
+    colorchooser,
+    messagebox,
+)
 from ctypes import wintypes
 
 from .local_helper_setup import check_local_helper_setup, format_setup_report
@@ -257,6 +271,11 @@ class AzpHelperGui:
         self.output_queue: queue.Queue[str] = queue.Queue()
         self._closing = False
         self._hidden_to_tray = False
+        self.helper_bg = HELPER_BG
+        self.button_accent_bg = HELPER_BUTTON_BG
+        self.button_accent_active_bg = HELPER_BUTTON_ACTIVE_BG
+        self.control_buttons: list[Button] = []
+        self.background_widgets: list = [self.root]
         self.tray_icon = WindowsTrayIcon(
             "Stake-GPT Helper",
             on_restore=lambda: self.root.after(0, self.restore_from_tray),
@@ -265,7 +284,9 @@ class AzpHelperGui:
 
         self.logo = create_stake_logo_header(self.root)
         self.logo.pack(fill="x", padx=16, pady=(14, 2))
-        Label(
+        self.background_widgets.append(self.logo)
+
+        self.description_label = Label(
             self.root,
             text=(
                 "Review Mode reads Stake UI boards. Build Mode can click exact "
@@ -275,46 +296,73 @@ class AzpHelperGui:
             wraplength=660,
             bg=HELPER_BG,
             fg=HELPER_MUTED_FG,
-        ).pack(pady=(0, 12))
+        )
+        self.description_label.pack(pady=(0, 12))
+        self.background_widgets.append(self.description_label)
 
-        controls = Frame(self.root, bg=HELPER_BG)
-        controls.pack(fill="x", padx=16, pady=(0, 10))
+        self.controls = Frame(self.root, bg=HELPER_BG)
+        self.controls.pack(fill="x", padx=16, pady=(0, 10))
+        self.background_widgets.append(self.controls)
 
-        Button(
-            controls,
+        review_button = Button(
+            self.controls,
             text="Start Review Mode",
             command=lambda: self.start_helper("review"),
             width=22,
-            **_button_style(),
-        ).pack(side=LEFT, padx=(0, 8))
-        Button(
-            controls,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        review_button.pack(side=LEFT, padx=(0, 8))
+        self.control_buttons.append(review_button)
+
+        build_button = Button(
+            self.controls,
             text="Start Build Slip Mode",
             command=lambda: self.start_helper("build"),
             width=22,
-            **_button_style(),
-        ).pack(side=LEFT, padx=(0, 8))
-        Button(
-            controls,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        build_button.pack(side=LEFT, padx=(0, 8))
+        self.control_buttons.append(build_button)
+
+        setup_button = Button(
+            self.controls,
             text="Setup Check",
             command=self.run_setup_check,
             width=15,
-            **_button_style(),
-        ).pack(side=LEFT, padx=(0, 8))
-        Button(
-            controls,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        setup_button.pack(side=LEFT, padx=(0, 8))
+        self.control_buttons.append(setup_button)
+
+        cache_button = Button(
+            self.controls,
             text="Clean Cache",
             command=self.run_cache_cleanup,
             width=14,
-            **_button_style(),
-        ).pack(side=LEFT)
-        Button(
-            controls,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        cache_button.pack(side=LEFT)
+        self.control_buttons.append(cache_button)
+
+        color_button = Button(
+            self.controls,
+            text="Color",
+            command=self.choose_button_color,
+            width=10,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        color_button.pack(side=LEFT, padx=(8, 0))
+        self.control_buttons.append(color_button)
+
+        stop_button = Button(
+            self.controls,
             text="Stop",
             command=self.stop_helper,
             width=10,
-            **_button_style(),
-        ).pack(side=RIGHT)
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        )
+        stop_button.pack(side=RIGHT)
+        self.control_buttons.append(stop_button)
 
         self.status_label = Label(
             self.root,
@@ -325,6 +373,7 @@ class AzpHelperGui:
             fg=HELPER_FG,
         )
         self.status_label.pack(fill="x", padx=16)
+        self.background_widgets.append(self.status_label)
 
         self.log = Text(
             self.root,
@@ -353,6 +402,63 @@ class AzpHelperGui:
 
     def run(self) -> None:
         self.root.mainloop()
+
+    def choose_button_color(self) -> None:
+        dialog = Toplevel(self.root)
+        dialog.title("Helper Color")
+        dialog.configure(bg=self.helper_bg)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
+        Label(
+            dialog,
+            text="Color target",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.helper_bg,
+            fg=HELPER_FG,
+        ).pack(padx=14, pady=(12, 8))
+
+        body = Frame(dialog, bg=self.helper_bg)
+        body.pack(padx=14, pady=(0, 14))
+
+        Button(
+            body,
+            text="Outline",
+            width=12,
+            command=lambda: self._choose_helper_color("outline", dialog),
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        ).pack(side=LEFT, padx=(0, 8))
+        Button(
+            body,
+            text="Background",
+            width=12,
+            command=lambda: self._choose_helper_color("background", dialog),
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        ).pack(side=LEFT)
+
+        dialog.focus_set()
+
+    def _choose_helper_color(self, target: str, dialog: Toplevel | None = None) -> None:
+        current_color = self.helper_bg if target == "background" else self.button_accent_bg
+        rgb_value, hex_value = colorchooser.askcolor(
+            color=current_color,
+            title=f"Helper {target.title()} Color",
+        )
+        accent = normalize_color_choice(rgb_value, fallback=str(hex_value or ""))
+        if not accent:
+            return
+
+        if target == "background":
+            self.helper_bg = apply_background_color(self.background_widgets, self.log, accent)
+            self._write_log(f"Helper background color set to {self.helper_bg}.\n")
+        else:
+            outline = apply_outline_color(self.control_buttons, self.log, accent)
+            self.button_accent_bg = outline["accent"]
+            self.button_accent_active_bg = outline["activeAccent"]
+            self._write_log(f"Helper outline color set to {self.button_accent_bg}.\n")
+
+        if dialog:
+            dialog.destroy()
 
     def start_helper(self, mode: str) -> None:
         if self.process and self.process.poll() is None:
@@ -519,11 +625,70 @@ class AzpHelperGui:
         self.log.see(END)
 
 
-def _button_style() -> dict[str, str | int]:
+def normalize_color_choice(value, *, fallback: str) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) == 7 and text.startswith("#"):
+            try:
+                int(text[1:], 16)
+            except ValueError:
+                return fallback
+            return text.upper()
+        return fallback
+
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return fallback
+
+    components: list[int] = []
+    for raw_component in value[:3]:
+        try:
+            component = int(round(float(raw_component)))
+        except (TypeError, ValueError):
+            return fallback
+        if component < 0 or component > 255:
+            return fallback
+        components.append(component)
+
+    return "#{:02X}{:02X}{:02X}".format(*components)
+
+
+def active_color_for(hex_color: str) -> str:
+    normalized = normalize_color_choice(hex_color, fallback=HELPER_BUTTON_ACTIVE_BG)
+    red = min(255, int(normalized[1:3], 16) + 25)
+    green = min(255, int(normalized[3:5], 16) + 25)
+    blue = min(255, int(normalized[5:7], 16) + 25)
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def apply_outline_color(buttons, log, accent: str) -> dict[str, str]:
+    normalized = normalize_color_choice(accent, fallback=HELPER_BUTTON_BG)
+    active = active_color_for(normalized)
+    for button in buttons:
+        button.configure(bg=normalized, activebackground=active)
+    log.configure(
+        highlightbackground=normalized,
+        highlightcolor=active,
+        selectbackground=active,
+    )
+    return {"accent": normalized, "activeAccent": active}
+
+
+def apply_background_color(widgets, log, background: str) -> str:
+    normalized = normalize_color_choice(background, fallback=HELPER_BG)
+    for widget in widgets:
+        widget.configure(bg=normalized)
+    log.configure(bg=normalized, insertbackground=HELPER_FG)
+    return normalized
+
+
+def _button_style(
+    bg: str = HELPER_BUTTON_BG,
+    active_bg: str = HELPER_BUTTON_ACTIVE_BG,
+) -> dict[str, str | int]:
     return {
-        "bg": HELPER_BUTTON_BG,
+        "bg": bg,
         "fg": HELPER_FG,
-        "activebackground": HELPER_BUTTON_ACTIVE_BG,
+        "activebackground": active_bg,
         "activeforeground": HELPER_FG,
         "relief": "flat",
         "borderwidth": 0,

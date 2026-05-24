@@ -762,6 +762,151 @@ def test_sgm_click_matcher_does_not_allow_generic_body_elements():
     assert "body *" not in interaction_script
 
 
+def test_player_sgm_interaction_keeps_player_filter_path(monkeypatch):
+    calls = []
+
+    class InteractionPage:
+        def evaluate(self, script, arg=None):
+            return {"status": "buildable", "oddsChanged": False}
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_filter_sgm_board",
+        lambda page, value: calls.append(("filter", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_owner",
+        lambda page, value: calls.append(("owner", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_market",
+        lambda page, value: calls.append(("market", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_clear_sgm_search_filter",
+        lambda page: calls.append(("clear", "")),
+        raising=False,
+    )
+
+    result = sgm_browser._interact_one_sgm_selection(
+        InteractionPage(),
+        {
+            "rowId": "sgm_player",
+            "scope": "player",
+            "player": "Xavier Edwards",
+            "team": "Miami Marlins",
+            "market": "Hits",
+            "side": "under",
+            "line": 0.5,
+            "odds": 2.84,
+        },
+        click=False,
+    )
+
+    assert result["status"] == "buildable"
+    assert calls == [("filter", "Xavier Edwards"), ("owner", "Xavier Edwards")]
+
+
+def test_team_sgm_interaction_clears_search_and_expands_market(monkeypatch):
+    calls = []
+
+    class InteractionPage:
+        def evaluate(self, script, arg=None):
+            return {"status": "buildable", "oddsChanged": False}
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_filter_sgm_board",
+        lambda page, value: calls.append(("filter", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_owner",
+        lambda page, value: calls.append(("owner", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_market",
+        lambda page, value: calls.append(("market", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_clear_sgm_search_filter",
+        lambda page: calls.append(("clear", "")),
+        raising=False,
+    )
+
+    result = sgm_browser._interact_one_sgm_selection(
+        InteractionPage(),
+        {
+            "rowId": "sgm_team",
+            "scope": "team_props",
+            "team": "Miami Marlins",
+            "market": "Team Hits",
+            "side": "under",
+            "line": 6.5,
+            "odds": 2.04,
+        },
+        click=False,
+    )
+
+    assert result["status"] == "buildable"
+    assert ("clear", "") in calls
+    assert ("owner", "Miami Marlins") in calls
+    assert ("market", "Team Hits") in calls
+    assert not any(call[0] == "filter" for call in calls)
+
+
+def test_match_sgm_interaction_clears_search_and_expands_market(monkeypatch):
+    calls = []
+
+    class InteractionPage:
+        def evaluate(self, script, arg=None):
+            return {"status": "buildable", "oddsChanged": False}
+
+    monkeypatch.setattr(
+        sgm_browser,
+        "_filter_sgm_board",
+        lambda page, value: calls.append(("filter", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_owner",
+        lambda page, value: calls.append(("owner", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_expand_sgm_market",
+        lambda page, value: calls.append(("market", value)),
+    )
+    monkeypatch.setattr(
+        sgm_browser,
+        "_clear_sgm_search_filter",
+        lambda page: calls.append(("clear", "")),
+        raising=False,
+    )
+
+    result = sgm_browser._interact_one_sgm_selection(
+        InteractionPage(),
+        {
+            "rowId": "sgm_match",
+            "scope": "match_props",
+            "team": "Miami Marlins",
+            "market": "Match Home Runs",
+            "side": "under",
+            "line": 1.5,
+            "odds": 2.15,
+        },
+        click=False,
+    )
+
+    assert result["status"] == "buildable"
+    assert calls == [("clear", ""), ("market", "Match Home Runs")]
+
+
 def test_compact_preflight_result_keeps_row_context_diagnostics():
     compact = _compact_preflight_result(
         {

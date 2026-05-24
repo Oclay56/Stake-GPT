@@ -15,13 +15,17 @@ from app.local_helper_gui import (
     apply_border_color,
     apply_cmd_color,
     apply_outline_color,
+    helper_color_presets_dir,
     helper_color_settings_path,
+    list_helper_color_presets,
     load_helper_color_settings,
+    load_helper_color_preset,
     logo_fill_fraction,
     logo_liquid_fill_polygon,
     normalize_color_choice,
     render_stake_logo_frame,
     save_helper_color_settings,
+    save_helper_color_preset,
     should_minimize_to_tray,
 )
 
@@ -146,6 +150,12 @@ def test_helper_color_settings_path_uses_appdata_folder(tmp_path):
     assert path == tmp_path / "Stake-GPT Helper" / "settings.json"
 
 
+def test_helper_color_presets_dir_uses_appdata_folder(tmp_path):
+    path = helper_color_presets_dir(env={"APPDATA": str(tmp_path)})
+
+    assert path == tmp_path / "Stake-GPT Helper" / "color-presets"
+
+
 def test_load_helper_color_settings_returns_defaults_when_missing(tmp_path):
     settings = load_helper_color_settings(tmp_path / "missing.json")
 
@@ -200,6 +210,63 @@ def test_load_helper_color_settings_ignores_invalid_colors(tmp_path):
         "borderColor": HELPER_CARD_BORDER,
         "cmdColor": HELPER_FG,
     }
+
+
+def test_save_and_load_named_color_preset(tmp_path):
+    preset_dir = tmp_path / "color-presets"
+
+    path = save_helper_color_preset(
+        "Red Dark",
+        {
+            "outlineColor": "#DD0011",
+            "backgroundColor": "#101010",
+            "borderColor": "#222222",
+            "cmdColor": "#EEEEEE",
+        },
+        preset_dir,
+    )
+
+    assert path == preset_dir / "Red Dark.json"
+    assert load_helper_color_preset("Red Dark", preset_dir) == {
+        "outlineColor": "#DD0011",
+        "backgroundColor": "#101010",
+        "borderColor": "#222222",
+        "cmdColor": "#EEEEEE",
+    }
+
+
+def test_named_color_presets_are_listed_without_json_extension(tmp_path):
+    preset_dir = tmp_path / "color-presets"
+    default_colors = {
+        "outlineColor": "#DD0011",
+        "backgroundColor": "#101010",
+        "borderColor": "#222222",
+        "cmdColor": "#EEEEEE",
+    }
+    save_helper_color_preset("Red Dark", default_colors, preset_dir)
+    save_helper_color_preset("Blue Dark", default_colors, preset_dir)
+
+    assert list_helper_color_presets(preset_dir) == ["Blue Dark", "Red Dark"]
+
+
+def test_color_preset_name_rejects_empty_name(tmp_path):
+    with pytest.raises(ValueError):
+        save_helper_color_preset("   ", {}, tmp_path)
+
+
+def test_color_preset_name_replaces_invalid_filename_characters(tmp_path):
+    path = save_helper_color_preset(
+        'Red/Blue: "Night"',
+        {
+            "outlineColor": "#DD0011",
+            "backgroundColor": "#101010",
+            "borderColor": "#222222",
+            "cmdColor": "#EEEEEE",
+        },
+        tmp_path,
+    )
+
+    assert path.name == "Red-Blue- -Night-.json"
 
 
 def test_logo_fill_fraction_fills_then_drains():
@@ -273,6 +340,67 @@ def test_color_dialog_offers_all_color_targets():
         )
 
         assert labels == ["Background", "Border", "CMD", "Outline"]
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()
+
+
+def test_color_dialog_offers_named_preset_controls():
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    app.root.withdraw()
+    try:
+        app.choose_button_color()
+        assert app.color_dialog is not None
+
+        def child_texts(parent):
+            values = []
+            for child in parent.winfo_children():
+                try:
+                    text = str(child.cget("text"))
+                except Exception:
+                    continue
+                if text:
+                    values.append(text)
+            return values
+
+        preset_body = app.color_dialog.winfo_children()[2]
+        dialog_texts = child_texts(preset_body)
+        control_texts = child_texts(preset_body.winfo_children()[2])
+
+        assert "Preset name" in dialog_texts
+        assert "Save Preset" in control_texts
+        assert "Load Preset" in control_texts
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()
+
+
+def test_loading_color_preset_prefers_dropdown_selection():
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    app.root.withdraw()
+    try:
+        app.choose_button_color()
+        assert app.color_preset_name_var is not None
+        assert app.color_preset_choice_var is not None
+
+        app.color_preset_name_var.set("Typed Name")
+        app.color_preset_choice_var.set("Dropdown Name")
+
+        assert app._preset_name_for_load() == "Dropdown Name"
     finally:
         dialog = getattr(app, "color_dialog", None)
         if dialog is not None and dialog.winfo_exists():

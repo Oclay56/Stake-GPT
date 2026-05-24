@@ -13,8 +13,11 @@ from pathlib import Path
 from tkinter import (
     BOTH,
     END,
+    Entry,
     LEFT,
+    OptionMenu,
     RIGHT,
+    StringVar,
     Button,
     Canvas,
     Frame,
@@ -559,6 +562,9 @@ class AzpHelperGui:
         self._closing = False
         self._hidden_to_tray = False
         self.color_dialog: Toplevel | None = None
+        self.color_preset_name_var: StringVar | None = None
+        self.color_preset_choice_var: StringVar | None = None
+        self.color_preset_menu: OptionMenu | None = None
         self.helper_bg = color_settings["backgroundColor"]
         self.button_accent_bg = color_settings["outlineColor"]
         self.card_border_color = color_settings["borderColor"]
@@ -837,6 +843,72 @@ class AzpHelperGui:
             **_button_style(self.button_accent_bg, self.button_accent_active_bg),
         ).pack(side=LEFT)
 
+        preset_body = Frame(dialog, bg=self.helper_bg)
+        preset_body.pack(fill="x", padx=14, pady=(0, 14))
+
+        Label(
+            preset_body,
+            text="Preset name",
+            font=("Segoe UI", 9, "bold"),
+            bg=self.helper_bg,
+            fg=HELPER_MUTED_FG,
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.color_preset_name_var = StringVar()
+        Entry(
+            preset_body,
+            textvariable=self.color_preset_name_var,
+            width=28,
+            bg=HELPER_PANEL_BG,
+            fg=HELPER_FG,
+            insertbackground=HELPER_FG,
+            relief="flat",
+        ).pack(fill="x", pady=(0, 8))
+
+        preset_controls = Frame(preset_body, bg=self.helper_bg)
+        preset_controls.pack(fill="x")
+
+        Button(
+            preset_controls,
+            text="Save Preset",
+            width=14,
+            command=self._save_named_color_preset,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        ).pack(side=LEFT, padx=(0, 8))
+
+        self.color_preset_choice_var = StringVar()
+        self.color_preset_menu = OptionMenu(
+            preset_controls,
+            self.color_preset_choice_var,
+            "",
+        )
+        self.color_preset_menu.configure(
+            width=18,
+            bg=HELPER_PANEL_BG,
+            fg=HELPER_FG,
+            activebackground=self.button_accent_active_bg,
+            activeforeground=HELPER_FG,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=self.card_border_color,
+        )
+        self.color_preset_menu["menu"].configure(
+            bg=HELPER_PANEL_BG,
+            fg=HELPER_FG,
+            activebackground=self.button_accent_active_bg,
+            activeforeground=HELPER_FG,
+        )
+        self.color_preset_menu.pack(side=LEFT, fill="x", expand=True, padx=(0, 8))
+
+        Button(
+            preset_controls,
+            text="Load Preset",
+            width=14,
+            command=self._load_named_color_preset,
+            **_button_style(self.button_accent_bg, self.button_accent_active_bg),
+        ).pack(side=LEFT)
+
+        self._refresh_color_preset_menu()
         dialog.focus_set()
 
     def _close_color_dialog(self) -> None:
@@ -847,8 +919,12 @@ class AzpHelperGui:
         try:
             if dialog.winfo_exists():
                 dialog.destroy()
+                self.root.update_idletasks()
         except Exception:
             return
+        self.color_preset_name_var = None
+        self.color_preset_choice_var = None
+        self.color_preset_menu = None
 
     def _choose_helper_color(self, target: str, dialog: Toplevel | None = None) -> None:
         current_color = {
@@ -896,15 +972,103 @@ class AzpHelperGui:
             except Exception:
                 pass
 
-    def _save_helper_color_settings(self) -> None:
-        save_helper_color_settings(
-            {
-                "outlineColor": self.button_accent_bg,
-                "backgroundColor": self.helper_bg,
-                "borderColor": self.card_border_color,
-                "cmdColor": self.cmd_text_color,
-            }
+    def _current_helper_color_settings(self) -> dict[str, str]:
+        return {
+            "outlineColor": self.button_accent_bg,
+            "backgroundColor": self.helper_bg,
+            "borderColor": self.card_border_color,
+            "cmdColor": self.cmd_text_color,
+        }
+
+    def _apply_helper_color_settings(self, settings: dict[str, str]) -> None:
+        cleaned = clean_helper_color_settings(settings)
+        self.helper_bg = apply_background_color(
+            self.background_widgets,
+            self.log,
+            cleaned["backgroundColor"],
         )
+        for button in self.control_buttons:
+            if hasattr(button, "set_outer_background"):
+                button.set_outer_background(self.helper_bg)
+        self.card_border_color = apply_border_color(
+            self.border_widgets,
+            cleaned["borderColor"],
+        )
+        self.cmd_text_color = apply_cmd_color(
+            self.cmd_widgets,
+            self.log,
+            cleaned["cmdColor"],
+        )
+        outline = apply_outline_color(
+            self.control_buttons,
+            self.log,
+            cleaned["outlineColor"],
+        )
+        self.button_accent_bg = outline["accent"]
+        self.button_accent_active_bg = outline["activeAccent"]
+
+    def _save_helper_color_settings(self) -> None:
+        save_helper_color_settings(self._current_helper_color_settings())
+
+    def _preset_name_for_save(self) -> str:
+        name = ""
+        if self.color_preset_name_var is not None:
+            name = self.color_preset_name_var.get().strip()
+        if not name and self.color_preset_choice_var is not None:
+            name = self.color_preset_choice_var.get().strip()
+        return name
+
+    def _preset_name_for_load(self) -> str:
+        name = ""
+        if self.color_preset_choice_var is not None:
+            name = self.color_preset_choice_var.get().strip()
+        if not name and self.color_preset_name_var is not None:
+            name = self.color_preset_name_var.get().strip()
+        return name
+
+    def _refresh_color_preset_menu(self, *, selected: str | None = None) -> None:
+        if self.color_preset_menu is None or self.color_preset_choice_var is None:
+            return
+        names = list_helper_color_presets()
+        menu = self.color_preset_menu["menu"]
+        menu.delete(0, END)
+        for name in names:
+            menu.add_command(
+                label=name,
+                command=lambda value=name: self.color_preset_choice_var.set(value),
+            )
+        choice = selected or self.color_preset_choice_var.get()
+        if choice not in names:
+            choice = names[0] if names else ""
+        self.color_preset_choice_var.set(choice)
+
+    def _save_named_color_preset(self) -> None:
+        name = self._preset_name_for_save()
+        try:
+            path = save_helper_color_preset(name, self._current_helper_color_settings())
+        except ValueError as exc:
+            messagebox.showerror(APP_DISPLAY_NAME, str(exc))
+            return
+        self._refresh_color_preset_menu(selected=path.stem)
+        if self.color_preset_name_var is not None:
+            self.color_preset_name_var.set(path.stem)
+        self._write_log(f"Saved color preset: {path.stem}.\n")
+
+    def _load_named_color_preset(self) -> None:
+        name = self._preset_name_for_load()
+        if not name:
+            messagebox.showerror(APP_DISPLAY_NAME, "Choose a color preset to load.")
+            return
+        try:
+            settings = load_helper_color_preset(name)
+        except (FileNotFoundError, ValueError) as exc:
+            messagebox.showerror(APP_DISPLAY_NAME, str(exc))
+            return
+        self._apply_helper_color_settings(settings)
+        self._save_helper_color_settings()
+        if self.color_preset_name_var is not None:
+            self.color_preset_name_var.set(safe_color_preset_name(name))
+        self._write_log(f"Loaded color preset: {safe_color_preset_name(name)}.\n")
 
     def start_helper(self, mode: str) -> None:
         if self.process and self.process.poll() is None:
@@ -1108,6 +1272,21 @@ def helper_color_settings_path(
     return Path(base) / "Stake-GPT Helper" / "settings.json"
 
 
+def helper_color_presets_dir(
+    env: dict[str, str] | None = None,
+    *,
+    home: Path | None = None,
+) -> Path:
+    return helper_color_settings_path(env=env, home=home).parent / "color-presets"
+
+
+def clean_helper_color_settings(settings: dict[str, str]) -> dict[str, str]:
+    return {
+        key: normalize_color_choice(settings.get(key), fallback=default)
+        for key, default in DEFAULT_COLOR_SETTINGS.items()
+    }
+
+
 def load_helper_color_settings(path: Path | None = None) -> dict[str, str]:
     settings_path = path or helper_color_settings_path()
     settings = dict(DEFAULT_COLOR_SETTINGS)
@@ -1128,16 +1307,62 @@ def save_helper_color_settings(
     path: Path | None = None,
 ) -> Path:
     settings_path = path or helper_color_settings_path()
-    cleaned = {
-        key: normalize_color_choice(settings.get(key), fallback=default)
-        for key, default in DEFAULT_COLOR_SETTINGS.items()
-    }
+    cleaned = clean_helper_color_settings(settings)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps(cleaned, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return settings_path
+
+
+def safe_color_preset_name(name: str) -> str:
+    cleaned = "".join(
+        "-" if char in '<>:"/\\|?*' or ord(char) < 32 else char
+        for char in str(name).strip()
+    ).strip(" .")
+    if not cleaned:
+        raise ValueError("Enter a preset name before saving.")
+    return cleaned
+
+
+def color_preset_path(name: str, directory: Path | None = None) -> Path:
+    preset_name = safe_color_preset_name(name)
+    return (directory or helper_color_presets_dir()) / f"{preset_name}.json"
+
+
+def save_helper_color_preset(
+    name: str,
+    settings: dict[str, str],
+    directory: Path | None = None,
+) -> Path:
+    path = color_preset_path(name, directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(clean_helper_color_settings(settings), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_helper_color_preset(
+    name: str,
+    directory: Path | None = None,
+) -> dict[str, str]:
+    path = color_preset_path(name, directory)
+    if not path.exists():
+        raise FileNotFoundError(f"Color preset not found: {path.stem}")
+    return load_helper_color_settings(path)
+
+
+def list_helper_color_presets(directory: Path | None = None) -> list[str]:
+    preset_dir = directory or helper_color_presets_dir()
+    try:
+        files = preset_dir.glob("*.json")
+    except OSError:
+        return []
+    return sorted(path.stem for path in files if path.is_file())
 
 
 def active_color_for(hex_color: str) -> str:

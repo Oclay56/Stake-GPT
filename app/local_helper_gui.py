@@ -1233,9 +1233,9 @@ def complete_gpt_t_mask(mask: Any) -> None:
 
     draw = ImageDraw.Draw(mask)
     width, height = mask.size
-    stroke = max(5, round(height * 0.09))
-    start = (round(width * 0.79), round(height * 0.30))
-    end = (round(width * 0.965), round(height * 0.22))
+    stroke = max(2, round(height * 0.028))
+    start = (round(width * 0.89), round(height * 0.34))
+    end = (round(width * 0.958), round(height * 0.27))
     draw.line([start, end], fill=255, width=stroke)
     radius = stroke // 2
     for x, y in (start, end):

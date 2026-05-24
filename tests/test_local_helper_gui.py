@@ -9,11 +9,13 @@ from app.local_helper_gui import (
     HELPER_FG,
     HELPER_BUTTON_BG,
     STAKE_LOGO_TEXT,
+    Image,
     active_color_for,
     apply_background_color,
     apply_border_color,
     apply_cmd_color,
     apply_outline_color,
+    complete_gpt_t_mask,
     helper_color_settings_path,
     load_helper_color_settings,
     logo_fill_fraction,
@@ -223,6 +225,19 @@ def test_render_stake_logo_frame_uses_requested_background():
 
     assert image.size == (320, 110)
     assert image.getpixel((0, 0))[:3] == (16, 32, 48)
+
+
+def test_complete_gpt_t_mask_stays_in_final_t_region():
+    if Image is None:
+        pytest.skip("Pillow unavailable")
+
+    width = 527
+    mask = Image.new("L", (width, 114), 0)
+    complete_gpt_t_mask(mask)
+
+    bbox = mask.getbbox()
+    assert bbox is not None
+    assert bbox[0] >= round(width * 0.84)
 
 
 def test_color_button_toggles_existing_palette_dialog():

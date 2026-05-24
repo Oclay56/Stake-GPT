@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
+SGM_TAB_MISSING_ERROR_MESSAGE = "Same Game Multi tab is not visible on this fixture page."
 CLICK_ODDS_TOLERANCE = 0.006
 _SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -136,6 +137,8 @@ def fixture_url(fixture_slug: str) -> str:
 def read_stake_sgm_board(
     fixture_slug: str,
     cdp_url: str = DEFAULT_CDP_URL,
+    navigation_mode: str = "direct",
+    fallback_to_index_click: bool = True,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
@@ -144,8 +147,18 @@ def read_stake_sgm_board(
         if not browser.contexts:
             raise RuntimeError("No Chrome context found on the debug port.")
 
-        page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
-        warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+        context = browser.contexts[0]
+        page = (
+            _shared_stake_page(context)
+            if _normalize_sgm_navigation_mode(navigation_mode) == "index_click"
+            else _find_or_open_fixture_page(context, fixture_slug)
+        )
+        warnings = _ensure_sgm_fixture_ready(
+            page,
+            fixture_slug=fixture_slug,
+            navigation_mode=navigation_mode,
+            fallback_to_index_click=fallback_to_index_click,
+        )
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
         return normalize_sgm_response(fixture_slug, response, warnings)
 
@@ -318,6 +331,8 @@ def build_stake_sgm_review_slip(
     required_legs: int | None = None,
     execution_timeout_seconds: int | float | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
+    navigation_mode: str = "direct",
+    fallback_to_index_click: bool = True,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
@@ -327,8 +342,18 @@ def build_stake_sgm_review_slip(
         if not browser.contexts:
             raise RuntimeError("No Chrome context found on the debug port.")
 
-        page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
-        warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+        context = browser.contexts[0]
+        page = (
+            _shared_stake_page(context)
+            if _normalize_sgm_navigation_mode(navigation_mode) == "index_click"
+            else _find_or_open_fixture_page(context, fixture_slug)
+        )
+        warnings = _ensure_sgm_fixture_ready(
+            page,
+            fixture_slug=fixture_slug,
+            navigation_mode=navigation_mode,
+            fallback_to_index_click=fallback_to_index_click,
+        )
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
         board = normalize_sgm_response(fixture_slug, response, warnings)
         if _has_logged_out_warning(warnings):
@@ -424,6 +449,8 @@ def build_stake_sgm_review_slip_batch(
     min_groups_required: int | None = None,
     execution_timeout_seconds: int | float | None = None,
     cdp_url: str = DEFAULT_CDP_URL,
+    navigation_mode: str = "direct",
+    fallback_to_index_click: bool = True,
 ) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
@@ -464,8 +491,14 @@ def build_stake_sgm_review_slip_batch(
                     break
                 continue
 
-            page.goto(fixture_url(fixture_slug), wait_until="domcontentloaded", timeout=45_000)
-            warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+            if _normalize_sgm_navigation_mode(navigation_mode) != "index_click":
+                page.goto(fixture_url(fixture_slug), wait_until="domcontentloaded", timeout=45_000)
+            warnings = _ensure_sgm_fixture_ready(
+                page,
+                fixture_slug=fixture_slug,
+                navigation_mode=navigation_mode,
+                fallback_to_index_click=fallback_to_index_click,
+            )
             response = _fetch_sgm_board_in_browser(page, fixture_slug)
             board = normalize_sgm_response(fixture_slug, response, warnings)
             selections = _group_review_selections(group)
@@ -2957,6 +2990,163 @@ def _find_or_open_mlb_page(context: Any) -> Any:
     return page
 
 
+def _ensure_sgm_fixture_ready(
+    page: Any,
+    *,
+    fixture_slug: str,
+    navigation_mode: str = "direct",
+    fallback_to_index_click: bool = True,
+) -> list[str]:
+    mode = _normalize_sgm_navigation_mode(navigation_mode)
+    if mode == "index_click":
+        navigation = _open_fixture_from_mlb_index(page, fixture_slug)
+        return _index_click_navigation_warnings(navigation) + _confirm_sgm_fixture_ready(
+            page,
+            fixture_slug=fixture_slug,
+        )
+
+    try:
+        return _confirm_sgm_fixture_ready(page, fixture_slug=fixture_slug)
+    except RuntimeError as exc:
+        if not fallback_to_index_click or not _is_sgm_tab_missing_error(exc):
+            raise
+
+    navigation = _open_fixture_from_mlb_index(page, fixture_slug)
+    return [
+        (
+            "Direct fixture navigation did not hydrate Same Game Multi; "
+            "retried by opening the Stake MLB index and clicking the matchup card."
+        )
+    ] + _index_click_navigation_warnings(navigation) + _confirm_sgm_fixture_ready(
+        page,
+        fixture_slug=fixture_slug,
+    )
+
+
+def _confirm_sgm_fixture_ready(page: Any, *, fixture_slug: str) -> list[str]:
+    warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+    _open_same_game_multi_tab(page)
+    return warnings
+
+
+def _normalize_sgm_navigation_mode(value: Any) -> str:
+    mode = str(value or "direct").strip().lower().replace("-", "_")
+    if mode in {"index", "index_click", "mlb_index", "mlb_index_click"}:
+        return "index_click"
+    return "direct"
+
+
+def _index_click_navigation_warnings(navigation: dict[str, Any]) -> list[str]:
+    warnings = ["Stake MLB index navigation clicked the matchup card before SGM access."]
+    matched_by = navigation.get("matchedBy")
+    if matched_by:
+        warnings.append(f"Stake MLB index navigation matched fixture by {matched_by}.")
+    return warnings
+
+
+def _is_sgm_tab_missing_error(exc: Exception) -> bool:
+    return SGM_TAB_MISSING_ERROR_MESSAGE in str(exc)
+
+
+def _open_fixture_from_mlb_index(page: Any, fixture_slug: str) -> dict[str, Any]:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    matchup = _fixture_matchup_from_slug(fixture_slug)
+    teams = [str(team) for team in matchup.get("teams") or [] if str(team or "").strip()]
+    page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)
+    except PlaywrightTimeoutError:
+        pass
+
+    expansion = _expand_mlb_game_list(page, limit=100)
+    click_result = page.evaluate(
+        """
+        ({ targetSlug, teams }) => {
+          const norm = (value) => String(value || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, " ")
+            .replace(/\\s+/g, " ")
+            .trim();
+          const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.visibility !== "hidden"
+              && style.display !== "none"
+              && rect.width > 0
+              && rect.height > 0;
+          };
+          const clickAnchor = (anchor, matchedBy) => {
+            anchor.scrollIntoView({ block: "center", inline: "center" });
+            anchor.click();
+            return {
+              status: "clicked",
+              matchedBy,
+              href: anchor.href || anchor.getAttribute("href") || "",
+              text: (anchor.innerText || anchor.textContent || "")
+                .trim()
+                .replace(/\\s+/g, " ")
+                .slice(0, 240)
+            };
+          };
+
+          const anchors = Array.from(
+            document.querySelectorAll('a[href*="/sports/baseball/usa/mlb/"]')
+          ).filter(visible);
+
+          const slugAnchor = anchors.find((anchor) => {
+            const href = anchor.href || anchor.getAttribute("href") || "";
+            return href.includes(targetSlug);
+          });
+          if (slugAnchor) {
+            return clickAnchor(slugAnchor, "fixture_slug");
+          }
+
+          const teamNeedles = Array.from(teams || []).map(norm).filter(Boolean);
+          if (teamNeedles.length >= 2) {
+            const teamAnchor = anchors.find((anchor) => {
+              const card = anchor.closest("article,section,li,div") || anchor;
+              const text = norm(card.innerText || anchor.innerText || anchor.textContent || "");
+              return teamNeedles.every((team) => text.includes(team));
+            });
+            if (teamAnchor) {
+              return clickAnchor(teamAnchor, "team_names");
+            }
+          }
+
+          return {
+            status: "not_found",
+            matchedBy: null,
+            visibleFixtureLinks: anchors.length,
+            teams
+          };
+        }
+        """,
+        {"targetSlug": fixture_slug, "teams": teams},
+    )
+    if (click_result or {}).get("status") != "clicked":
+        raise RuntimeError(
+            "Could not find the Stake MLB matchup card for "
+            f"{matchup.get('matchup') or fixture_slug} from the MLB index."
+        )
+
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20_000)
+    except PlaywrightTimeoutError:
+        pass
+    try:
+        page.wait_for_timeout(1_000)
+    except Exception:
+        pass
+    return {
+        **(click_result or {}),
+        "fixtureSlug": fixture_slug,
+        "matchup": matchup.get("matchup"),
+        "teams": teams,
+        "expansion": expansion,
+    }
+
+
 def _diagnostic_page(context: Any, *, fixture_slug: str | None = None) -> Any:
     if fixture_slug:
         return _find_or_open_fixture_page(context, fixture_slug)
@@ -3275,7 +3465,7 @@ def _check_page_ready(page: Any, fixture_slug: str | None = None) -> list[str]:
             "but account-only actions will not"
         )
     if not _has_same_game_multi_tab(body):
-        raise RuntimeError("Same Game Multi tab is not visible on this fixture page.")
+        raise RuntimeError(SGM_TAB_MISSING_ERROR_MESSAGE)
 
     return warnings
 

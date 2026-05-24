@@ -2588,6 +2588,7 @@ def _stake_ui_sgm_request_body() -> dict[str, Any]:
                                 "Use 0 to force a fresh local read."
                             ),
                         },
+                        **_stake_ui_sgm_navigation_properties(),
                     },
                     "required": ["matchup"],
                     "additionalProperties": True,
@@ -2616,6 +2617,26 @@ def _stake_ui_mlb_games_request_body() -> dict[str, Any]:
                     "additionalProperties": True,
                 }
             }
+        },
+    }
+
+
+def _stake_ui_sgm_navigation_properties() -> dict[str, Any]:
+    return {
+        "navigationMode": {
+            "type": "string",
+            "enum": ["direct", "index_click"],
+            "description": (
+                "How the local helper should open the fixture before reading SGM. "
+                "Use index_click when direct fixture links do not hydrate Same Game Multi."
+            ),
+        },
+        "fallbackToIndexClick": {
+            "type": "boolean",
+            "description": (
+                "When true, the helper retries through the Stake MLB index matchup card "
+                "if direct fixture navigation does not show Same Game Multi."
+            ),
         },
     }
 
@@ -2835,6 +2856,7 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
                         "scheduleLimit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        **_stake_ui_sgm_navigation_properties(),
                     },
                     "required": ["matchup", "reviewOnly"],
                     "additionalProperties": True,
@@ -2941,6 +2963,7 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                 "review slip to count as useful when continueOnGroupFailure is true."
                             ),
                         },
+                        **_stake_ui_sgm_navigation_properties(),
                     },
                     "required": ["reviewOnly", "groups"],
                     "additionalProperties": True,

@@ -408,6 +408,9 @@ def test_gpt_schema_exposes_stake_ui_sgm_board_action():
 
     assert operation["operationId"] == "getStakeUiSgmBoard"
     assert "Stake UI" in operation["summary"]
+    properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert properties["navigationMode"]["enum"] == ["direct", "index_click"]
+    assert "fallbackToIndexClick" in properties
 
 
 def test_gpt_schema_exposes_review_slip_build_action():
@@ -420,6 +423,8 @@ def test_gpt_schema_exposes_review_slip_build_action():
     properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert properties["reviewOnly"]["const"] is True
     assert "rowIds" in properties
+    assert properties["navigationMode"]["enum"] == ["direct", "index_click"]
+    assert "fallbackToIndexClick" in properties
     selection_schema = properties["selections"]["items"]
     assert "rowId" in selection_schema["properties"]
 
@@ -448,6 +453,8 @@ def test_gpt_schema_exposes_batch_review_slip_action():
     assert "rowId" in group_schema["properties"]["selections"]["items"]["properties"]
     assert "continueOnGroupFailure" in properties
     assert "minGroupsRequired" in properties
+    assert properties["navigationMode"]["enum"] == ["direct", "index_click"]
+    assert "fallbackToIndexClick" in properties
 
 
 def test_gpt_schema_exposes_optional_stake_ui_state_actions():
@@ -568,6 +575,8 @@ def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails(
                 "timeoutSeconds": 2,
                 "continueOnGroupFailure": True,
                 "minGroupsRequired": 1,
+                "navigationMode": "index_click",
+                "fallbackToIndexClick": False,
                 "groups": [
                     {
                         "matchup": "Yankees vs Blue Jays",
@@ -622,6 +631,8 @@ def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails(
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
     assert created_request["continueOnGroupFailure"] is True
     assert created_request["minGroupsRequired"] == 1
+    assert created_request["navigationMode"] == "index_click"
+    assert created_request["fallbackToIndexClick"] is False
     assert len(created_request["groups"]) == 2
 
 
@@ -765,6 +776,8 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
                 "matchup": "Braves vs Marlins",
                 "date": "2026-05-19",
                 "timeoutSeconds": 2,
+                "navigationMode": "index_click",
+                "fallbackToIndexClick": False,
             },
         )
 
@@ -783,6 +796,8 @@ def test_stake_ui_sgm_board_route_creates_job_and_returns_completed_result(fake_
     assert len(body["uiBoard"]["rows"]) == 6
     assert created_request["fixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
     assert created_request["matchup"] == "Braves vs Marlins"
+    assert created_request["navigationMode"] == "index_click"
+    assert created_request["fallbackToIndexClick"] is False
     assert body["bridge"]["cacheHit"] is False
 
 
@@ -842,6 +857,8 @@ def test_stake_ui_review_slip_route_creates_build_job_with_review_only_guardrail
                 "date": "2026-05-19",
                 "timeoutSeconds": 2,
                 "reviewOnly": True,
+                "navigationMode": "index_click",
+                "fallbackToIndexClick": False,
                 "selections": [
                     {
                         "player": "Ronald Acuna Jr.",
@@ -872,6 +889,8 @@ def test_stake_ui_review_slip_route_creates_build_job_with_review_only_guardrail
     assert body["result"]["safety"]["clickedPlaceBet"] is False
     assert created_request["reviewOnly"] is True
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
+    assert created_request["navigationMode"] == "index_click"
+    assert created_request["fallbackToIndexClick"] is False
     assert len(created_request["selections"]) == 2
 
 

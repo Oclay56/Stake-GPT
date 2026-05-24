@@ -167,6 +167,7 @@ async def process_job(
                 min_groups_required=request.get("minGroupsRequired"),
                 execution_timeout_seconds=request.get("localExecutionTimeoutSeconds"),
                 cdp_url=cdp_url,
+                **_sgm_navigation_kwargs(request),
             )
         elif job_type == STAKE_SGM_BUILD_SLIP_JOB_TYPE:
             result = await asyncio.to_thread(
@@ -177,12 +178,14 @@ async def process_job(
                 required_legs=request.get("requiredLegs"),
                 execution_timeout_seconds=request.get("localExecutionTimeoutSeconds"),
                 cdp_url=cdp_url,
+                **_sgm_navigation_kwargs(request),
             )
         else:
             result = await asyncio.to_thread(
                 read_stake_sgm_board,
                 fixture_slug,
                 cdp_url=cdp_url,
+                **_sgm_navigation_kwargs(request),
             )
         result["request"] = request
         if await _safe_complete_job(store, job_id, result):
@@ -216,6 +219,39 @@ async def _safe_fail_job(
         await store.fail_job(job_id, error_message)
     except Exception as exc:
         print(f"[{time.strftime('%H:%M:%S')}] Could not report failed job {job_id}: {exc}")
+
+
+def _sgm_navigation_kwargs(request: dict[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    navigation_mode = request.get("navigationMode", request.get("navigation_mode"))
+    if navigation_mode is not None:
+        kwargs["navigation_mode"] = str(navigation_mode or "direct").strip() or "direct"
+
+    fallback_present = (
+        "fallbackToIndexClick" in request
+        or "fallback_to_index_click" in request
+    )
+    if fallback_present:
+        kwargs["fallback_to_index_click"] = _coerce_helper_bool(
+            request.get("fallbackToIndexClick", request.get("fallback_to_index_click")),
+            default=True,
+        )
+    return kwargs
+
+
+def _coerce_helper_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def ensure_debug_chrome(cdp_url: str = DEFAULT_CDP_URL) -> None:

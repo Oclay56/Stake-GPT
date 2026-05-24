@@ -46,6 +46,7 @@ LPARAM = ctypes.c_ssize_t
 LRESULT = ctypes.c_ssize_t
 APP_DISPLAY_NAME = "Stake-GPT"
 STAKE_LOGO_TEXT = "Stake-GPT"
+STAKE_LOGO_RENDER_TEXT = "Stake - GPT"
 HELPER_BG = "#101418"
 HELPER_FG = "#F4F6F8"
 HELPER_MUTED_FG = "#B9C0C8"
@@ -1226,22 +1227,6 @@ def logo_liquid_fill_polygon(
     return points
 
 
-def complete_gpt_t_mask(mask: Any) -> None:
-    """Fill out the left side of the script T in the fixed Stake-GPT wordmark."""
-    if ImageDraw is None or STAKE_LOGO_TEXT != "Stake-GPT":
-        return
-
-    draw = ImageDraw.Draw(mask)
-    width, height = mask.size
-    stroke = max(2, round(height * 0.028))
-    start = (round(width * 0.89), round(height * 0.34))
-    end = (round(width * 0.958), round(height * 0.27))
-    draw.line([start, end], fill=255, width=stroke)
-    radius = stroke // 2
-    for x, y in (start, end):
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
-
-
 def render_stake_logo_frame(
     *,
     width: int,
@@ -1264,7 +1249,7 @@ def render_stake_logo_frame(
     image = Image.new("RGBA", (width, height), background)
     draw = ImageDraw.Draw(image)
     font = _stake_logo_font(width, height)
-    bbox = draw.textbbox((0, 0), STAKE_LOGO_TEXT, font=font)
+    bbox = draw.textbbox((0, 0), STAKE_LOGO_RENDER_TEXT, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
 
@@ -1277,7 +1262,7 @@ def render_stake_logo_frame(
     )
     ImageDraw.Draw(raw_mask).text(
         (raw_padding - bbox[0], raw_padding - bbox[1]),
-        STAKE_LOGO_TEXT,
+        STAKE_LOGO_RENDER_TEXT,
         font=font,
         fill=255,
     )
@@ -1285,7 +1270,6 @@ def render_stake_logo_frame(
     target_height = raw_mask.height
     resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
     shaped_mask = raw_mask.resize((target_width, target_height), resampling)
-    complete_gpt_t_mask(shaped_mask)
     text_x = (width - target_width) // 2
     text_y = (height - target_height) // 2 - 6
     text_mask.paste(shaped_mask, (text_x, text_y))
@@ -1319,22 +1303,22 @@ def _stake_logo_font(width: int, height: int) -> Any:
         raise RuntimeError("Pillow is required to load logo fonts.")
 
     font_paths = [
-        Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts" / "BRUSHSCI.TTF",
         Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts" / "segoescb.ttf",
         Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts" / "segoesc.ttf",
+        Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts" / "BRUSHSCI.TTF",
         Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts" / "ariali.ttf",
     ]
-    for size in range(min(98, height - 12), 34, -2):
-        for font_path in font_paths:
-            if not font_path.exists():
-                continue
+    for font_path in font_paths:
+        if not font_path.exists():
+            continue
+        for size in range(min(98, height - 12), 34, -2):
             try:
                 font = ImageFont.truetype(str(font_path), size=size)
             except OSError:
                 continue
             bbox = ImageDraw.Draw(Image.new("RGB", (1, 1))).textbbox(
                 (0, 0),
-                STAKE_LOGO_TEXT,
+                STAKE_LOGO_RENDER_TEXT,
                 font=font,
             )
             text_width = bbox[2] - bbox[0]
@@ -1399,7 +1383,7 @@ def create_stake_logo_header(parent, *, background: str = HELPER_BG) -> Canvas:
         canvas.create_text(
             center_x + 4,
             baseline_y + 6,
-            text=STAKE_LOGO_TEXT,
+            text=STAKE_LOGO_RENDER_TEXT,
             font=font,
             fill="#01020D",
             anchor="center",
@@ -1407,7 +1391,7 @@ def create_stake_logo_header(parent, *, background: str = HELPER_BG) -> Canvas:
         canvas.create_text(
             center_x + 2,
             baseline_y + 3,
-            text=STAKE_LOGO_TEXT,
+            text=STAKE_LOGO_RENDER_TEXT,
             font=font,
             fill="#111324",
             anchor="center",
@@ -1415,7 +1399,7 @@ def create_stake_logo_header(parent, *, background: str = HELPER_BG) -> Canvas:
         canvas.create_text(
             center_x,
             baseline_y,
-            text=STAKE_LOGO_TEXT,
+            text=STAKE_LOGO_RENDER_TEXT,
             font=font,
             fill="#F8F6FF",
             anchor="center",

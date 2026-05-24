@@ -1,5 +1,6 @@
 fastapi
 httpx
+Pillow
 pytest
 tzdata
 uvicorn[standard]

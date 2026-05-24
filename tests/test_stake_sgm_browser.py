@@ -810,6 +810,42 @@ def test_player_sgm_interaction_keeps_player_filter_path(monkeypatch):
     assert calls == [("filter", "Xavier Edwards"), ("owner", "Xavier Edwards")]
 
 
+def test_sgm_interaction_does_not_prefilter_outcomes_by_exact_odds():
+    class InteractionPage:
+        def __init__(self):
+            self.scripts: list[str] = []
+
+        def get_by_placeholder(self, value):
+            return EmptyLocator()
+
+        def locator(self, value):
+            return EmptyLocator()
+
+        def evaluate(self, script, arg=None):
+            self.scripts.append(script)
+            if "const wanted = norm(value)" in script:
+                return True
+            return {"status": "not_clicked", "reason": "test_stop"}
+
+    page = InteractionPage()
+    sgm_browser._interact_one_sgm_selection(
+        page,
+        {
+            "rowId": "sgm_xavier",
+            "player": "Xavier Edwards",
+            "market": "Hits",
+            "side": "under",
+            "line": 0.5,
+            "odds": 2.8465,
+        },
+        click=False,
+    )
+
+    interaction_script = page.scripts[-1]
+    assert "targetOdds == null || textHasNumber(text, targetOdds, 0.006)" not in interaction_script
+    assert "sideOddsFromText" in interaction_script
+
+
 def test_team_sgm_interaction_clears_search_and_expands_market(monkeypatch):
     calls = []
 

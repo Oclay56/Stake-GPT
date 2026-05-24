@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import pytest
+
 from app.local_helper_gui import (
+    AzpHelperGui,
     HELPER_BG,
+    HELPER_CARD_BORDER,
     HELPER_FG,
     HELPER_BUTTON_BG,
+    STAKE_LOGO_TEXT,
     active_color_for,
     apply_background_color,
+    apply_border_color,
+    apply_cmd_color,
     apply_outline_color,
     helper_color_settings_path,
     load_helper_color_settings,
+    logo_fill_fraction,
+    logo_liquid_fill_polygon,
     normalize_color_choice,
+    render_stake_logo_frame,
     save_helper_color_settings,
     should_minimize_to_tray,
 )
@@ -22,9 +32,13 @@ def test_should_minimize_to_tray_only_for_iconic_windows_with_tray_support():
     assert not should_minimize_to_tray("iconic", tray_supported=False)
 
 
-def test_helper_gui_uses_dark_navy_theme():
-    assert HELPER_BG == "#03041D"
-    assert HELPER_FG == "#F4F0FF"
+def test_helper_gui_uses_dark_fluent_theme():
+    assert HELPER_BG == "#101418"
+    assert HELPER_FG == "#F4F6F8"
+
+
+def test_animated_logo_text_uses_stake_gpt_wordmark():
+    assert STAKE_LOGO_TEXT == "Stake-GPT"
 
 
 def test_normalize_color_choice_accepts_rgb_tuple():
@@ -48,6 +62,14 @@ class FakeWidget:
         self.options.update(kwargs)
 
 
+class FakeCard:
+    def __init__(self) -> None:
+        self.border_color = None
+
+    def set_border_color(self, color: str) -> None:
+        self.border_color = color
+
+
 def test_apply_outline_color_updates_buttons_and_log_outline_only():
     button = FakeWidget()
     log = FakeWidget()
@@ -61,6 +83,8 @@ def test_apply_outline_color_updates_buttons_and_log_outline_only():
     assert button.options == {
         "bg": "#0E3D32",
         "activebackground": "#27564B",
+        "highlightbackground": "#0E3D32",
+        "highlightcolor": "#27564B",
     }
     assert log.options == {
         "highlightbackground": "#0E3D32",
@@ -85,6 +109,32 @@ def test_apply_background_color_updates_background_widgets_and_log_panel():
     }
 
 
+def test_apply_border_color_updates_rounded_card_borders():
+    card = FakeCard()
+
+    result = apply_border_color([card], "#445566")
+
+    assert result == "#445566"
+    assert card.border_color == "#445566"
+
+
+def test_apply_cmd_color_updates_log_text_and_header_widgets():
+    title = FakeWidget()
+    icon = FakeWidget()
+    log = FakeWidget()
+
+    result = apply_cmd_color([title, icon], log, "#FEDCBA")
+
+    assert result == "#FEDCBA"
+    assert title.options == {"fg": "#FEDCBA"}
+    assert icon.options == {"fg": "#FEDCBA"}
+    assert log.options == {
+        "fg": "#FEDCBA",
+        "insertbackground": "#FEDCBA",
+        "selectforeground": "#FEDCBA",
+    }
+
+
 def test_helper_color_settings_path_uses_appdata_folder(tmp_path):
     path = helper_color_settings_path(env={"APPDATA": str(tmp_path)})
 
@@ -97,6 +147,8 @@ def test_load_helper_color_settings_returns_defaults_when_missing(tmp_path):
     assert settings == {
         "outlineColor": HELPER_BUTTON_BG,
         "backgroundColor": HELPER_BG,
+        "borderColor": HELPER_CARD_BORDER,
+        "cmdColor": HELPER_FG,
     }
 
 
@@ -107,6 +159,8 @@ def test_save_helper_color_settings_overwrites_last_choices(tmp_path):
         {
             "outlineColor": "#0E3D32",
             "backgroundColor": "#102030",
+            "borderColor": "#223344",
+            "cmdColor": "#AABBCC",
         },
         settings_path,
     )
@@ -114,6 +168,8 @@ def test_save_helper_color_settings_overwrites_last_choices(tmp_path):
         {
             "outlineColor": "#AA0000",
             "backgroundColor": "#001122",
+            "borderColor": "#334455",
+            "cmdColor": "#CCDDEE",
         },
         settings_path,
     )
@@ -121,6 +177,8 @@ def test_save_helper_color_settings_overwrites_last_choices(tmp_path):
     assert load_helper_color_settings(settings_path) == {
         "outlineColor": "#AA0000",
         "backgroundColor": "#001122",
+        "borderColor": "#334455",
+        "cmdColor": "#CCDDEE",
     }
 
 
@@ -134,4 +192,113 @@ def test_load_helper_color_settings_ignores_invalid_colors(tmp_path):
     assert load_helper_color_settings(settings_path) == {
         "outlineColor": HELPER_BUTTON_BG,
         "backgroundColor": "#102030",
+        "borderColor": HELPER_CARD_BORDER,
+        "cmdColor": HELPER_FG,
     }
+
+
+def test_logo_fill_fraction_fills_then_drains():
+    assert logo_fill_fraction(0, cycle_frames=80) == 0
+    assert logo_fill_fraction(20, cycle_frames=80) == 0.5
+    assert logo_fill_fraction(40, cycle_frames=80) == 1
+    assert logo_fill_fraction(60, cycle_frames=80) == 0.5
+    assert logo_fill_fraction(80, cycle_frames=80) == 0
+
+
+def test_logo_liquid_fill_polygon_uses_vertical_wave_fill():
+    points = logo_liquid_fill_polygon(240, 96, 0.25, frame=0, amplitude=0)
+
+    assert points[0] == (0, 72)
+    assert points[-2:] == [(240, 96), (0, 96)]
+    assert all(y == 72 for _x, y in points[:7])
+
+
+def test_render_stake_logo_frame_uses_requested_background():
+    image = render_stake_logo_frame(
+        width=320,
+        height=110,
+        background="#102030",
+        frame=0,
+    )
+
+    assert image.size == (320, 110)
+    assert image.getpixel((0, 0))[:3] == (16, 32, 48)
+
+
+def test_color_button_toggles_existing_palette_dialog():
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    app.root.withdraw()
+    try:
+        app.choose_button_color()
+        first_dialog = app.color_dialog
+
+        assert first_dialog is not None
+        assert first_dialog.winfo_exists()
+
+        app.choose_button_color()
+
+        assert app.color_dialog is None
+        assert not first_dialog.winfo_exists()
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()
+
+
+def test_color_dialog_offers_all_color_targets():
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    app.root.withdraw()
+    try:
+        app.choose_button_color()
+        assert app.color_dialog is not None
+
+        labels = sorted(
+            child.cget("text")
+            for child in app.color_dialog.winfo_children()[1].winfo_children()
+        )
+
+        assert labels == ["Background", "Border", "CMD", "Outline"]
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()
+
+
+def test_color_picker_keeps_target_dialog_open_after_selecting_color(monkeypatch):
+    try:
+        app = AzpHelperGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter GUI unavailable: {exc}")
+
+    app.root.withdraw()
+    monkeypatch.setattr("app.local_helper_gui.colorchooser.askcolor", lambda **_kwargs: ((1, 2, 3), "#010203"))
+    app._save_helper_color_settings = lambda: None
+    try:
+        app.choose_button_color()
+        dialog = app.color_dialog
+
+        assert dialog is not None
+        assert dialog.winfo_exists()
+
+        app._choose_helper_color("outline", dialog)
+
+        assert app.color_dialog is dialog
+        assert dialog.winfo_exists()
+    finally:
+        dialog = getattr(app, "color_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        app.tray_icon.close()
+        app.root.destroy()

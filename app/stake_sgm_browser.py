@@ -2244,6 +2244,20 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             const values = matches.map(numberValue).filter((value) => value != null);
             return values.length ? values[values.length - 1] : null;
           };
+          const sideOddsFromText = (text) => {
+            const raw = String(text || "");
+            const pattern = /(over|under|uber|Ã¼ber|unter)\\s*(\\d+(?:[.,]\\d+)?)/ig;
+            const matches = Array.from(raw.matchAll(pattern));
+            for (const match of matches) {
+              const sideText = norm(match[1]);
+              const sideMatched = sideAliases.some((side) => sideText.includes(side));
+              const oppositeMatched = oppositeSideAliases.some((side) => sideText.includes(side));
+              if (sideMatched && !oppositeMatched) {
+                return numberValue(match[2]);
+              }
+            }
+            return null;
+          };
           const directButtonSide = (el) => {
             const text = norm(`${el.getAttribute("aria-label") || ""} ${el.innerText || el.textContent || ""}`);
             const wantedSide = sideAliases.some((side) => text.includes(side));
@@ -2286,8 +2300,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               && rect.height <= 100
               && text.length <= 90
               && wanted.side
-              && sideAliases.some((side) => normalizedText.includes(side))
-              && (targetOdds == null || textHasNumber(text, targetOdds, 0.006));
+              && sideAliases.some((side) => normalizedText.includes(side));
           };
           const ownerMatchesText = (text) => {
             if (wanted.scope === "match props" || wanted.scope === "match_props") {
@@ -2359,7 +2372,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               let rowContainer = null;
               let matchedText = "";
               const leafText = String(el.innerText || el.textContent || "").trim();
-              const clickedOdds = buttonOdds(leafText);
+              let clickedOdds = buttonOdds(leafText);
               let lineSideMatched = false;
               let marketMatched = false;
               let combinedText = "";
@@ -2414,6 +2427,9 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               }
               if (!rowContainer) {
                 continue;
+              }
+              if (clickedOdds == null) {
+                clickedOdds = sideOddsFromText(rowContainer.innerText || rowContainer.textContent || "");
               }
 
               let ownerMatched = wanted.scope === "match props" || wanted.scope === "match_props";

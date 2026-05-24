@@ -2102,32 +2102,18 @@ def _preflight_one_sgm_selection(page: Any, row: dict[str, Any]) -> dict[str, An
 
 
 def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) -> dict[str, Any]:
-    scope = _text_key(row.get("scope"))
-    player = str(row.get("player") or "").strip()
-    team = str(row.get("team") or "").strip()
-    market = str(row.get("market") or "").strip()
+    player_or_team = "" if row.get("scope") == "match_props" else row.get("player") or row.get("team") or ""
     click_row = {
         **row,
-        "marketAliases": _market_display_aliases(market),
-        "marketClickIdentity": _market_click_identity(market),
+        "marketAliases": _market_display_aliases(str(row.get("market") or "")),
+        "marketClickIdentity": _market_click_identity(str(row.get("market") or "")),
     }
-    if player:
-        _filter_sgm_board(page, player)
-        _expand_sgm_owner(page, player)
-    elif scope == "match props":
-        _clear_sgm_search_filter(page)
-        if market:
-            _expand_sgm_market(page, market)
-    elif scope == "team props" or team:
-        _clear_sgm_search_filter(page)
-        if team:
-            _expand_sgm_owner(page, team)
-        if market:
-            _expand_sgm_market(page, market)
-    elif market:
-        _clear_sgm_search_filter(page)
-        if market:
-            _expand_sgm_market(page, market)
+    if player_or_team:
+        _filter_sgm_board(page, str(player_or_team))
+        _expand_sgm_owner(page, str(player_or_team))
+    elif row.get("market"):
+        _filter_sgm_board(page, _market_search_text(str(row.get("market"))))
+        _expand_sgm_market(page, str(row.get("market")))
 
     click_result = page.evaluate(
         """
@@ -2244,20 +2230,6 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             const values = matches.map(numberValue).filter((value) => value != null);
             return values.length ? values[values.length - 1] : null;
           };
-          const sideOddsFromText = (text) => {
-            const raw = String(text || "");
-            const pattern = /(over|under|uber|Ã¼ber|unter)\\s*(\\d+(?:[.,]\\d+)?)/ig;
-            const matches = Array.from(raw.matchAll(pattern));
-            for (const match of matches) {
-              const sideText = norm(match[1]);
-              const sideMatched = sideAliases.some((side) => sideText.includes(side));
-              const oppositeMatched = oppositeSideAliases.some((side) => sideText.includes(side));
-              if (sideMatched && !oppositeMatched) {
-                return numberValue(match[2]);
-              }
-            }
-            return null;
-          };
           const directButtonSide = (el) => {
             const text = norm(`${el.getAttribute("aria-label") || ""} ${el.innerText || el.textContent || ""}`);
             const wantedSide = sideAliases.some((side) => text.includes(side));
@@ -2300,7 +2272,8 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               && rect.height <= 100
               && text.length <= 90
               && wanted.side
-              && sideAliases.some((side) => normalizedText.includes(side));
+              && sideAliases.some((side) => normalizedText.includes(side))
+              && (targetOdds == null || textHasNumber(text, targetOdds, 0.006));
           };
           const ownerMatchesText = (text) => {
             if (wanted.scope === "match props" || wanted.scope === "match_props") {
@@ -2372,7 +2345,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               let rowContainer = null;
               let matchedText = "";
               const leafText = String(el.innerText || el.textContent || "").trim();
-              let clickedOdds = buttonOdds(leafText);
+              const clickedOdds = buttonOdds(leafText);
               let lineSideMatched = false;
               let marketMatched = false;
               let combinedText = "";
@@ -2427,9 +2400,6 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               }
               if (!rowContainer) {
                 continue;
-              }
-              if (clickedOdds == null) {
-                clickedOdds = sideOddsFromText(rowContainer.innerText || rowContainer.textContent || "");
               }
 
               let ownerMatched = wanted.scope === "match props" || wanted.scope === "match_props";
@@ -2613,25 +2583,6 @@ def _filter_sgm_board(page: Any, value: str) -> None:
         if inputs.count():
             inputs.first.fill(value, timeout=3_000)
             page.wait_for_timeout(500)
-    except Exception:
-        return
-
-
-def _clear_sgm_search_filter(page: Any) -> None:
-    try:
-        search = page.get_by_placeholder("Search")
-        if search.count():
-            search.first.fill("", timeout=3_000)
-            page.wait_for_timeout(250)
-            return
-    except Exception:
-        pass
-
-    try:
-        inputs = page.locator("input")
-        if inputs.count():
-            inputs.first.fill("", timeout=3_000)
-            page.wait_for_timeout(250)
     except Exception:
         return
 

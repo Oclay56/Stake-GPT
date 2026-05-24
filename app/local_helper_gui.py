@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import os
 import queue
 import subprocess
 import sys
@@ -38,6 +40,10 @@ HELPER_PANEL_BG = "#070923"
 HELPER_BUTTON_BG = "#11143A"
 HELPER_BUTTON_ACTIVE_BG = "#1A1E55"
 LOGO_FONT_FAMILY = "Segoe Script"
+DEFAULT_COLOR_SETTINGS = {
+    "outlineColor": HELPER_BUTTON_BG,
+    "backgroundColor": HELPER_BG,
+}
 
 
 def should_minimize_to_tray(window_state: str, *, tray_supported: bool) -> bool:
@@ -263,19 +269,21 @@ class WindowsTrayIcon:
 class AzpHelperGui:
     def __init__(self) -> None:
         self.root = Tk()
+        color_settings = load_helper_color_settings()
         self.root.title("Stake-GPT Helper")
         self.root.geometry("780x500")
         self.root.minsize(700, 400)
-        self.root.configure(bg=HELPER_BG)
+        self.root.configure(bg=color_settings["backgroundColor"])
         self.process: subprocess.Popen[str] | None = None
         self.output_queue: queue.Queue[str] = queue.Queue()
         self._closing = False
         self._hidden_to_tray = False
-        self.helper_bg = HELPER_BG
-        self.button_accent_bg = HELPER_BUTTON_BG
+        self.helper_bg = color_settings["backgroundColor"]
+        self.button_accent_bg = color_settings["outlineColor"]
         self.button_accent_active_bg = HELPER_BUTTON_ACTIVE_BG
         self.control_buttons: list[Button] = []
         self.background_widgets: list = [self.root]
+        self.button_accent_active_bg = active_color_for(self.button_accent_bg)
         self.tray_icon = WindowsTrayIcon(
             "Stake-GPT Helper",
             on_restore=lambda: self.root.after(0, self.restore_from_tray),
@@ -283,6 +291,7 @@ class AzpHelperGui:
         )
 
         self.logo = create_stake_logo_header(self.root)
+        self.logo.configure(bg=self.helper_bg)
         self.logo.pack(fill="x", padx=16, pady=(14, 2))
         self.background_widgets.append(self.logo)
 
@@ -294,13 +303,13 @@ class AzpHelperGui:
             ),
             font=("Segoe UI", 10),
             wraplength=660,
-            bg=HELPER_BG,
+            bg=self.helper_bg,
             fg=HELPER_MUTED_FG,
         )
         self.description_label.pack(pady=(0, 12))
         self.background_widgets.append(self.description_label)
 
-        self.controls = Frame(self.root, bg=HELPER_BG)
+        self.controls = Frame(self.root, bg=self.helper_bg)
         self.controls.pack(fill="x", padx=16, pady=(0, 10))
         self.background_widgets.append(self.controls)
 
@@ -369,7 +378,7 @@ class AzpHelperGui:
             text="Status: idle",
             anchor="w",
             font=("Segoe UI", 10, "bold"),
-            bg=HELPER_BG,
+            bg=self.helper_bg,
             fg=HELPER_FG,
         )
         self.status_label.pack(fill="x", padx=16)
@@ -380,16 +389,16 @@ class AzpHelperGui:
             height=16,
             wrap="word",
             font=("Consolas", 10),
-            bg=HELPER_PANEL_BG,
+            bg=self.helper_bg if self.helper_bg != HELPER_BG else HELPER_PANEL_BG,
             fg=HELPER_FG,
             insertbackground=HELPER_FG,
-            selectbackground=HELPER_BUTTON_ACTIVE_BG,
+            selectbackground=self.button_accent_active_bg,
             selectforeground=HELPER_FG,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground=HELPER_BUTTON_BG,
-            highlightcolor=HELPER_BUTTON_ACTIVE_BG,
+            highlightbackground=self.button_accent_bg,
+            highlightcolor=self.button_accent_active_bg,
         )
         self.log.pack(fill=BOTH, expand=True, padx=16, pady=(8, 16))
         self._write_log("Pick a mode. Close this window when you are done.\n")
@@ -450,11 +459,23 @@ class AzpHelperGui:
 
         if target == "background":
             self.helper_bg = apply_background_color(self.background_widgets, self.log, accent)
+            save_helper_color_settings(
+                {
+                    "outlineColor": self.button_accent_bg,
+                    "backgroundColor": self.helper_bg,
+                }
+            )
             self._write_log(f"Helper background color set to {self.helper_bg}.\n")
         else:
             outline = apply_outline_color(self.control_buttons, self.log, accent)
             self.button_accent_bg = outline["accent"]
             self.button_accent_active_bg = outline["activeAccent"]
+            save_helper_color_settings(
+                {
+                    "outlineColor": self.button_accent_bg,
+                    "backgroundColor": self.helper_bg,
+                }
+            )
             self._write_log(f"Helper outline color set to {self.button_accent_bg}.\n")
 
         if dialog:
@@ -650,6 +671,52 @@ def normalize_color_choice(value, *, fallback: str) -> str:
         components.append(component)
 
     return "#{:02X}{:02X}{:02X}".format(*components)
+
+
+def helper_color_settings_path(
+    env: dict[str, str] | None = None,
+    *,
+    home: Path | None = None,
+) -> Path:
+    source_env = os.environ if env is None else env
+    base = (
+        source_env.get("APPDATA")
+        or source_env.get("LOCALAPPDATA")
+        or str((home or Path.home()) / ".stake-gpt-helper")
+    )
+    return Path(base) / "Stake-GPT Helper" / "settings.json"
+
+
+def load_helper_color_settings(path: Path | None = None) -> dict[str, str]:
+    settings_path = path or helper_color_settings_path()
+    settings = dict(DEFAULT_COLOR_SETTINGS)
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return settings
+    if not isinstance(raw, dict):
+        return settings
+
+    for key, default in DEFAULT_COLOR_SETTINGS.items():
+        settings[key] = normalize_color_choice(raw.get(key), fallback=default)
+    return settings
+
+
+def save_helper_color_settings(
+    settings: dict[str, str],
+    path: Path | None = None,
+) -> Path:
+    settings_path = path or helper_color_settings_path()
+    cleaned = {
+        key: normalize_color_choice(settings.get(key), fallback=default)
+        for key, default in DEFAULT_COLOR_SETTINGS.items()
+    }
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(cleaned, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return settings_path
 
 
 def active_color_for(hex_color: str) -> str:

@@ -3,10 +3,14 @@ from __future__ import annotations
 from app.local_helper_gui import (
     HELPER_BG,
     HELPER_FG,
+    HELPER_BUTTON_BG,
     active_color_for,
     apply_background_color,
     apply_outline_color,
+    helper_color_settings_path,
+    load_helper_color_settings,
     normalize_color_choice,
+    save_helper_color_settings,
     should_minimize_to_tray,
 )
 
@@ -78,4 +82,56 @@ def test_apply_background_color_updates_background_widgets_and_log_panel():
     assert log.options == {
         "bg": "#102030",
         "insertbackground": HELPER_FG,
+    }
+
+
+def test_helper_color_settings_path_uses_appdata_folder(tmp_path):
+    path = helper_color_settings_path(env={"APPDATA": str(tmp_path)})
+
+    assert path == tmp_path / "Stake-GPT Helper" / "settings.json"
+
+
+def test_load_helper_color_settings_returns_defaults_when_missing(tmp_path):
+    settings = load_helper_color_settings(tmp_path / "missing.json")
+
+    assert settings == {
+        "outlineColor": HELPER_BUTTON_BG,
+        "backgroundColor": HELPER_BG,
+    }
+
+
+def test_save_helper_color_settings_overwrites_last_choices(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    save_helper_color_settings(
+        {
+            "outlineColor": "#0E3D32",
+            "backgroundColor": "#102030",
+        },
+        settings_path,
+    )
+    save_helper_color_settings(
+        {
+            "outlineColor": "#AA0000",
+            "backgroundColor": "#001122",
+        },
+        settings_path,
+    )
+
+    assert load_helper_color_settings(settings_path) == {
+        "outlineColor": "#AA0000",
+        "backgroundColor": "#001122",
+    }
+
+
+def test_load_helper_color_settings_ignores_invalid_colors(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        '{"outlineColor": "not-a-color", "backgroundColor": "#102030"}',
+        encoding="utf-8",
+    )
+
+    assert load_helper_color_settings(settings_path) == {
+        "outlineColor": HELPER_BUTTON_BG,
+        "backgroundColor": "#102030",
     }

@@ -3005,6 +3005,7 @@ def _line_rows(
     rows = []
 
     for line in lines or []:
+        non_playable_reasons = _sgm_non_playable_reasons(stat, line)
         playable = bool(
             stat.get("customBet")
             and stat.get("liveCustomBetAvailable")
@@ -3027,6 +3028,8 @@ def _line_rows(
             "customBet": bool(stat.get("customBet")),
             "liveCustomBetAvailable": bool(stat.get("liveCustomBetAvailable")),
             "playable": playable,
+            "nonPlayableReasons": non_playable_reasons,
+            "identifierWarnings": _sgm_identifier_warnings(market, line),
             "marketId": market.get("id"),
             "lineId": line.get("id"),
             "swishStatId": stat.get("swishStatId"),
@@ -3045,6 +3048,36 @@ def _line_rows(
         rows.append(row)
 
     return rows
+
+
+def _sgm_non_playable_reasons(
+    stat: dict[str, Any],
+    line: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    if not stat.get("customBet"):
+        reasons.append("customBet_false")
+    if not stat.get("liveCustomBetAvailable"):
+        reasons.append("liveCustomBetAvailable_false")
+    if line.get("suspended"):
+        reasons.append("suspended")
+    if line.get("over") is None:
+        reasons.append("missing_over_odds")
+    if line.get("under") is None:
+        reasons.append("missing_under_odds")
+    return reasons
+
+
+def _sgm_identifier_warnings(
+    market: dict[str, Any],
+    line: dict[str, Any],
+) -> list[str]:
+    warnings: list[str] = []
+    if not line.get("id"):
+        warnings.append("missing_line_id")
+    if not market.get("id"):
+        warnings.append("missing_market_id")
+    return warnings
 
 
 def _sgm_market_diagnostics(
@@ -3079,10 +3112,12 @@ def _sgm_player_market_diagnostic(
     playable_rows = [row for row in matching_rows if row.get("playable")]
     row_samples = [
         _sgm_market_diagnostic_row(fixture_slug, row)
-        for row in playable_rows[:5]
+        for row in matching_rows[:5]
     ]
     row_id_count = sum(
-        len(sample.get("rowIds") or {}) for sample in row_samples
+        2
+        for row in playable_rows
+        if row.get("over") is not None or row.get("under") is not None
     )
     missing_required_ids = sum(
         1
@@ -3117,9 +3152,10 @@ def _sgm_player_market_diagnostic(
 
 def _sgm_market_diagnostic_row(fixture_slug: str, row: dict[str, Any]) -> dict[str, Any]:
     row_ids = {}
-    for side in ("over", "under"):
-        if row.get(side) is not None:
-            row_ids[side] = make_sgm_selection_row_id(fixture_slug, row, side)
+    if row.get("playable"):
+        for side in ("over", "under"):
+            if row.get(side) is not None:
+                row_ids[side] = make_sgm_selection_row_id(fixture_slug, row, side)
     return {
         "player": row.get("player"),
         "team": row.get("team"),
@@ -3127,6 +3163,8 @@ def _sgm_market_diagnostic_row(fixture_slug: str, row: dict[str, Any]) -> dict[s
         "market": row.get("market"),
         "line": row.get("line"),
         "playable": bool(row.get("playable")),
+        "nonPlayableReasons": row.get("nonPlayableReasons") or [],
+        "identifierWarnings": row.get("identifierWarnings") or [],
         "lineId": row.get("lineId"),
         "marketId": row.get("marketId"),
         "swishStatId": row.get("swishStatId"),

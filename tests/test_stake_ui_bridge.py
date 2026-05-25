@@ -1056,7 +1056,9 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
     assert board["counts"]["playerPropsPlayable"] == 1
     assert board["playerProps"][0]["player"] == "Ronald Acuna Jr."
     assert board["playerProps"][0]["playable"] is True
+    assert board["playerProps"][0]["nonPlayableReasons"] == []
     assert board["playerProps"][1]["playable"] is False
+    assert board["playerProps"][1]["nonPlayableReasons"] == ["suspended"]
 
 
 def test_sgm_board_market_filter_supports_batter_and_steal_aliases():
@@ -1186,7 +1188,7 @@ def test_normalize_sgm_response_reports_target_player_market_diagnostics():
                                         },
                                         "lines": [
                                             {
-                                                "id": "line-steals",
+                                                "id": None,
                                                 "line": 0.5,
                                                 "over": 3.1,
                                                 "under": 1.3,
@@ -1215,6 +1217,13 @@ def test_normalize_sgm_response_reports_target_player_market_diagnostics():
     assert diagnostics["singles"]["status"] == "market_parsed_with_row_id"
     assert diagnostics["singles"]["rowIdCount"] == 2
     assert diagnostics["stolen bases"]["status"] == "market_parsed_not_playable"
+    assert diagnostics["stolen bases"]["sampleRows"][0]["nonPlayableReasons"] == [
+        "customBet_false"
+    ]
+    assert diagnostics["stolen bases"]["sampleRows"][0]["identifierWarnings"] == [
+        "missing_line_id"
+    ]
+    assert diagnostics["stolen bases"]["sampleRows"][0]["rowIds"] == {}
     assert diagnostics["batter walks"]["status"] == "market_visible_but_not_parsed"
     assert diagnostics["batter strikeouts"]["status"] == "market_not_offered"
 

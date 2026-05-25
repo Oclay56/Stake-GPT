@@ -901,7 +901,6 @@ async def mlb_stake_ui_sgm_board(
         "date": slate_date.isoformat() if slate_date else None,
         "requestedBy": "custom_gpt",
         "purpose": "stake_ui_sgm_truth_board",
-        **_sgm_navigation_fields_from_body(payload),
     }
     job: dict[str, Any] | None = None
     try:
@@ -1057,7 +1056,6 @@ async def mlb_stake_ui_review_slip(
         "localExecutionTimeoutSeconds": _local_helper_execution_timeout_seconds(
             timeout_seconds
         ),
-        **_sgm_navigation_fields_from_body(payload),
     }
 
     job: dict[str, Any] | None = None
@@ -1195,7 +1193,6 @@ async def mlb_stake_ui_review_slip_batch(
         "localExecutionTimeoutSeconds": _local_helper_execution_timeout_seconds(
             timeout_seconds
         ),
-        **_sgm_navigation_fields_from_body(payload),
     }
 
     job: dict[str, Any] | None = None
@@ -1663,30 +1660,6 @@ def _bool_from_body(
         status_code=422,
         detail=f"{camel_key} must be a boolean value",
     )
-
-
-def _sgm_navigation_fields_from_body(payload: dict[str, Any]) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    if "navigationMode" in payload or "navigation_mode" in payload:
-        raw_mode = payload.get("navigationMode", payload.get("navigation_mode"))
-        mode = str(raw_mode or "direct").strip().lower().replace("-", "_")
-        if mode in {"index", "mlb_index", "mlb_index_click"}:
-            mode = "index_click"
-        if mode not in {"direct", "index_click"}:
-            raise HTTPException(
-                status_code=422,
-                detail="navigationMode must be direct or index_click",
-            )
-        fields["navigationMode"] = mode
-
-    if "fallbackToIndexClick" in payload or "fallback_to_index_click" in payload:
-        fields["fallbackToIndexClick"] = _bool_from_body(
-            payload,
-            "fallbackToIndexClick",
-            "fallback_to_index_click",
-            True,
-        )
-    return fields
 
 
 def _clean_int_from_body(

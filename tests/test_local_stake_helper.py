@@ -100,51 +100,6 @@ def test_process_job_runs_mlb_game_reader(monkeypatch):
     assert store.completed[0][1]["games"][0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
 
 
-def test_process_job_passes_sgm_navigation_options(monkeypatch):
-    def fake_read_stake_sgm_board(
-        fixture_slug: str,
-        *,
-        cdp_url: str,
-        navigation_mode: str,
-        fallback_to_index_click: bool,
-    ):
-        assert cdp_url == "http://127.0.0.1:9222"
-        assert fixture_slug == "46575351-new-york-yankees-toronto-blue-jays"
-        assert navigation_mode == "index_click"
-        assert fallback_to_index_click is False
-        return {
-            "source": "stake_ui_sgm",
-            "fixtureSlug": fixture_slug,
-        }
-
-    monkeypatch.setattr(
-        local_stake_helper,
-        "read_stake_sgm_board",
-        fake_read_stake_sgm_board,
-    )
-    store = FakeJobStore()
-    job = {
-        "jobId": "job-nav-options",
-        "jobType": "stake_ui_sgm_board",
-        "request": {
-            "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
-            "navigationMode": "index_click",
-            "fallbackToIndexClick": False,
-        },
-    }
-
-    asyncio.run(
-        local_stake_helper.process_job(
-            store,
-            job,
-            cdp_url="http://127.0.0.1:9222",
-        )
-    )
-
-    assert not store.failed
-    assert store.completed[0][0] == "job-nav-options"
-
-
 def test_process_job_runs_batch_review_builder(monkeypatch):
     def fake_build_stake_sgm_review_slip_batch(
         groups: list[dict],

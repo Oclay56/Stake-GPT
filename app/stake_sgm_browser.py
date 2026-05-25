@@ -13,6 +13,44 @@ DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
 CLICK_ODDS_TOLERANCE = 0.006
 _SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS: dict[str, dict[str, Any]] = {
+    "singles": {
+        "aliases": ["singles", "single", "player singles"],
+        "batterOnly": True,
+    },
+    "stolen bases": {
+        "aliases": [
+            "stolen bases",
+            "stolen base",
+            "steals",
+            "steal",
+            "player stolen bases",
+            "player steals",
+        ],
+        "batterOnly": True,
+    },
+    "batter walks": {
+        "aliases": [
+            "batter walks",
+            "batter walk",
+            "walks",
+            "walk",
+            "base on balls",
+            "bases on balls",
+        ],
+        "batterOnly": True,
+    },
+    "batter strikeouts": {
+        "aliases": [
+            "batter strikeouts",
+            "batter strikeout",
+            "strikeouts",
+            "strikeout",
+            "failed attempts",
+        ],
+        "batterOnly": True,
+    },
+}
 
 MLB_TEAM_SLUGS = {
     "arizona-diamondbacks": "Arizona Diamondbacks",
@@ -146,8 +184,14 @@ def read_stake_sgm_board(
 
         page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
         warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+        visible_market_text = _read_visible_market_text(page)
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
-        return normalize_sgm_response(fixture_slug, response, warnings)
+        return normalize_sgm_response(
+            fixture_slug,
+            response,
+            warnings,
+            visible_market_text=visible_market_text,
+        )
 
 
 def read_stake_mlb_games(
@@ -329,8 +373,14 @@ def build_stake_sgm_review_slip(
 
         page = _find_or_open_fixture_page(browser.contexts[0], fixture_slug)
         warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+        visible_market_text = _read_visible_market_text(page)
         response = _fetch_sgm_board_in_browser(page, fixture_slug)
-        board = normalize_sgm_response(fixture_slug, response, warnings)
+        board = normalize_sgm_response(
+            fixture_slug,
+            response,
+            warnings,
+            visible_market_text=visible_market_text,
+        )
         if _has_logged_out_warning(warnings):
             return _review_slip_result(
                 fixture_slug=fixture_slug,
@@ -466,8 +516,14 @@ def build_stake_sgm_review_slip_batch(
 
             page.goto(fixture_url(fixture_slug), wait_until="domcontentloaded", timeout=45_000)
             warnings = _check_page_ready(page, fixture_slug=fixture_slug)
+            visible_market_text = _read_visible_market_text(page)
             response = _fetch_sgm_board_in_browser(page, fixture_slug)
-            board = normalize_sgm_response(fixture_slug, response, warnings)
+            board = normalize_sgm_response(
+                fixture_slug,
+                response,
+                warnings,
+                visible_market_text=visible_market_text,
+            )
             selections = _group_review_selections(group)
             fallback_selections = _group_review_fallback_selections(group)
             required_legs = _group_required_legs(group, len(selections))
@@ -891,6 +947,9 @@ def _transactional_selection_plan(
                 {
                     "selection": _compact_click_row(row),
                     "reason": check.get("reason") or check.get("status") or "not_buildable",
+                    "diagnosticStatus": (
+                        "market_parsed_with_row_id_but_click_preflight_failed"
+                    ),
                     "phase": "primary_preflight",
                     "preflight": _compact_preflight_result(check),
                 }
@@ -924,6 +983,7 @@ def _transactional_selection_plan(
             {
                 "selection": _compact_click_row(row),
                 "reason": check.get("reason") or check.get("status") or "not_buildable",
+                "diagnosticStatus": "market_parsed_with_row_id_but_click_preflight_failed",
                 "phase": "fallback_preflight",
                 "preflight": _compact_preflight_result(check),
             }
@@ -1099,6 +1159,7 @@ def normalize_sgm_response(
     fixture_slug: str,
     response: dict[str, Any],
     warnings: list[str] | None = None,
+    visible_market_text: str | None = None,
 ) -> dict[str, Any]:
     slug_fixture = ((response.get("data") or {}).get("slugFixture")) or {}
     teams = slug_fixture.get("swishGameTeams") or []
@@ -1146,6 +1207,11 @@ def normalize_sgm_response(
             "playerPropsPlayable": sum(1 for row in player_props if row["playable"]),
         },
         "warnings": warnings or [],
+        "marketDiagnostics": _sgm_market_diagnostics(
+            fixture_slug,
+            player_props,
+            visible_market_text=visible_market_text,
+        ),
         "teamMarkets": team_markets,
         "playerProps": player_props,
     }
@@ -1177,7 +1243,7 @@ def _find_exact_selection_row(
             continue
         if selection_player and selection_player != _text_key(row.get("player")):
             continue
-        if selection_market and selection_market != _text_key(row.get("market")):
+        if selection_market and not sgm_market_filter_matches(row, selection.get("market")):
             continue
         if selection_line is None or not _numbers_equal(selection_line, row.get("line")):
             continue
@@ -2643,13 +2709,65 @@ def _expand_sgm_market(page: Any, value: str) -> None:
         return
 
 
+def sgm_market_filter_matches(row: dict[str, Any], market_filter: Any) -> bool:
+    filter_key = _text_key(market_filter)
+    if not filter_key:
+        return True
+
+    canonical_target = _canonical_sgm_player_market_target(filter_key)
+    if canonical_target:
+        target = SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS[canonical_target]
+        if target.get("batterOnly") and _is_pitcher_row(row):
+            return False
+        aliases = {_text_key(alias) for alias in target["aliases"]}
+        aliases.add(_text_key(canonical_target))
+        row_values = {
+            _text_key(row.get("market")),
+            _text_key(row.get("swishStatId")),
+            _text_key(row.get("statId")),
+            _text_key(row.get("statValue")),
+        }
+        return bool(aliases.intersection(row_values))
+
+    return filter_key in _text_key(row.get("market"))
+
+
+def _canonical_sgm_player_market_target(value: Any) -> str | None:
+    value_key = _text_key(value)
+    for target, config in SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS.items():
+        if value_key == _text_key(target):
+            return target
+        aliases = {_text_key(alias) for alias in config["aliases"]}
+        if value_key in aliases:
+            return target
+    return None
+
+
+def _visible_text_mentions_target_market(
+    visible_market_text: str | None,
+    target_market: str,
+) -> bool:
+    visible_key = _text_key(visible_market_text)
+    if not visible_key:
+        return False
+    target = SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS[target_market]
+    return any(_text_key(alias) in visible_key for alias in target["aliases"])
+
+
+def _is_pitcher_row(row: dict[str, Any]) -> bool:
+    return _text_key(row.get("position")) in {"p", "sp", "rp", "pitcher"}
+
+
 def _market_search_text(value: str) -> str:
     normalized = value.strip().lower()
     aliases = {
+        "batter strikeouts": "strikeouts",
+        "batter walks": "walks",
         "failed attempts": "strikeouts",
         "match home runs": "home runs",
         "match singles": "singles",
         "match triples": "triples",
+        "stolen bases": "steals",
         "team hits": "hits",
         "team rbi": "rbi",
         "team rbis": "rbi",
@@ -2672,7 +2790,11 @@ def _market_display_aliases(value: str) -> list[str]:
         "match triples": ["Match Triples", "Triples"],
         "outs": ["Outs", "Eliminated"],
         "rbi": ["RBI", "RBIs", "Runs Batted In"],
+        "batter strikeouts": ["Batter Strikeouts", "Strikeouts", "Failed Attempts"],
+        "batter walks": ["Batter Walks", "Walks", "Base on Balls", "Bases on Balls"],
+        "singles": ["Singles"],
         "strikeouts": ["Strikeouts", "Failed Attempts"],
+        "stolen bases": ["Stolen Bases", "Steals"],
         "team hits": ["Team Hits", "Hits"],
         "team rbi": ["Team RBI", "Team RBIs", "RBI", "RBIs", "Runs Batted In"],
         "team rbis": ["Team RBIs", "Team RBI", "RBIs", "RBI", "Runs Batted In"],
@@ -2925,6 +3047,93 @@ def _line_rows(
     return rows
 
 
+def _sgm_market_diagnostics(
+    fixture_slug: str,
+    player_props: list[dict[str, Any]],
+    *,
+    visible_market_text: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "playerTargets": [
+            _sgm_player_market_diagnostic(
+                fixture_slug,
+                player_props,
+                target_market,
+                visible_market_text=visible_market_text,
+            )
+            for target_market in SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS
+        ]
+    }
+
+
+def _sgm_player_market_diagnostic(
+    fixture_slug: str,
+    player_props: list[dict[str, Any]],
+    target_market: str,
+    *,
+    visible_market_text: str | None,
+) -> dict[str, Any]:
+    matching_rows = [
+        row for row in player_props if sgm_market_filter_matches(row, target_market)
+    ]
+    playable_rows = [row for row in matching_rows if row.get("playable")]
+    row_samples = [
+        _sgm_market_diagnostic_row(fixture_slug, row)
+        for row in playable_rows[:5]
+    ]
+    row_id_count = sum(
+        len(sample.get("rowIds") or {}) for sample in row_samples
+    )
+    missing_required_ids = sum(
+        1
+        for row in matching_rows
+        if not row.get("lineId") or not row.get("marketId")
+    )
+    visible = _visible_text_mentions_target_market(visible_market_text, target_market)
+
+    if row_id_count:
+        status = "market_parsed_with_row_id"
+    elif playable_rows:
+        status = "market_parsed_but_missing_row_id"
+    elif matching_rows:
+        status = "market_parsed_not_playable"
+    elif visible:
+        status = "market_visible_but_not_parsed"
+    else:
+        status = "market_not_offered"
+
+    return {
+        "market": target_market,
+        "aliases": SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS[target_market]["aliases"],
+        "status": status,
+        "parsedRows": len(matching_rows),
+        "playableRows": len(playable_rows),
+        "rowIdCount": row_id_count,
+        "missingRequiredIds": missing_required_ids,
+        "visibleInPageText": visible,
+        "sampleRows": row_samples,
+    }
+
+
+def _sgm_market_diagnostic_row(fixture_slug: str, row: dict[str, Any]) -> dict[str, Any]:
+    row_ids = {}
+    for side in ("over", "under"):
+        if row.get(side) is not None:
+            row_ids[side] = make_sgm_selection_row_id(fixture_slug, row, side)
+    return {
+        "player": row.get("player"),
+        "team": row.get("team"),
+        "position": row.get("position"),
+        "market": row.get("market"),
+        "line": row.get("line"),
+        "playable": bool(row.get("playable")),
+        "lineId": row.get("lineId"),
+        "marketId": row.get("marketId"),
+        "swishStatId": row.get("swishStatId"),
+        "rowIds": row_ids,
+    }
+
+
 def _find_or_open_fixture_page(context: Any, fixture_slug: str) -> Any:
     expected = fixture_url(fixture_slug)
     for page in context.pages:
@@ -3034,6 +3243,13 @@ def _read_stake_ui_state_from_page(page: Any) -> dict[str, Any]:
         "slip": slip,
         "warnings": warnings,
     }
+
+
+def _read_visible_market_text(page: Any) -> str:
+    try:
+        return page.locator("body").inner_text(timeout=3_000)
+    except Exception:
+        return ""
 
 
 def _fixture_slug_from_url(url: str) -> str | None:

@@ -1059,6 +1059,166 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
     assert board["playerProps"][1]["playable"] is False
 
 
+def test_sgm_board_market_filter_supports_batter_and_steal_aliases():
+    board = {
+        "fixtureSlug": "fixture-1",
+        "playerProps": [
+            {
+                "team": "Atlanta Braves",
+                "player": "Hitter One",
+                "position": "CF",
+                "playerId": "hitter-1",
+                "scope": "player",
+                "market": "Strikeouts",
+                "line": 0.5,
+                "under": 1.82,
+                "over": 1.91,
+                "playable": True,
+                "marketId": "market-hitter-k",
+                "lineId": "line-hitter-k",
+                "swishStatId": "strikeouts",
+            },
+            {
+                "team": "Atlanta Braves",
+                "player": "Pitcher One",
+                "position": "P",
+                "playerId": "pitcher-1",
+                "scope": "player",
+                "market": "Strikeouts",
+                "line": 4.5,
+                "under": 2.1,
+                "over": 1.7,
+                "playable": True,
+                "marketId": "market-pitcher-k",
+                "lineId": "line-pitcher-k",
+                "swishStatId": "strikeouts",
+            },
+            {
+                "team": "Atlanta Braves",
+                "player": "Speedster One",
+                "position": "SS",
+                "playerId": "speed-1",
+                "scope": "player",
+                "market": "Steals",
+                "line": 0.5,
+                "under": 1.25,
+                "over": 3.4,
+                "playable": True,
+                "marketId": "market-steals",
+                "lineId": "line-steals",
+                "swishStatId": "steals",
+            },
+        ],
+        "teamMarkets": [],
+    }
+
+    batter_ks = _compact_stake_ui_sgm_board(
+        board,
+        limit=10,
+        side="under",
+        market="batter strikeouts",
+        scope="",
+        playable_only=True,
+    )["rows"]
+    steals = _compact_stake_ui_sgm_board(
+        board,
+        limit=10,
+        side="over",
+        market="stolen bases",
+        scope="",
+        playable_only=True,
+    )["rows"]
+
+    assert [row["player"] for row in batter_ks] == ["Hitter One"]
+    assert batter_ks[0]["rowId"].startswith("sgm_")
+    assert [row["player"] for row in steals] == ["Speedster One"]
+    assert steals[0]["rowId"].startswith("sgm_")
+
+
+def test_normalize_sgm_response_reports_target_player_market_diagnostics():
+    raw = {
+        "data": {
+            "slugFixture": {
+                "id": "fixture-1",
+                "status": "active",
+                "provider": "betradar",
+                "swishGame": {"id": "game-1", "status": "PreGame"},
+                "swishGameTeams": [
+                    {
+                        "id": "team-1",
+                        "name": "Atlanta Braves",
+                        "markets": [],
+                        "players": [
+                            {
+                                "id": "player-1",
+                                "name": "Hitter One",
+                                "position": "CF",
+                                "markets": [
+                                    {
+                                        "id": "market-singles",
+                                        "stat": {
+                                            "id": "stat-singles",
+                                            "type": "player",
+                                            "swishStatId": "singles",
+                                            "name": "Singles",
+                                            "customBet": True,
+                                            "liveCustomBetAvailable": True,
+                                        },
+                                        "lines": [
+                                            {
+                                                "id": "line-singles",
+                                                "line": 0.5,
+                                                "over": 2.6,
+                                                "under": 1.42,
+                                                "suspended": False,
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "id": "market-steals",
+                                        "stat": {
+                                            "id": "stat-steals",
+                                            "type": "player",
+                                            "swishStatId": "steals",
+                                            "name": "Steals",
+                                            "customBet": False,
+                                            "liveCustomBetAvailable": True,
+                                        },
+                                        "lines": [
+                                            {
+                                                "id": "line-steals",
+                                                "line": 0.5,
+                                                "over": 3.1,
+                                                "under": 1.3,
+                                                "suspended": False,
+                                            }
+                                        ],
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+
+    board = normalize_sgm_response(
+        "fixture-1",
+        raw,
+        visible_market_text="Same Game Multi Batter Walks",
+    )
+    diagnostics = {
+        item["market"]: item for item in board["marketDiagnostics"]["playerTargets"]
+    }
+
+    assert diagnostics["singles"]["status"] == "market_parsed_with_row_id"
+    assert diagnostics["singles"]["rowIdCount"] == 2
+    assert diagnostics["stolen bases"]["status"] == "market_parsed_not_playable"
+    assert diagnostics["batter walks"]["status"] == "market_visible_but_not_parsed"
+    assert diagnostics["batter strikeouts"]["status"] == "market_not_offered"
+
+
 def test_match_sgm_review_selections_requires_exact_playable_ui_rows():
     board = {
         "playerProps": [

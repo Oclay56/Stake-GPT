@@ -420,6 +420,10 @@ def test_transactional_selection_plan_replaces_failed_primary_before_clicking():
         }
     ]
     assert plan["preflightFailures"][0]["reason"] == "row_not_visible"
+    assert (
+        plan["preflightFailures"][0]["diagnosticStatus"]
+        == "market_parsed_with_row_id_but_click_preflight_failed"
+    )
 
 
 def test_transactional_selection_plan_blocks_when_replacement_cannot_fill_group():

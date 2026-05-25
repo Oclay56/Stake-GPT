@@ -52,7 +52,7 @@ from .mlb_schedule import build_mlb_schedule_stake_map, build_mlb_schedule_view
 from .mlb_props import slug_key
 from .slate import DEFAULT_TIMEZONE
 from .stake_client import StakeAPIError, StakeClient, build_http_client
-from .stake_sgm_browser import make_sgm_selection_row_id
+from .stake_sgm_browser import make_sgm_selection_row_id, sgm_market_filter_matches
 from .storage import GptActionStore
 from .supabase_ledger import (
     supabase_ledger_enabled,
@@ -2070,6 +2070,7 @@ def _compact_stake_ui_sgm_board(
         "teams": board.get("teams") or [],
         "counts": board.get("counts") or {},
         "warnings": board.get("warnings") or [],
+        "marketDiagnostics": board.get("marketDiagnostics") or {},
         "filters": {
             "side": side,
             "market": market or None,
@@ -2100,8 +2101,7 @@ def _stake_ui_selection_rows(
     for row in source_rows:
         if playable_only and not row.get("playable"):
             continue
-        row_market = str(row.get("market") or "")
-        if market_key and market_key not in row_market.lower():
+        if market_key and not sgm_market_filter_matches(row, market):
             continue
         row_scope = str(row.get("scope") or "").lower()
         if scope_key and scope_key != row_scope:

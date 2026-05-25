@@ -21,6 +21,7 @@ from .decision_profiles import (
 from .mlb_bridge import (
     clear_mlb_bridge_cache,
     enrich_props_with_mlb_data,
+    stat_value_from_stats,
     stat_mapping_for_market,
 )
 from .mlb_props import build_stable_props_payload, slug_key
@@ -182,6 +183,19 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                         "Use this as the source of truth before final SGM picks."
                     ),
                     request_body=_stake_ui_sgm_request_body(),
+                )
+            },
+            "/mlb/stake-ui/sgm-candidate-pool": {
+                "post": _operation(
+                    "buildStakeUiSgmCandidatePool",
+                    "Build Stake UI SGM candidate pool",
+                    (
+                        "Scans UI-backed Same Game Multi boards through the local helper, "
+                        "maps playable rows to MLB context, and returns ranked candidate "
+                        "support rows. This is not a recommendation endpoint and never "
+                        "clicks Stake selections."
+                    ),
+                    request_body=_stake_ui_sgm_candidate_pool_request_body(),
                 )
             },
             "/mlb/stake-ui/mlb-games": {
@@ -1701,7 +1715,7 @@ def _selection_metrics(
     prop: dict[str, Any],
     stat_context: dict[str, Any],
 ) -> dict[str, Any]:
-    stat_key = stat_context.get("statKey")
+    stat_key = stat_context if stat_context.get("statFormula") else stat_context.get("statKey")
     line = _float_or_none(selection.get("line"))
     side = str(selection.get("side") or "")
     recent = prop.get("recentHistory") or {}
@@ -1772,11 +1786,11 @@ def _recent_average(recent: dict[str, Any], stat_key: Any) -> float | None:
     if not stat_key:
         return None
     per_game = recent.get("perGame") or {}
-    direct = _float_or_none(per_game.get(str(stat_key)))
+    direct = stat_value_from_stats(stat_key, per_game)
     if direct is not None:
         return direct
     totals = recent.get("totals") or {}
-    total = _float_or_none(totals.get(str(stat_key)))
+    total = stat_value_from_stats(stat_key, totals)
     games_used = _float_or_none(recent.get("gamesUsed"))
     if total is None or not games_used:
         return None
@@ -1787,7 +1801,7 @@ def _season_average(profile: dict[str, Any] | None, stat_key: Any) -> float | No
     if not stat_key:
         return None
     stats = (((profile or {}).get("player") or {}).get("stats") or {})
-    total = _float_or_none(stats.get(str(stat_key)))
+    total = stat_value_from_stats(stat_key, stats)
     denominator = (
         _float_or_none(stats.get("gamesPlayed"))
         or _float_or_none(stats.get("gamesPitched"))
@@ -1806,7 +1820,7 @@ def _recent_hit_rates(
     if not stat_key or line is None:
         return {"over": None, "under": None}
     values = [
-        _float_or_none((game.get("stats") or {}).get(str(stat_key)))
+        stat_value_from_stats(stat_key, game.get("stats") or {})
         for game in recent.get("games") or []
     ]
     values = [value for value in values if value is not None]
@@ -2590,6 +2604,64 @@ def _stake_ui_sgm_request_body() -> dict[str, Any]:
                         },
                     },
                     "required": ["matchup"],
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
+def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "format": "date"},
+                        "fixtureSlugs": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": {"type": "string"},
+                        },
+                        "matchups": {
+                            "type": "array",
+                            "maxItems": 20,
+                            "items": {"type": "string"},
+                        },
+                        "markets": {
+                            "description": "Comma-separated SGM markets to consider.",
+                            "type": "string",
+                        },
+                        "side": {"type": "string", "enum": ["any", "over", "under"]},
+                        "mode": {
+                            "type": "string",
+                            "enum": [
+                                "best_available",
+                                "safe",
+                                "balanced",
+                                "longshot",
+                                "per_game",
+                                "strict_diversity",
+                            ],
+                        },
+                        "legsPerGame": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxTotalLegs": {"type": "integer", "minimum": 1, "maximum": 300},
+                        "maxCandidatesPerGame": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxTotalCandidates": {"type": "integer", "minimum": 1, "maximum": 300},
+                        "qualityFloor": {"type": "number", "minimum": 0, "maximum": 100},
+                        "historyLimit": {"type": "integer", "minimum": 1, "maximum": 15},
+                        "targetOddsMin": {"type": "number", "minimum": 1},
+                        "targetOddsMax": {"type": "number", "minimum": 1},
+                        "minIndividualOdds": {"type": "number", "minimum": 1},
+                        "maxIndividualOdds": {"type": "number", "minimum": 1},
+                        "maxLegsPerGameGroup": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxSgmGroupOdds": {"type": "number", "minimum": 1, "maximum": 501},
+                        "maxGames": {"type": "integer", "minimum": 1, "maximum": 20},
+                        "maxCacheAgeSeconds": {"type": "integer", "minimum": 0, "maximum": 600},
+                        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 180},
+                    },
                     "additionalProperties": True,
                 }
             }

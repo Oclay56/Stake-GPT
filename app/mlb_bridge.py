@@ -14,6 +14,44 @@ _LOOKUP_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 MARKET_STAT_MAP = {
     "hits": {"group": "hitting", "statKey": "hits", "label": "Hits"},
     "hit": {"group": "hitting", "statKey": "hits", "label": "Hits"},
+    "singles": {
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "singles",
+        "label": "Singles",
+        "contextQuality": "partial",
+    },
+    "single": {
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "singles",
+        "label": "Singles",
+        "contextQuality": "partial",
+    },
+    "stolen-bases": {
+        "group": "hitting",
+        "statKey": "stolenBases",
+        "label": "Stolen Bases",
+        "contextQuality": "partial",
+    },
+    "steals": {
+        "group": "hitting",
+        "statKey": "stolenBases",
+        "label": "Stolen Bases",
+        "contextQuality": "partial",
+    },
+    "batter-walks": {
+        "group": "hitting",
+        "statKey": "baseOnBalls",
+        "label": "Batter Walks",
+        "contextQuality": "partial",
+    },
+    "walks-drawn": {
+        "group": "hitting",
+        "statKey": "baseOnBalls",
+        "label": "Batter Walks",
+        "contextQuality": "partial",
+    },
     "total-bases": {
         "group": "hitting",
         "statKey": "totalBases",
@@ -131,14 +169,17 @@ def stat_mapping_for_market(market_key: str) -> dict[str, Any]:
     normalized = slug_key(market_key)
     mapping = MARKET_STAT_MAP.get(normalized)
     if mapping:
-        return {
+        result = {
             "marketKey": normalized,
             "group": mapping["group"],
-            "statKey": mapping["statKey"],
+            "statKey": mapping.get("statKey"),
             "label": mapping["label"],
             "supported": True,
             "contextQuality": mapping.get("contextQuality", "strong"),
         }
+        if mapping.get("statFormula"):
+            result["statFormula"] = mapping["statFormula"]
+        return result
 
     return {
         "marketKey": normalized,
@@ -148,6 +189,27 @@ def stat_mapping_for_market(market_key: str) -> dict[str, Any]:
         "supported": False,
         "contextQuality": "unsupported",
     }
+
+
+def stat_value_from_stats(mapping_or_key: Any, stats: dict[str, Any] | None) -> float | None:
+    stats = stats or {}
+    if isinstance(mapping_or_key, dict):
+        formula = str(mapping_or_key.get("statFormula") or "")
+        if formula == "singles":
+            hits = _float_or_none(stats.get("hits"))
+            if hits is None:
+                return None
+            doubles = _float_or_none(stats.get("doubles")) or 0.0
+            triples = _float_or_none(stats.get("triples")) or 0.0
+            home_runs = _float_or_none(stats.get("homeRuns")) or 0.0
+            return max(0.0, round(hits - doubles - triples - home_runs, 4))
+        stat_key = mapping_or_key.get("statKey")
+    else:
+        stat_key = mapping_or_key
+
+    if not stat_key:
+        return None
+    return _float_or_none(stats.get(str(stat_key)))
 
 
 def build_match_audit(enriched_payload: dict[str, Any]) -> dict[str, Any]:
@@ -609,11 +671,15 @@ def _stat_context(
     history: dict[str, Any],
 ) -> dict[str, Any]:
     stat_key = market_mapping.get("statKey")
+    stat_formula = market_mapping.get("statFormula")
     season_stats = ((profile or {}).get("player") or {}).get("stats") or {}
     totals = (history or {}).get("totals") or {}
     per_game = (history or {}).get("perGame") or {}
+    stat_value = stat_value_from_stats(market_mapping, season_stats)
+    recent_total = stat_value_from_stats(market_mapping, totals)
+    recent_per_game = stat_value_from_stats(market_mapping, per_game)
 
-    return {
+    context = {
         "marketKey": market_mapping["marketKey"],
         "group": market_mapping["group"],
         "statKey": stat_key,
@@ -621,11 +687,14 @@ def _stat_context(
         "supported": market_mapping["supported"],
         "contextQuality": market_mapping["contextQuality"],
         "line": prop.get("line"),
-        "seasonValue": season_stats.get(stat_key) if stat_key else None,
-        "recentTotal": totals.get(stat_key) if stat_key else None,
-        "recentPerGame": per_game.get(stat_key) if stat_key else None,
+        "seasonValue": stat_value,
+        "recentTotal": recent_total,
+        "recentPerGame": recent_per_game,
         "gamesUsed": history.get("gamesUsed") if history else None,
     }
+    if stat_formula:
+        context["statFormula"] = stat_formula
+    return context
 
 
 def _audit_row(prop: dict[str, Any]) -> dict[str, Any]:
@@ -669,3 +738,10 @@ def _audit_issues(match: dict[str, Any]) -> list[str]:
 
 def _clean_limit(limit: int) -> int:
     return max(1, min(limit, 100))
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

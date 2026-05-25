@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .mlb_bridge import stat_value_from_stats
 from .mlb_props import slug_key
 
 
@@ -70,6 +71,24 @@ MARKET_PROFILES: dict[str, dict[str, Any]] = {
         "requiredContext": ["recent_logs", "season_rate", "pitcher_matchup"],
         "contextCap": "medium",
     },
+    "singles": {
+        "volatility": "medium",
+        "marketRisk": "medium",
+        "requiredContext": ["recent_logs", "season_rate", "lineup_role"],
+        "contextCap": "medium",
+    },
+    "stolen-bases": {
+        "volatility": "extreme",
+        "marketRisk": "extreme",
+        "requiredContext": ["recent_logs", "season_rate", "lineup_role"],
+        "contextCap": "medium",
+    },
+    "batter-walks": {
+        "volatility": "high",
+        "marketRisk": "high",
+        "requiredContext": ["recent_logs", "season_rate", "pitcher_matchup"],
+        "contextCap": "medium",
+    },
 }
 
 
@@ -110,7 +129,7 @@ def season_evidence(
     side: str,
 ) -> dict[str, Any]:
     stats = (((profile or {}).get("player") or {}).get("stats") or {})
-    total = _float_or_none(stats.get(str(stat_key))) if stat_key else None
+    total = stat_value_from_stats(stat_key, stats)
     games = (
         _float_or_none(stats.get("gamesPlayed"))
         or _float_or_none(stats.get("gamesPitched"))
@@ -344,7 +363,7 @@ def _window_summary(
     side: str,
 ) -> dict[str, Any]:
     values = [
-        _float_or_none((game.get("stats") or {}).get(str(stat_key)))
+        stat_value_from_stats(stat_key, game.get("stats") or {})
         for game in games
         if stat_key
     ]

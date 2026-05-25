@@ -13,6 +13,7 @@ from .local_ui_bridge import (
     STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
+    STAKE_SGM_BOARD_BATCH_JOB_TYPE,
     STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
     STAKE_SGM_BOARD_JOB_TYPE,
     STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
@@ -28,6 +29,7 @@ from .stake_sgm_browser import (
     clear_stake_sgm_selections,
     read_stake_mlb_games,
     read_stake_sgm_board,
+    read_stake_sgm_boards_batch,
     read_stake_ui_state,
     remove_stake_sidebar_group,
 )
@@ -115,6 +117,7 @@ async def process_job(
     fixture_slug = str(request.get("fixtureSlug") or "").strip()
     fixture_optional_types = {
         STAKE_MLB_GAMES_JOB_TYPE,
+        STAKE_SGM_BOARD_BATCH_JOB_TYPE,
         STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
         STAKE_UI_STATE_JOB_TYPE,
         STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
@@ -134,6 +137,13 @@ async def process_job(
                 read_stake_mlb_games,
                 cdp_url=cdp_url,
                 limit=int(request.get("limit") or 50),
+            )
+        elif job_type == STAKE_SGM_BOARD_BATCH_JOB_TYPE:
+            result = await asyncio.to_thread(
+                read_stake_sgm_boards_batch,
+                fixture_slugs=list(request.get("fixtureSlugs") or []),
+                cdp_url=cdp_url,
+                max_fixtures=int(request.get("maxFixtures") or 20),
             )
         elif job_type == STAKE_UI_STATE_JOB_TYPE:
             result = await asyncio.to_thread(
@@ -338,6 +348,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
             STAKE_MLB_GAMES_JOB_TYPE,
             STAKE_UI_STATE_JOB_TYPE,
             STAKE_SGM_BOARD_JOB_TYPE,
+            STAKE_SGM_BOARD_BATCH_JOB_TYPE,
             STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
             STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
             STAKE_CLEAR_SIDEBAR_JOB_TYPE,
@@ -349,13 +360,19 @@ def _job_types_for_mode(mode: str) -> list[str]:
             STAKE_MLB_GAMES_JOB_TYPE,
             STAKE_UI_STATE_JOB_TYPE,
             STAKE_SGM_BOARD_JOB_TYPE,
+            STAKE_SGM_BOARD_BATCH_JOB_TYPE,
             STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
             STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
             STAKE_CLEAR_SIDEBAR_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_JOB_TYPE,
             STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
         ]
-    return [STAKE_MLB_GAMES_JOB_TYPE, STAKE_UI_STATE_JOB_TYPE, STAKE_SGM_BOARD_JOB_TYPE]
+    return [
+        STAKE_MLB_GAMES_JOB_TYPE,
+        STAKE_UI_STATE_JOB_TYPE,
+        STAKE_SGM_BOARD_JOB_TYPE,
+        STAKE_SGM_BOARD_BATCH_JOB_TYPE,
+    ]
 
 
 def _job_label(job_type: str) -> str:
@@ -363,6 +380,8 @@ def _job_label(job_type: str) -> str:
         return "Reading Stake MLB games"
     if job_type == STAKE_UI_STATE_JOB_TYPE:
         return "Reading Stake UI state"
+    if job_type == STAKE_SGM_BOARD_BATCH_JOB_TYPE:
+        return "Reading batch Stake SGM boards"
     if job_type == STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE:
         return "Clearing SGM selections"
     if job_type == STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE:

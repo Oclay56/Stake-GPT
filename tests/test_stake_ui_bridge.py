@@ -7,7 +7,13 @@ from fastapi.testclient import TestClient
 
 from app.local_ui_bridge import LocalUiBridgeTimeout, _row_to_job
 from app.gpt_action import build_gpt_action_openapi_schema
-from app.main import app, get_local_ui_job_store, get_stake_client, _compact_stake_ui_sgm_board
+from app.main import (
+    app,
+    get_local_ui_job_store,
+    get_mlb_engine,
+    get_stake_client,
+    _compact_stake_ui_sgm_board,
+)
 from app.stake_sgm_browser import match_sgm_review_selections, normalize_sgm_response
 
 
@@ -193,6 +199,129 @@ class FakeCompletedMlbGamesJobStore(FakeCompletedUiJobStore):
             },
             "error": None,
         }
+
+
+class FakeCompletedCandidatePoolJobStore(FakeCompletedUiJobStore):
+    async def wait_for_completed_result(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: int,
+        poll_interval_seconds: float = 1.0,
+    ):
+        assert job_id == "job-123"
+        return {
+            "jobId": job_id,
+            "status": "completed",
+            "workerId": "azp-local-test",
+            "result": {
+                "source": "stake_ui_sgm_board_batch",
+                "fixtureCount": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "boards": [
+                    {
+                        "source": "stake_ui_sgm",
+                        "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+                        "capturedAt": "2026-05-20T20:00:00Z",
+                        "playerProps": [
+                            {
+                                "team": "Toronto Blue Jays",
+                                "player": "Strong Under",
+                                "scope": "player",
+                                "market": "Singles",
+                                "line": 0.5,
+                                "over": 1.35,
+                                "under": 2.25,
+                                "playable": True,
+                                "customBet": True,
+                                "liveCustomBetAvailable": True,
+                                "marketId": "market-singles",
+                                "lineId": "line-strong-under-singles",
+                                "swishStatId": 302,
+                                "playerId": "swish-1001",
+                            }
+                        ],
+                        "teamMarkets": [],
+                    }
+                ],
+                "errors": [],
+            },
+            "error": None,
+        }
+
+
+class FakeCandidatePoolMLBEngine:
+    async def search_players(self, query: str, limit: int = 10):
+        if query != "Strong Under":
+            return {"players": []}
+        return {
+            "players": [
+                {
+                    "mlbId": 1001,
+                    "name": "Strong Under",
+                    "key": "strong-under",
+                    "team": {
+                        "mlbId": 141,
+                        "name": "Toronto Blue Jays",
+                        "key": "toronto-blue-jays",
+                    },
+                }
+            ]
+        }
+
+    async def get_player_profile(self, player_id: int, season=None, group: str = "hitting"):
+        return {
+            "player": {
+                "mlbId": player_id,
+                "name": "Strong Under",
+                "key": "strong-under",
+                "stats": {
+                    "hits": 40,
+                    "doubles": 12,
+                    "triples": 1,
+                    "homeRuns": 5,
+                    "gamesPlayed": 50,
+                },
+            },
+            "season": season,
+            "group": group,
+        }
+
+    async def get_player_recent_history(self, player_id: int, group: str = "hitting", season=None, limit: int = 15):
+        values = [0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]
+        return {
+            "playerId": player_id,
+            "group": group,
+            "gamesUsed": limit,
+            "games": [
+                {"stats": {"hits": value, "doubles": 0, "triples": 0, "homeRuns": 0}}
+                for value in values[:limit]
+            ],
+        }
+
+    async def get_schedule(self, game_date: str):
+        return {
+            "date": game_date,
+            "games": [
+                {
+                    "gamePk": 1,
+                    "awayTeam": {
+                        "mlbId": 141,
+                        "name": "Toronto Blue Jays",
+                        "key": "toronto-blue-jays",
+                    },
+                    "homeTeam": {
+                        "mlbId": 147,
+                        "name": "New York Yankees",
+                        "key": "new-york-yankees",
+                    },
+                }
+            ],
+        }
+
+    async def get_team_roster(self, team_id: int, season=None):
+        return {"teamId": team_id, "players": []}
 
 
 class FakeCompletedBatchBuildJobStore(FakeCompletedUiJobStore):
@@ -433,6 +562,25 @@ def test_gpt_schema_exposes_stake_ui_mlb_games_action():
     assert "MLB" in operation["summary"]
 
 
+def test_gpt_schema_exposes_stake_ui_sgm_candidate_pool_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    operation = schema["paths"]["/mlb/stake-ui/sgm-candidate-pool"]["post"]
+
+    assert operation["operationId"] == "buildStakeUiSgmCandidatePool"
+    properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert "fixtureSlugs" in properties
+    assert "maxSgmGroupOdds" in properties
+    assert properties["mode"]["enum"] == [
+        "best_available",
+        "safe",
+        "balanced",
+        "longshot",
+        "per_game",
+        "strict_diversity",
+    ]
+
+
 def test_gpt_schema_exposes_batch_review_slip_action():
     schema = build_gpt_action_openapi_schema("https://azp-test.example")
 
@@ -554,6 +702,36 @@ def test_stake_ui_mlb_games_route_creates_job_and_returns_completed_result():
     assert body["uiGames"]["games"][0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
     assert created_request["purpose"] == "stake_ui_mlb_game_index"
     assert created_request["limit"] == 10
+
+
+def test_stake_ui_sgm_candidate_pool_returns_ranked_support_rows():
+    fake_store = FakeCompletedCandidatePoolJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+    app.dependency_overrides[get_mlb_engine] = lambda: FakeCandidatePoolMLBEngine()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/sgm-candidate-pool",
+            json={
+                "date": "2026-05-25",
+                "fixtureSlugs": ["46575351-new-york-yankees-toronto-blue-jays"],
+                "side": "under",
+                "markets": "singles",
+                "qualityFloor": 50,
+                "timeoutSeconds": 45,
+            },
+        )
+
+    result = response.json()
+
+    assert response.status_code == 200
+    assert result["source"] == "stake_ui_sgm_candidate_pool"
+    assert result["decisionOwner"] == "custom_gpt"
+    assert result["builderRole"] == "candidate_support_not_final_recommendation"
+    assert result["rankedCandidates"][0]["rowId"].startswith("sgm_")
+    assert result["rankedCandidates"][0]["normalizedMarketKey"] == "singles"
+    assert result["rankedCandidates"][0]["mlbPersonId"] == 1001
+    assert fake_store.created_jobs[0]["jobType"] == "stake_ui_sgm_board_batch"
 
 
 def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails():

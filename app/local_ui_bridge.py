@@ -10,6 +10,7 @@ import httpx
 
 
 STAKE_SGM_BOARD_JOB_TYPE = "stake_ui_sgm_board"
+STAKE_SGM_BOARD_BATCH_JOB_TYPE = "stake_ui_sgm_board_batch"
 STAKE_SGM_BUILD_SLIP_JOB_TYPE = "stake_ui_sgm_build_slip"
 STAKE_MLB_GAMES_JOB_TYPE = "stake_ui_mlb_games"
 STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE = "stake_ui_sgm_build_slip_batch"

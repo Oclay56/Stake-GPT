@@ -5,6 +5,7 @@ from app.mlb_bridge import (
     clear_mlb_bridge_cache,
     enrich_props_with_mlb_data,
     group_for_market,
+    stat_value_from_stats,
     stat_mapping_for_market,
 )
 
@@ -309,6 +310,41 @@ def test_market_mapping_selects_group_and_stat_key():
         "supported": True,
         "contextQuality": "partial",
     }
+
+
+def test_sgm_only_market_mapping_supports_derived_and_hitting_stats():
+    singles = stat_mapping_for_market("singles")
+    assert singles == {
+        "marketKey": "singles",
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "singles",
+        "label": "Singles",
+        "supported": True,
+        "contextQuality": "partial",
+    }
+    assert stat_value_from_stats(
+        singles,
+        {"hits": 10, "doubles": 2, "triples": 1, "homeRuns": 3},
+    ) == 4.0
+
+    assert stat_mapping_for_market("stolen bases") == {
+        "marketKey": "stolen-bases",
+        "group": "hitting",
+        "statKey": "stolenBases",
+        "label": "Stolen Bases",
+        "supported": True,
+        "contextQuality": "partial",
+    }
+    assert stat_mapping_for_market("batter walks") == {
+        "marketKey": "batter-walks",
+        "group": "hitting",
+        "statKey": "baseOnBalls",
+        "label": "Batter Walks",
+        "supported": True,
+        "contextQuality": "partial",
+    }
+    assert stat_mapping_for_market("pitcher strikeouts")["group"] == "pitching"
 
 
 def test_enrich_props_matches_by_player_and_team_then_attaches_stats():

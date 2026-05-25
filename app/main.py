@@ -17,6 +17,7 @@ from .local_ui_bridge import (
     STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
+    STAKE_SGM_BOARD_BATCH_JOB_TYPE,
     STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
     STAKE_SGM_BUILD_SLIP_JOB_TYPE,
     STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
@@ -50,6 +51,7 @@ from .gpt_action import (
 from .mlb_data import MLBAPIError, MLBDataEngine, MLBStatsClient, build_mlb_http_client
 from .mlb_schedule import build_mlb_schedule_stake_map, build_mlb_schedule_view
 from .mlb_props import slug_key
+from .sgm_candidate_pool import build_sgm_candidate_pool_from_boards
 from .slate import DEFAULT_TIMEZONE
 from .stake_client import StakeAPIError, StakeClient, build_http_client
 from .stake_sgm_browser import make_sgm_selection_row_id, sgm_market_filter_matches
@@ -959,6 +961,182 @@ async def mlb_stake_ui_sgm_board(
     )
 
 
+@app.post("/mlb/stake-ui/sgm-candidate-pool")
+async def mlb_stake_ui_sgm_candidate_pool(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    _: None = Depends(require_gpt_api_key),
+    client: StakeClient = Depends(get_stake_client),
+    engine: MLBDataEngine = Depends(get_mlb_engine),
+    job_store: SupabaseLocalUiJobStore = Depends(get_local_ui_job_store),
+) -> Any:
+    if not job_store.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "source": "local_ui_bridge",
+                "message": (
+                    "Supabase local UI bridge is not configured. Set SUPABASE_URL "
+                    "and SUPABASE_SERVICE_ROLE_KEY on Render and the local helper."
+                ),
+            },
+        )
+
+    slate_date = _date_from_body(payload)
+    timeout_seconds = _clean_int_from_body(
+        payload,
+        "timeoutSeconds",
+        90,
+        minimum=1,
+        maximum=180,
+    )
+    max_games = _clean_int_from_body(payload, "maxGames", 15, minimum=1, maximum=20)
+    fixture_slugs = _string_list_from_body(payload, "fixtureSlugs", "fixture_slugs")[:max_games]
+    matchups = _string_list_from_body(payload, "matchups", "matchup")
+    if not fixture_slugs and matchups:
+        for matchup in matchups[:max_games]:
+            fixture_slugs.append(
+                await _resolve_stake_fixture_slug(
+                    client=client,
+                    matchup=matchup,
+                    slate_date=slate_date,
+                    limit=100,
+                )
+            )
+    if not fixture_slugs:
+        fixture_slugs = await _stake_ui_fixture_slugs_from_index(
+            job_store=job_store,
+            timeout_seconds=min(timeout_seconds, 90),
+            max_games=max_games,
+        )
+    if not fixture_slugs:
+        return {
+            "source": "stake_ui_sgm_candidate_pool",
+            "decisionOwner": "custom_gpt",
+            "builderRole": "candidate_support_not_final_recommendation",
+            "mode": str(payload.get("mode") or "best_available"),
+            "date": slate_date.isoformat() if slate_date else None,
+            "slateSummary": {"requestedGames": 0, "processedGames": 0},
+            "filters": {},
+            "guardrails": {
+                "maxLegsPerGameGroup": 16,
+                "maxSgmGroupOdds": 501,
+                "maxGames": max_games,
+                "noForcedWeakPicks": True,
+            },
+            "candidateCounts": {"scannedRows": 0, "acceptedRows": 0, "returnedRows": 0},
+            "rankedCandidates": [],
+            "perGame": {},
+            "rejectedSummary": {"no_fixture_slugs": 1},
+            "marketExposure": {},
+            "contextCoverage": {},
+            "notes": ["No Stake UI fixture slugs were available for candidate scanning."],
+        }
+
+    request = {
+        "requestedBy": "custom_gpt",
+        "purpose": "stake_ui_sgm_candidate_pool_board_batch",
+        "fixtureSlugs": fixture_slugs[:max_games],
+        "date": slate_date.isoformat() if slate_date else None,
+        "maxFixtures": max_games,
+    }
+    job: dict[str, Any] | None = None
+    try:
+        job = await job_store.create_job(
+            job_type=STAKE_SGM_BOARD_BATCH_JOB_TYPE,
+            request=request,
+            timeout_seconds=timeout_seconds,
+        )
+        completed = await job_store.wait_for_completed_result(
+            job["jobId"],
+            timeout_seconds=timeout_seconds,
+        )
+    except LocalUiBridgeDisabled as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+    except LocalUiBridgeTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "source": "local_ui_bridge",
+                "message": str(exc),
+                "jobId": (job or {}).get("jobId"),
+                "fixtureSlugs": fixture_slugs[:max_games],
+            },
+        ) from exc
+    except LocalUiBridgeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+
+    if completed.get("status") != "completed":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "source": "local_ui_bridge",
+                "message": completed.get("error") or "Local helper job did not complete.",
+                "status": completed.get("status"),
+                "jobId": completed.get("jobId"),
+            },
+        )
+
+    board_batch = completed.get("result") or {}
+    pool = await build_sgm_candidate_pool_from_boards(
+        list(board_batch.get("boards") or []),
+        engine,
+        date=slate_date.isoformat() if slate_date else None,
+        matchups=matchups,
+        markets=payload.get("markets") or payload.get("market"),
+        side=str(payload.get("side") or "any"),
+        mode=str(payload.get("mode") or "best_available"),
+        legs_per_game=_optional_int_body(payload, "legsPerGame", "legs_per_game"),
+        max_total_legs=_optional_int_body(payload, "maxTotalLegs", "max_total_legs"),
+        max_candidates_per_game=_clean_int_from_body(
+            payload,
+            "maxCandidatesPerGame",
+            8,
+            minimum=1,
+            maximum=16,
+        ),
+        max_total_candidates=_clean_int_from_body(
+            payload,
+            "maxTotalCandidates",
+            75,
+            minimum=1,
+            maximum=300,
+        ),
+        quality_floor=_optional_float_body(payload, "qualityFloor", "quality_floor"),
+        history_limit=_clean_int_from_body(payload, "historyLimit", 15, minimum=1, maximum=15),
+        target_odds_min=_optional_float_body(payload, "targetOddsMin", "target_odds_min"),
+        target_odds_max=_optional_float_body(payload, "targetOddsMax", "target_odds_max"),
+        min_individual_odds=_optional_float_body(payload, "minIndividualOdds", "min_individual_odds"),
+        max_individual_odds=_optional_float_body(payload, "maxIndividualOdds", "max_individual_odds"),
+        max_legs_per_game_group=_clean_int_from_body(
+            payload,
+            "maxLegsPerGameGroup",
+            16,
+            minimum=1,
+            maximum=16,
+        ),
+        max_sgm_group_odds=min(
+            _optional_float_body(payload, "maxSgmGroupOdds", "max_sgm_group_odds") or 501.0,
+            501.0,
+        ),
+        max_games=max_games,
+    )
+    pool["bridge"] = _local_ui_bridge_summary(completed)
+    pool["boardBatch"] = {
+        "source": board_batch.get("source"),
+        "fixtureCount": board_batch.get("fixtureCount"),
+        "succeeded": board_batch.get("succeeded"),
+        "failed": board_batch.get("failed"),
+        "errors": board_batch.get("errors") or [],
+    }
+    return pool
+
+
 @app.post("/mlb/stake-ui/review-slip")
 async def mlb_stake_ui_review_slip(
     payload: dict[str, Any] = Body(...),
@@ -1593,6 +1771,23 @@ def _optional_body_text(payload: dict[str, Any], key: str) -> str:
     return str(value).strip()
 
 
+def _string_list_from_body(payload: dict[str, Any], *keys: str) -> list[str]:
+    raw_value = None
+    for key in keys:
+        if key in payload:
+            raw_value = payload.get(key)
+            break
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        values = raw_value.split(",")
+    elif isinstance(raw_value, list):
+        values = raw_value
+    else:
+        values = [raw_value]
+    return [str(value or "").strip() for value in values if str(value or "").strip()]
+
+
 def _date_from_body(payload: dict[str, Any]) -> date | None:
     raw_date = payload.get("date")
     if not raw_date:
@@ -1676,6 +1871,28 @@ def _clean_int_from_body(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"{key} must be an integer") from exc
     return max(minimum, min(value, maximum))
+
+
+def _optional_int_body(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key not in payload or payload.get(key) is None:
+            continue
+        try:
+            return int(payload[key])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"{key} must be an integer") from exc
+    return None
+
+
+def _optional_float_body(payload: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key not in payload or payload.get(key) is None:
+            continue
+        try:
+            return float(payload[key])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"{key} must be a number") from exc
+    return None
 
 
 def _review_slip_selections_from_body(
@@ -2183,6 +2400,42 @@ async def _resolve_stake_fixture_slug(
             "date": schedule.get("date"),
         },
     )
+
+
+async def _stake_ui_fixture_slugs_from_index(
+    *,
+    job_store: SupabaseLocalUiJobStore,
+    timeout_seconds: int,
+    max_games: int,
+) -> list[str]:
+    job: dict[str, Any] | None = None
+    try:
+        job = await job_store.create_job(
+            job_type=STAKE_MLB_GAMES_JOB_TYPE,
+            request={
+                "requestedBy": "custom_gpt",
+                "purpose": "stake_ui_sgm_candidate_pool_game_index",
+                "limit": max_games,
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        completed = await job_store.wait_for_completed_result(
+            job["jobId"],
+            timeout_seconds=timeout_seconds,
+        )
+    except LocalUiBridgeError:
+        return []
+    if completed.get("status") != "completed":
+        return []
+    result = completed.get("result") or {}
+    slugs = []
+    for game in result.get("games") or []:
+        slug = str(game.get("fixtureSlug") or "").strip()
+        if slug and slug not in slugs:
+            slugs.append(slug)
+        if len(slugs) >= max_games:
+            break
+    return slugs
 
 
 def _same_team_set(matchup: str, teams: list[Any]) -> bool:

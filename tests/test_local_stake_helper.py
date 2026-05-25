@@ -100,6 +100,55 @@ def test_process_job_runs_mlb_game_reader(monkeypatch):
     assert store.completed[0][1]["games"][0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
 
 
+def test_process_job_runs_batch_sgm_board_reader(monkeypatch):
+    def fake_read_stake_sgm_boards_batch(*, fixture_slugs: list[str], cdp_url: str, max_fixtures: int):
+        assert cdp_url == "http://127.0.0.1:9222"
+        assert fixture_slugs == [
+            "46575351-new-york-yankees-toronto-blue-jays",
+            "46575562-washington-nationals-new-york-mets",
+        ]
+        assert max_fixtures == 20
+        return {
+            "source": "stake_ui_sgm_board_batch",
+            "fixtureCount": 2,
+            "succeeded": 1,
+            "failed": 1,
+            "boards": [{"fixtureSlug": fixture_slugs[0], "playerProps": []}],
+            "errors": [{"fixtureSlug": fixture_slugs[1], "message": "SGM tab not visible"}],
+        }
+
+    monkeypatch.setattr(
+        local_stake_helper,
+        "read_stake_sgm_boards_batch",
+        fake_read_stake_sgm_boards_batch,
+    )
+    store = FakeJobStore()
+    job = {
+        "jobId": "job-board-batch",
+        "jobType": "stake_ui_sgm_board_batch",
+        "request": {
+            "fixtureSlugs": [
+                "46575351-new-york-yankees-toronto-blue-jays",
+                "46575562-washington-nationals-new-york-mets",
+            ],
+            "maxFixtures": 20,
+        },
+    }
+
+    asyncio.run(
+        local_stake_helper.process_job(
+            store,
+            job,
+            cdp_url="http://127.0.0.1:9222",
+        )
+    )
+
+    assert not store.failed
+    assert store.completed[0][0] == "job-board-batch"
+    assert store.completed[0][1]["source"] == "stake_ui_sgm_board_batch"
+    assert store.completed[0][1]["failed"] == 1
+
+
 def test_process_job_runs_batch_review_builder(monkeypatch):
     def fake_build_stake_sgm_review_slip_batch(
         groups: list[dict],

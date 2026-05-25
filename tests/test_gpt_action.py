@@ -261,6 +261,7 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert path_ids["/mlb/matchup/{matchup}/prop-page"] == "getPropPage"
     assert path_ids["/mlb/matchup/{matchup}/comparison-board"] == "getComparisonBoard"
     assert path_ids["/mlb/build-slip-candidates"] == "buildSlipCandidates"
+    assert path_ids["/mlb/stake-ui/sgm-candidate-pool"] == "buildStakeUiSgmCandidatePool"
     assert path_ids["/mlb/player/{playerId}/context"] == "getPlayerMlbContext"
     assert path_ids["/mlb/prop-context-batch"] == "getPropContextBatch"
     assert path_ids["/mlb/validate-selections"] == "validateSelections"

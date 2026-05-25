@@ -194,6 +194,43 @@ def read_stake_sgm_board(
         )
 
 
+def read_stake_sgm_boards_batch(
+    *,
+    fixture_slugs: list[str],
+    cdp_url: str = DEFAULT_CDP_URL,
+    max_fixtures: int = 20,
+) -> dict[str, Any]:
+    clean_slugs = [
+        str(slug or "").strip()
+        for slug in fixture_slugs
+        if str(slug or "").strip()
+    ][: max(1, min(int(max_fixtures or 20), 20))]
+    boards: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for fixture_slug in clean_slugs:
+        try:
+            boards.append(read_stake_sgm_board(fixture_slug, cdp_url=cdp_url))
+        except Exception as exc:
+            errors.append(
+                {
+                    "fixtureSlug": fixture_slug,
+                    "status": "failed",
+                    "message": str(exc),
+                }
+            )
+
+    return {
+        "source": "stake_ui_sgm_board_batch",
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "fixtureCount": len(clean_slugs),
+        "succeeded": len(boards),
+        "failed": len(errors),
+        "boards": boards,
+        "errors": errors,
+    }
+
+
 def read_stake_mlb_games(
     *,
     cdp_url: str = DEFAULT_CDP_URL,

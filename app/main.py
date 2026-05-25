@@ -2130,6 +2130,8 @@ def _stake_ui_selection_rows(
                     "line": row.get("line"),
                     "odds": odds,
                     "playable": bool(row.get("playable")),
+                    "playabilityMode": row.get("playabilityMode"),
+                    "playabilityWarnings": row.get("playabilityWarnings") or [],
                     "nonPlayableReasons": row.get("nonPlayableReasons") or [],
                     "identifierWarnings": row.get("identifierWarnings") or [],
                     "suspended": bool(row.get("suspended")),

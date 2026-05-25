@@ -1162,6 +1162,7 @@ def normalize_sgm_response(
     visible_market_text: str | None = None,
 ) -> dict[str, Any]:
     slug_fixture = ((response.get("data") or {}).get("slugFixture")) or {}
+    playability_context = _sgm_playability_context(slug_fixture)
     teams = slug_fixture.get("swishGameTeams") or []
 
     team_markets: list[dict[str, Any]] = []
@@ -1180,12 +1181,25 @@ def normalize_sgm_response(
         )
 
         for market in team.get("markets") or []:
-            team_markets.extend(_line_rows(market.get("lines") or [], market, team_name))
+            team_markets.extend(
+                _line_rows(
+                    market.get("lines") or [],
+                    market,
+                    team_name,
+                    playability_context=playability_context,
+                )
+            )
 
         for player in team.get("players") or []:
             for market in player.get("markets") or []:
                 player_props.extend(
-                    _line_rows(market.get("lines") or [], market, team_name, player)
+                    _line_rows(
+                        market.get("lines") or [],
+                        market,
+                        team_name,
+                        player,
+                        playability_context=playability_context,
+                    )
                 )
 
     board = {
@@ -1277,6 +1291,8 @@ def _matched_selection_row(row: dict[str, Any], side: str, row_id: str) -> dict[
         "suspended": bool(row.get("suspended")),
         "customBet": bool(row.get("customBet")),
         "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
+        "playabilityMode": row.get("playabilityMode"),
+        "playabilityWarnings": row.get("playabilityWarnings") or [],
         "playerId": row.get("playerId"),
         "marketId": row.get("marketId"),
         "lineId": row.get("lineId"),
@@ -3000,18 +3016,24 @@ def _line_rows(
     market: dict[str, Any],
     team_name: str | None,
     player: dict[str, Any] | None = None,
+    *,
+    playability_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     stat = market.get("stat") or {}
     rows = []
 
     for line in lines or []:
-        non_playable_reasons = _sgm_non_playable_reasons(stat, line)
-        playable = bool(
-            stat.get("customBet")
-            and stat.get("liveCustomBetAvailable")
-            and not line.get("suspended")
-            and line.get("over") is not None
-            and line.get("under") is not None
+        identifier_warnings = _sgm_identifier_warnings(market, line)
+        (
+            playable,
+            non_playable_reasons,
+            playability_mode,
+            playability_warnings,
+        ) = _sgm_line_playability(
+            stat,
+            line,
+            identifier_warnings,
+            playability_context=playability_context,
         )
 
         row = {
@@ -3028,8 +3050,10 @@ def _line_rows(
             "customBet": bool(stat.get("customBet")),
             "liveCustomBetAvailable": bool(stat.get("liveCustomBetAvailable")),
             "playable": playable,
+            "playabilityMode": playability_mode,
+            "playabilityWarnings": playability_warnings,
             "nonPlayableReasons": non_playable_reasons,
-            "identifierWarnings": _sgm_identifier_warnings(market, line),
+            "identifierWarnings": identifier_warnings,
             "marketId": market.get("id"),
             "lineId": line.get("id"),
             "swishStatId": stat.get("swishStatId"),
@@ -3050,22 +3074,58 @@ def _line_rows(
     return rows
 
 
-def _sgm_non_playable_reasons(
+def _sgm_playability_context(slug_fixture: dict[str, Any]) -> dict[str, Any]:
+    swish_game = slug_fixture.get("swishGame") or {}
+    fixture_status = _text_key(slug_fixture.get("status"))
+    swish_status = _text_key(swish_game.get("status"))
+    live_statuses = {"live", "inprogress", "in play", "inplay"}
+    pregame_statuses = {"pregame", "pre game", "scheduled", "not started", "notstarted"}
+    is_live = fixture_status in live_statuses or swish_status in live_statuses
+    is_pregame = not is_live and (
+        swish_status in pregame_statuses
+        or fixture_status in {"active", "open", "scheduled", "not started", "notstarted"}
+    )
+    return {
+        "fixtureStatus": fixture_status,
+        "swishStatus": swish_status,
+        "isLive": is_live,
+        "isPregame": is_pregame,
+    }
+
+
+def _sgm_line_playability(
     stat: dict[str, Any],
     line: dict[str, Any],
-) -> list[str]:
+    identifier_warnings: list[str],
+    *,
+    playability_context: dict[str, Any] | None = None,
+) -> tuple[bool, list[str], str, list[str]]:
     reasons: list[str] = []
     if not stat.get("customBet"):
         reasons.append("customBet_false")
-    if not stat.get("liveCustomBetAvailable"):
-        reasons.append("liveCustomBetAvailable_false")
     if line.get("suspended"):
         reasons.append("suspended")
     if line.get("over") is None:
         reasons.append("missing_over_odds")
     if line.get("under") is None:
         reasons.append("missing_under_odds")
-    return reasons
+    if not reasons and identifier_warnings:
+        reasons.extend(identifier_warnings)
+
+    if reasons:
+        return False, reasons, "blocked", []
+
+    live_custom_bet_available = bool(stat.get("liveCustomBetAvailable"))
+    context = playability_context or {}
+    if live_custom_bet_available:
+        if context.get("isLive"):
+            return True, [], "live_custom_bet", []
+        return True, [], "custom_bet", []
+
+    if context.get("isPregame"):
+        return True, [], "pregame_custom_bet", ["liveCustomBetAvailable_false"]
+
+    return False, ["liveCustomBetAvailable_false"], "blocked", []
 
 
 def _sgm_identifier_warnings(
@@ -3163,6 +3223,8 @@ def _sgm_market_diagnostic_row(fixture_slug: str, row: dict[str, Any]) -> dict[s
         "market": row.get("market"),
         "line": row.get("line"),
         "playable": bool(row.get("playable")),
+        "playabilityMode": row.get("playabilityMode"),
+        "playabilityWarnings": row.get("playabilityWarnings") or [],
         "nonPlayableReasons": row.get("nonPlayableReasons") or [],
         "identifierWarnings": row.get("identifierWarnings") or [],
         "lineId": row.get("lineId"),

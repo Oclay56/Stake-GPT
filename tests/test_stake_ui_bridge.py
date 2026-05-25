@@ -1061,6 +1061,131 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
     assert board["playerProps"][1]["nonPlayableReasons"] == ["suspended"]
 
 
+def test_normalize_sgm_response_allows_pregame_custom_bet_rows_without_live_flag():
+    raw = {
+        "data": {
+            "slugFixture": {
+                "id": "fixture-1",
+                "status": "active",
+                "provider": "betradar",
+                "swishGame": {"id": "game-1", "status": "PreGame"},
+                "swishGameTeams": [
+                    {
+                        "id": "team-1",
+                        "name": "Pittsburgh Pirates",
+                        "markets": [],
+                        "players": [
+                            {
+                                "id": "player-1",
+                                "name": "Nick Gonzales",
+                                "position": "2B",
+                                "markets": [
+                                    {
+                                        "id": "market-singles",
+                                        "stat": {
+                                            "id": "stat-singles",
+                                            "type": "player",
+                                            "swishStatId": 302,
+                                            "name": "Singles",
+                                            "customBet": True,
+                                            "liveCustomBetAvailable": False,
+                                        },
+                                        "lines": [
+                                            {
+                                                "id": "line-singles",
+                                                "line": 0.5,
+                                                "over": 2.65,
+                                                "under": 1.42,
+                                                "suspended": False,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+
+    board = normalize_sgm_response("fixture-1", raw)
+    row = board["playerProps"][0]
+    diagnostics = {
+        item["market"]: item for item in board["marketDiagnostics"]["playerTargets"]
+    }
+
+    assert row["playable"] is True
+    assert row["liveCustomBetAvailable"] is False
+    assert row["nonPlayableReasons"] == []
+    assert row["playabilityMode"] == "pregame_custom_bet"
+    assert row["playabilityWarnings"] == ["liveCustomBetAvailable_false"]
+    assert diagnostics["singles"]["status"] == "market_parsed_with_row_id"
+    assert diagnostics["singles"]["rowIdCount"] == 2
+    assert diagnostics["singles"]["sampleRows"][0]["rowIds"]["under"].startswith("sgm_")
+
+
+def test_normalize_sgm_response_keeps_live_rows_blocked_without_live_flag():
+    raw = {
+        "data": {
+            "slugFixture": {
+                "id": "fixture-1",
+                "status": "live",
+                "provider": "betradar",
+                "swishGame": {"id": "game-1", "status": "InProgress"},
+                "swishGameTeams": [
+                    {
+                        "id": "team-1",
+                        "name": "Pittsburgh Pirates",
+                        "markets": [],
+                        "players": [
+                            {
+                                "id": "player-1",
+                                "name": "Nick Gonzales",
+                                "position": "2B",
+                                "markets": [
+                                    {
+                                        "id": "market-singles",
+                                        "stat": {
+                                            "id": "stat-singles",
+                                            "type": "player",
+                                            "swishStatId": 302,
+                                            "name": "Singles",
+                                            "customBet": True,
+                                            "liveCustomBetAvailable": False,
+                                        },
+                                        "lines": [
+                                            {
+                                                "id": "line-singles",
+                                                "line": 0.5,
+                                                "over": 2.65,
+                                                "under": 1.42,
+                                                "suspended": False,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+
+    board = normalize_sgm_response("fixture-1", raw)
+    row = board["playerProps"][0]
+    diagnostics = {
+        item["market"]: item for item in board["marketDiagnostics"]["playerTargets"]
+    }
+
+    assert row["playable"] is False
+    assert row["nonPlayableReasons"] == ["liveCustomBetAvailable_false"]
+    assert row["playabilityMode"] == "blocked"
+    assert diagnostics["singles"]["status"] == "market_parsed_not_playable"
+    assert diagnostics["singles"]["rowIdCount"] == 0
+
+
 def test_sgm_board_market_filter_supports_batter_and_steal_aliases():
     board = {
         "fixtureSlug": "fixture-1",

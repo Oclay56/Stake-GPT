@@ -200,6 +200,10 @@ def test_market_aliases_cover_stake_sgm_team_and_translated_labels():
     assert "RBIs" in _market_display_aliases("Team RBIs")
     assert "Failed Attempts" in _market_display_aliases("Strikeouts")
     assert "First Well Deserved Run" in _market_display_aliases("First ER")
+    assert _market_search_text("First HR") == "first home run"
+    assert "First Home Run" in _market_display_aliases("First HR")
+    assert "First H." in _market_display_aliases("First Hit")
+    assert "First Hit" in _market_display_aliases("First H.")
 
 
 def test_market_click_identity_blocks_ambiguous_half_point_hitter_markets():
@@ -211,6 +215,13 @@ def test_market_click_identity_blocks_ambiguous_half_point_hitter_markets():
     hits_identity = _market_click_identity("Hits")
     assert "hits" in hits_identity["aliases"]
     assert "hits allowed" in hits_identity["blockedAliases"]
+
+
+def test_sgm_market_filter_matches_first_hit_and_first_home_run_aliases():
+    assert sgm_browser.sgm_market_filter_matches({"market": "First HR"}, "first home run")
+    assert sgm_browser.sgm_market_filter_matches({"market": "First Home Run"}, "first hr")
+    assert sgm_browser.sgm_market_filter_matches({"market": "First H."}, "first hit")
+    assert sgm_browser.sgm_market_filter_matches({"market": "First Hit"}, "first h.")
 
 
 def test_add_bet_confirmation_requires_sidebar_change_when_existing_slip_present():

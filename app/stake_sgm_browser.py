@@ -2277,6 +2277,13 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
             "earned runs": ["earned runs", "runs achieved", "runs allowed"],
             "failed attempts": ["failed attempts", "strikeouts"],
             "first er": ["first er", "first earned run", "first well deserved run"],
+            "first h": ["first h", "first hit"],
+            "first h.": ["first h", "first hit"],
+            "first hit": ["first h", "first hit"],
+            "first hits": ["first h", "first hit", "first hits"],
+            "first hr": ["first hr", "first home run"],
+            "first-hr": ["first hr", "first home run"],
+            "first home run": ["first hr", "first home run"],
             "first so": ["first so", "first strike out", "first strikeout"],
             "hits allowed": ["hits allowed"],
             "match home runs": ["match home runs", "play home runs", "home runs"],
@@ -2782,7 +2789,15 @@ def sgm_market_filter_matches(row: dict[str, Any], market_filter: Any) -> bool:
         }
         return bool(aliases.intersection(row_values))
 
-    return filter_key in _text_key(row.get("market"))
+    row_aliases = _market_alias_keys(row.get("market"))
+    filter_aliases = _market_alias_keys(market_filter)
+    if row_aliases.intersection(filter_aliases):
+        return True
+    return any(
+        filter_alias and row_alias and filter_alias in row_alias
+        for filter_alias in filter_aliases
+        for row_alias in row_aliases
+    )
 
 
 def _canonical_sgm_player_market_target(value: Any) -> str | None:
@@ -2820,6 +2835,13 @@ def _market_search_text(value: str) -> str:
         "match home runs": "home runs",
         "match singles": "singles",
         "match triples": "triples",
+        "first h": "first hit",
+        "first h.": "first hit",
+        "first hit": "first hit",
+        "first hits": "first hit",
+        "first hr": "first home run",
+        "first-hr": "first home run",
+        "first home run": "first home run",
         "stolen bases": "steals",
         "team hits": "hits",
         "team rbi": "rbi",
@@ -2830,12 +2852,29 @@ def _market_search_text(value: str) -> str:
     return aliases.get(normalized, value)
 
 
+def _market_alias_keys(value: Any) -> set[str]:
+    text = str(value or "")
+    keys = {
+        _text_key(text),
+        _text_key(_market_search_text(text)),
+        *(_text_key(alias) for alias in _market_display_aliases(text)),
+    }
+    return {key for key in keys if key}
+
+
 def _market_display_aliases(value: str) -> list[str]:
     normalized = value.strip().lower()
     aliases = {
         "earned runs": ["Earned Runs", "Runs Achieved", "Runs Allowed"],
         "failed attempts": ["Failed Attempts", "Strikeouts"],
         "first er": ["First ER", "First Earned Run", "First Well Deserved Run"],
+        "first h": ["First H.", "First H", "First Hit"],
+        "first h.": ["First H.", "First H", "First Hit"],
+        "first hit": ["First H.", "First H", "First Hit"],
+        "first hits": ["First H.", "First H", "First Hit", "First Hits"],
+        "first hr": ["First HR", "First Home Run"],
+        "first-hr": ["First HR", "First Home Run"],
+        "first home run": ["First HR", "First Home Run"],
         "first so": ["First SO", "First Strike Out", "First Strikeout"],
         "hits allowed": ["Hits Allowed"],
         "match home runs": ["Play Home Runs", "Match Home Runs", "Home Runs"],

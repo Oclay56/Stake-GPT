@@ -21,6 +21,7 @@ from app.gpt_action import (
     validate_gpt_selections,
 )
 from app.main import app, get_gpt_store, get_mlb_engine, get_stake_client
+from app.slip_builder import build_slip_candidate_response
 from app.storage import GptActionStore
 
 
@@ -794,3 +795,73 @@ def test_slip_candidate_builder_returns_candidate_shape_not_final_picks():
     assert result["bestCleanSlip"]["rawProductOdds"] >= 1
     assert result["bestCleanSlip"]["integrityReport"]["requiresFinalUiQuote"] is True
     assert "recommendations" not in result
+
+
+def test_slip_candidate_builder_caps_legs_at_sixteen():
+    result = build_slip_candidate_response(
+        [
+            {
+                "player": {"name": f"Player {index}", "key": f"player-{index}"},
+                "market": {"key": "hits"},
+                "side": "under",
+                "odds": 1.01,
+                "helperStrength": 90,
+                "decisionProfile": {"finalStatus": "playable"},
+            }
+            for index in range(20)
+        ],
+        target_odds_min=1,
+        target_odds_max=None,
+        min_legs=1,
+        max_legs=25,
+        preferred_markets=[],
+        preferred_side="under",
+        mode="balanced",
+        quality_floor=0,
+        allow_no_pick=True,
+    )
+
+    assert result["target"]["maxLegs"] == 16
+    assert result["guardrails"]["maxLegsPerGroup"] == 16
+    assert result["bestCleanSlip"]["legCount"] <= 16
+
+
+def test_slip_candidate_builder_caps_raw_group_odds_at_501x():
+    result = build_slip_candidate_response(
+        [
+            {
+                "player": {"name": f"Player {index}", "key": f"player-{index}"},
+                "market": {"key": "hits"},
+                "side": "under",
+                "odds": 30,
+                "helperStrength": 90 - index,
+                "decisionProfile": {"finalStatus": "playable"},
+            }
+            for index in range(3)
+        ],
+        target_odds_min=1,
+        target_odds_max=None,
+        min_legs=1,
+        max_legs=16,
+        preferred_markets=[],
+        preferred_side="under",
+        mode="balanced",
+        quality_floor=0,
+        allow_no_pick=True,
+    )
+
+    assert result["guardrails"]["maxGroupOdds"] == 501
+    assert result["bestCleanSlip"]["rawProductOdds"] <= 501
+
+
+def test_openapi_caps_build_slip_candidate_request_limits():
+    schema = build_gpt_action_openapi_schema("https://example.test")
+    request_schema = (
+        schema["paths"]["/mlb/build-slip-candidates"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    )
+    properties = request_schema["properties"]
+
+    assert properties["minLegs"]["maximum"] == 16
+    assert properties["maxLegs"]["maximum"] == 16
+    assert properties["targetOddsMin"]["maximum"] == 501
+    assert properties["targetOddsMax"]["maximum"] == 501

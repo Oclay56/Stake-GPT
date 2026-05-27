@@ -15,6 +15,9 @@ FINAL_STATUS_POINTS = {
     "needs_recheck": -25,
 }
 
+MAX_LEGS_PER_GROUP = 16
+MAX_GROUP_ODDS = 501.0
+
 
 def build_slip_candidate_response(
     rows: list[dict[str, Any]],
@@ -32,6 +35,9 @@ def build_slip_candidate_response(
     preferred_market_keys = {slug_key(market) for market in preferred_markets if slug_key(market)}
     clean_mode = _clean_mode(mode)
     clean_side = preferred_side if preferred_side in {"over", "under"} else "any"
+    max_legs = max(1, min(int(max_legs), MAX_LEGS_PER_GROUP))
+    min_legs = max(1, min(int(min_legs), max_legs))
+    product_odds_cap = min(_float_or_none(target_odds_max) or MAX_GROUP_ODDS, MAX_GROUP_ODDS)
     candidates = [
         _candidate_row(row, preferred_market_keys, clean_side, clean_mode)
         for row in rows
@@ -65,6 +71,7 @@ def build_slip_candidate_response(
         target_odds_max=target_odds_max,
         min_legs=min_legs,
         max_legs=max_legs,
+        product_odds_cap=product_odds_cap,
     )
     build_status = _build_status(
         best_clean,
@@ -92,6 +99,12 @@ def build_slip_candidate_response(
             "qualityFloor": quality_floor,
             "preferredSide": clean_side,
             "preferredMarkets": sorted(preferred_market_keys),
+        },
+        "guardrails": {
+            "maxLegsPerGroup": MAX_LEGS_PER_GROUP,
+            "maxGroupOdds": int(MAX_GROUP_ODDS),
+            "stakeLast5OnlyHardBlock": True,
+            "noForcedWeakPicks": True,
         },
         "buildStatus": build_status,
         "targetReachableCleanly": best_clean["targetReachableCleanly"],
@@ -156,6 +169,7 @@ def _build_greedy_slip(
     target_odds_max: float | None,
     min_legs: int,
     max_legs: int,
+    product_odds_cap: float,
 ) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     used_players: set[str] = set()
@@ -168,6 +182,11 @@ def _build_greedy_slip(
     for candidate in sorted_candidates:
         if len(selected) >= max_legs:
             break
+        candidate_odds = _float_or_none(candidate.get("odds")) or 1.0
+        if selected and _raw_product_odds(selected) * candidate_odds > product_odds_cap:
+            continue
+        if not selected and candidate_odds > product_odds_cap:
+            continue
         player_key = slug_key((candidate.get("player") or {}).get("key") or (candidate.get("player") or {}).get("name"))
         if player_key in used_players:
             continue
@@ -188,6 +207,7 @@ def _build_greedy_slip(
         "integrityReport": {
             "allLinesStakeFeedValidatedOnly": True,
             "requiresFinalUiQuote": True,
+            "maxGroupOdds": int(MAX_GROUP_ODDS),
             "marketConcentration": _concentration(selected, "market"),
             "sideConcentration": _concentration(selected, "side"),
             "riskFlags": _risk_flags(selected),

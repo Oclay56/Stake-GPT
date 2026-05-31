@@ -17,6 +17,7 @@ from app.stake_sgm_browser import (
     _market_click_identity,
     _market_search_text,
     _normalize_mlb_moneyline_cards,
+    _prepare_moneyline_build_selections,
     _preflight_sgm_review_selections,
     _preflight_result_is_buildable,
     _review_add_summary,
@@ -248,6 +249,73 @@ def test_moneyline_row_id_is_stable_and_separate_from_sgm_ids():
     assert first == second
     assert first.startswith("mlb_ml_")
     assert not first.startswith("sgm_")
+
+
+def test_prepare_moneyline_build_selections_validates_identity_and_dedupes():
+    row_id = make_mlb_moneyline_row_id(
+        "123-new-york-yankees-toronto-blue-jays",
+        "New York Yankees",
+    )
+
+    result = _prepare_moneyline_build_selections(
+        [
+            {
+                "rowId": row_id,
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "odds": 1.72,
+            },
+            {
+                "rowId": row_id,
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "odds": 1.74,
+            },
+        ]
+    )
+
+    assert result["status"] == "ready"
+    assert len(result["selections"]) == 1
+    assert result["selections"][0]["rowId"] == row_id
+    assert result["selections"][0]["researchedOdds"] == 1.72
+    assert result["errors"] == []
+
+
+def test_prepare_moneyline_build_selections_blocks_sgm_row_ids():
+    result = _prepare_moneyline_build_selections(
+        [
+            {
+                "rowId": "sgm_abc123",
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "odds": 1.72,
+            }
+        ]
+    )
+
+    assert result["status"] == "blocked_invalid_row_id"
+    assert result["errors"][0]["reason"] == "row_id_must_start_with_mlb_ml"
+
+
+def test_prepare_moneyline_build_selections_blocks_row_id_identity_mismatch():
+    wrong_row_id = make_mlb_moneyline_row_id(
+        "123-new-york-yankees-toronto-blue-jays",
+        "Toronto Blue Jays",
+    )
+
+    result = _prepare_moneyline_build_selections(
+        [
+            {
+                "rowId": wrong_row_id,
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "odds": 1.72,
+            }
+        ]
+    )
+
+    assert result["status"] == "blocked_invalid_row_id"
+    assert result["errors"][0]["reason"] == "row_id_does_not_match_fixture_team"
 
 
 def test_fixture_matchup_from_slug_handles_multi_word_team_names():

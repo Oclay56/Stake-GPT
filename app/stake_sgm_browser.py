@@ -3650,6 +3650,58 @@ def make_mlb_moneyline_row_id(fixture_slug: str, team: str) -> str:
     return f"mlb_ml_{sha1(identity.encode('utf-8')).hexdigest()[:16]}"
 
 
+def _prepare_moneyline_build_selections(selections: list[dict[str, Any]]) -> dict[str, Any]:
+    prepared: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for raw in selections or []:
+        row_id = str((raw or {}).get("rowId") or "").strip()
+        fixture_slug = str((raw or {}).get("fixtureSlug") or "").strip()
+        team = str((raw or {}).get("team") or "").strip()
+        researched_odds = _float_or_none((raw or {}).get("odds"))
+
+        if not row_id or not fixture_slug or not team:
+            errors.append({"selection": raw, "reason": "missing_row_id_fixture_or_team"})
+            continue
+        if not row_id.startswith("mlb_ml_"):
+            errors.append({"selection": raw, "reason": "row_id_must_start_with_mlb_ml"})
+            continue
+        expected_row_id = make_mlb_moneyline_row_id(fixture_slug, team)
+        if row_id != expected_row_id:
+            errors.append({"selection": raw, "reason": "row_id_does_not_match_fixture_team"})
+            continue
+
+        identity = (fixture_slug, _text_key(team), row_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        prepared.append(
+            {
+                "rowId": row_id,
+                "fixtureSlug": fixture_slug,
+                "team": team,
+                "market": MONEYLINE_MARKET_LABEL,
+                "marketKey": MONEYLINE_MARKET_KEY,
+                "researchedOdds": researched_odds,
+            }
+        )
+
+    if errors:
+        return {
+            "status": "blocked_invalid_row_id",
+            "selections": prepared,
+            "errors": errors,
+        }
+    if not prepared:
+        return {
+            "status": "blocked_missing_selection_identity",
+            "selections": [],
+            "errors": [{"reason": "no_valid_moneyline_selections"}],
+        }
+    return {"status": "ready", "selections": prepared, "errors": []}
+
+
 def _moneyline_selections_from_card(
     raw_card: dict[str, Any],
     teams: list[str],

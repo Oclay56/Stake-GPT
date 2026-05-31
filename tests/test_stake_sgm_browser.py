@@ -212,6 +212,63 @@ def test_normalize_mlb_moneyline_cards_returns_pregame_main_winner_rows():
     assert result["games"][0]["selections"][0]["rowId"].startswith("mlb_ml_")
 
 
+def test_normalize_mlb_moneyline_cards_ignores_ambiguous_container_text():
+    cards = [
+        {
+            "href": "https://stake.com/sports/baseball/usa/mlb/123-cincinnati-reds-atlanta-braves",
+            "text": "Cincinnati Reds Atlanta Braves Winner (incl. Extra Innings)",
+            "statusText": "NOT STARTED",
+            "outcomeTexts": [
+                "Cincinnati Reds 2.11 Atlanta Braves 1.74",
+                "Cincinnati Reds 2.11",
+                "Atlanta Braves 1.74",
+            ],
+        }
+    ]
+
+    result = _normalize_mlb_moneyline_cards(cards, limit=50)
+
+    selections = result["games"][0]["selections"]
+    assert selections == [
+        {
+            "team": "Cincinnati Reds",
+            "odds": 2.11,
+            "playable": True,
+            "rowId": make_mlb_moneyline_row_id(
+                "123-cincinnati-reds-atlanta-braves",
+                "Cincinnati Reds",
+            ),
+        },
+        {
+            "team": "Atlanta Braves",
+            "odds": 1.74,
+            "playable": True,
+            "rowId": make_mlb_moneyline_row_id(
+                "123-cincinnati-reds-atlanta-braves",
+                "Atlanta Braves",
+            ),
+        },
+    ]
+
+
+def test_normalize_mlb_moneyline_cards_rejects_ambiguous_only_fallback_text():
+    cards = [
+        {
+            "href": "https://stake.com/sports/baseball/usa/mlb/123-new-york-yankees-toronto-blue-jays",
+            "text": "New York Yankees Toronto Blue Jays Winner (incl. Extra Innings)",
+            "statusText": "NOT STARTED",
+            "outcomeTexts": [
+                "New York Yankees 1.72 Toronto Blue Jays 2.08",
+            ],
+        }
+    ]
+
+    result = _normalize_mlb_moneyline_cards(cards, limit=50)
+
+    assert result["games"] == []
+    assert "moneyline_card_not_normalized" in result["warnings"]
+
+
 def test_normalize_mlb_moneyline_cards_skips_live_cards_with_warning():
     cards = [
         {

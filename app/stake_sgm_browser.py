@@ -3770,7 +3770,10 @@ def _extract_mlb_moneyline_cards(page: Any) -> list[dict[str, Any]]:
               )
                 .filter(visible)
                 .map((el) => (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " "))
-                .filter((value) => value && value.length <= 160 && /\\d+\\.\\d+/.test(value));
+                .filter((value) => {
+                  const odds = value.match(/(?<!\\d)(\\d+\\.\\d+)(?!\\d)/g) || [];
+                  return value && value.length <= 160 && odds.length === 1;
+                });
               return {
                 href,
                 text,
@@ -4028,10 +4031,17 @@ def _click_visible_moneyline_outcome_button(
     page: Any,
     selection: dict[str, Any],
 ) -> dict[str, Any]:
+    fixture_slug = str(selection.get("fixtureSlug") or "").strip()
+    team = str(selection.get("team") or "").strip()
+    other_teams = [
+        item
+        for item in _fixture_matchup_from_slug(fixture_slug).get("teams", [])
+        if _text_key(item) and _text_key(item) != _text_key(team)
+    ]
     try:
         result = page.evaluate(
             """
-            async ({ fixtureSlug, team }) => {
+            async ({ fixtureSlug, team, otherTeams }) => {
               const norm = (value) => String(value || "")
                 .normalize("NFD")
                 .replace(/[\\u0300-\\u036f]/g, "")
@@ -4050,6 +4060,9 @@ def _click_visible_moneyline_outcome_button(
               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
               const marketLabel = "winner incl. extra innings";
               const teamKey = norm(team);
+              const otherTeamKeys = Array.isArray(otherTeams)
+                ? otherTeams.map(norm).filter(Boolean)
+                : [];
               const hrefNeedle = `/sports/baseball/usa/mlb/${fixtureSlug}`;
               const anchors = Array.from(document.querySelectorAll('a[href*="/sports/baseball/usa/mlb/"]'))
                 .filter((anchor) => String(anchor.href || anchor.getAttribute("href") || "").includes(hrefNeedle));
@@ -4086,9 +4099,11 @@ def _click_visible_moneyline_outcome_button(
                     const text = String(el.innerText || el.textContent || "").trim().replace(/\\s+/g, " ");
                     const key = norm(text);
                     const rect = el.getBoundingClientRect();
-                    return { el, text, key, rect };
+                    const odds = text.match(/(?<!\\d)(\\d+\\.\\d+)(?!\\d)/g) || [];
+                    const containsOtherTeam = otherTeamKeys.some((otherKey) => key.includes(otherKey));
+                    return { el, text, key, rect, odds, containsOtherTeam };
                   })
-                  .filter((item) => item.key.includes(teamKey) && /\\d+\\.\\d+/.test(item.text));
+                  .filter((item) => item.key.includes(teamKey) && item.odds.length === 1 && !item.containsOtherTeam);
                 candidates.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
                 if (!candidates.length) continue;
                 const selected = candidates[0];
@@ -4115,8 +4130,9 @@ def _click_visible_moneyline_outcome_button(
             }
             """,
             {
-                "fixtureSlug": str(selection.get("fixtureSlug") or "").strip(),
-                "team": str(selection.get("team") or "").strip(),
+                "fixtureSlug": fixture_slug,
+                "team": team,
+                "otherTeams": other_teams,
             },
         )
         return dict(result or {})
@@ -4137,7 +4153,11 @@ def _moneyline_selections_from_card(
     for team in teams:
         outcome = _find_moneyline_outcome(team, market_outcomes)
         if outcome is None:
-            outcome = _find_moneyline_outcome_text(team, raw_card.get("outcomeTexts") or [])
+            outcome = _find_moneyline_outcome_text(
+                team,
+                raw_card.get("outcomeTexts") or [],
+                teams=teams,
+            )
         if not outcome or outcome.get("disabled") is True:
             continue
         odds = _float_or_none(outcome.get("odds") or outcome.get("oddsText"))
@@ -4177,15 +4197,25 @@ def _find_moneyline_outcome(
 def _find_moneyline_outcome_text(
     team: str,
     values: list[Any],
+    *,
+    teams: list[str] | None = None,
 ) -> dict[str, Any] | None:
     team_key = _text_key(team)
+    other_team_keys = [
+        _text_key(other)
+        for other in teams or []
+        if _text_key(other) and _text_key(other) != team_key
+    ]
     for value in values:
         text = str(value or "")
-        if team_key not in _text_key(text):
+        text_key = _text_key(text)
+        if team_key not in text_key:
             continue
-        match = re.search(r"(?<!\d)(\d+\.\d+)(?!\d)", text)
-        if match:
-            return {"team": team, "oddsText": match.group(1), "disabled": False}
+        if any(other_key in text_key for other_key in other_team_keys):
+            continue
+        matches = re.findall(r"(?<!\d)(\d+\.\d+)(?!\d)", text)
+        if len(matches) == 1:
+            return {"team": team, "oddsText": matches[0], "disabled": False}
     return None
 
 

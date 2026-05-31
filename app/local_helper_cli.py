@@ -18,6 +18,8 @@ APP_DISPLAY_NAME = "Stake-GPT"
 DEFAULT_TEXT_COLOR = "#F4F6F8"
 DEFAULT_CLI_COLOR_SETTINGS = {"textColor": DEFAULT_TEXT_COLOR}
 RESET = "\033[0m"
+SHORT_RULE = "─" * 40
+WIDE_RULE = "─" * 78
 RGB_PALETTE = [
     ("Default White", "#F4F6F8"),
     ("Stake Green", "#00E701"),
@@ -148,42 +150,62 @@ def colorize(text: str, hex_color: str) -> str:
     return f"{rgb_escape(hex_color)}{text}{RESET}"
 
 
+def is_exit_command(command: str) -> bool:
+    return command.strip().lower() in {"0", "6", "exit", "q", "quit"}
+
+
+def _setup_check_label(name: str) -> str:
+    if name == "SUPABASE_URL configured":
+        return "SUPABASE_URL"
+    if name == "SUPABASE_SERVICE_ROLE_KEY configured":
+        return "SERVICE_ROLE_KEY"
+    return name
+
+
+def _setup_check_detail(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "")
+    if name.endswith(" configured"):
+        return "configured" if item.get("ok") else "missing"
+    return str(item.get("detail") or "")
+
+
 def format_main_menu(
     *,
     status: str,
     mode: str,
     browser: str,
     supabase: str,
+    setup_report: dict[str, Any] | None = None,
 ) -> str:
-    return "\n".join(
-        [
-            "Stake-GPT",
-            "------------------------------",
-            "",
-            f"Status: {status}",
-            f"Mode: {mode}",
-            f"Browser: {browser}",
-            f"Supabase: {supabase}",
-            "",
-            "Commands:",
-            "  [1] Review Mode        start board scan",
-            "  [2] Build Slip         build validated slip",
-            "  [3] Setup Check        run setup check",
-            "  [4] Clean Cache        clean cache",
-            "  [5] Color              text color palette",
-            "  [6] Stop               stop current task",
-            "  [0] Exit               close app",
-            "",
-            "stake-gpt >",
-        ]
-    )
+    lines = [
+        "Stake-GPT",
+        SHORT_RULE,
+        f"Status: {status}",
+        f"Mode: {mode}",
+        f"Browser: {browser}",
+        f"Supabase: {supabase}",
+        "",
+        "Commands:",
+        "  review      start board scan",
+        "  build       build validated slip",
+        "  setup       run setup check",
+        "  clean       clean cache",
+        "  stop        stop current task",
+        "  exit        close app",
+    ]
+    if setup_report is not None:
+        lines.extend(["", WIDE_RULE, "", format_setup_screen(setup_report)])
+    lines.extend(["", "stake-gpt >"])
+    return "\n".join(lines)
 
 
 def format_setup_screen(report: dict[str, Any]) -> str:
-    lines = ["System Check", "------------------------------------------------------------"]
+    lines = ["System Check", WIDE_RULE]
     for item in report.get("checks") or []:
         mark = "OK" if item.get("ok") else "MISSING"
-        lines.append(f"[{mark}] {item.get('name')}: {item.get('detail')}")
+        label = _setup_check_label(str(item.get("name") or ""))
+        detail = _setup_check_detail(item)
+        lines.append(f"[{mark}] {label + ':':<20}{detail}")
 
     warnings = list(report.get("warnings") or [])
     if warnings:
@@ -198,6 +220,11 @@ def format_setup_screen(report: dict[str, Any]) -> str:
 
 
 def enable_virtual_terminal() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
     if os.name != "nt":
         return
     try:
@@ -235,16 +262,17 @@ class StakeGptCli:
 
     def run(self) -> int:
         enable_virtual_terminal()
-        self.output(colorize("Stake-GPT CLI ready.\n", self.text_color))
         while True:
             self.drain_output()
+            setup_report = check_local_helper_setup(self.root_dir)
             command = self.input(colorize(format_main_menu(
                 status=self.status,
                 mode=self.mode,
                 browser=self.browser,
                 supabase=self.supabase,
+                setup_report=setup_report,
             ), self.text_color) + " ").strip().lower()
-            if command in {"0", "exit", "q", "quit"}:
+            if is_exit_command(command):
                 self.stop_helper()
                 return 0
             self.handle_command(command)
@@ -258,10 +286,10 @@ class StakeGptCli:
             self.run_setup_check()
         elif command in {"4", "clean", "cache", "c"}:
             self.run_cache_cleanup()
-        elif command in {"5", "color", "theme", "t"}:
-            self.run_color_menu()
-        elif command in {"6", "stop"}:
+        elif command in {"5", "stop"}:
             self.stop_helper()
+        elif command in {"color", "theme", "t"}:
+            self.run_color_menu()
         elif command:
             self.output(colorize(f"Unknown command: {command}\n", self.text_color))
 

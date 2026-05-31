@@ -14,6 +14,7 @@ from app.local_helper_cli import (
     color_preset_path,
     format_main_menu,
     format_setup_screen,
+    is_exit_command,
     list_cli_color_presets,
     load_cli_color_preset,
     load_cli_color_settings,
@@ -98,23 +99,54 @@ def test_cli_color_presets_are_listed_without_json_extension(tmp_path):
     assert list_cli_color_presets(tmp_path) == ["Green", "White"]
 
 
-def test_main_menu_uses_numbered_commands_and_status_lines():
+def test_main_menu_uses_clean_commands_and_status_lines():
+    setup_report = {
+        "ok": True,
+        "checks": [
+            {
+                "name": "Python venv",
+                "ok": True,
+                "detail": str(ROOT_DIR / ".venv" / "Scripts" / "python.exe"),
+            },
+            {"name": ".env file", "ok": True, "detail": str(ROOT_DIR / ".env")},
+            {"name": "SUPABASE_URL configured", "ok": True, "detail": "SUPABASE_URL"},
+            {
+                "name": "SUPABASE_SERVICE_ROLE_KEY configured",
+                "ok": True,
+                "detail": "SUPABASE_SERVICE_ROLE_KEY",
+            },
+            {
+                "name": "Chrome executable",
+                "ok": True,
+                "detail": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            },
+        ],
+        "warnings": [],
+    }
+
     menu = format_main_menu(
         status="idle",
         mode="review-safe",
         browser="ready",
         supabase="connected",
+        setup_report=setup_report,
     )
 
-    assert "Stake-GPT" in menu
+    assert "Stake-GPT\n" in menu
+    assert "────────────────────────────────────────" in menu
     assert "Status: idle" in menu
-    assert "[1] Review Mode" in menu
-    assert "[2] Build Slip" in menu
-    assert "[3] Setup Check" in menu
-    assert "[4] Clean Cache" in menu
-    assert "[5] Color" in menu
-    assert "[6] Stop" in menu
-    assert "[0] Exit" in menu
+    assert "  review      start board scan" in menu
+    assert "  build       build validated slip" in menu
+    assert "  setup       run setup check" in menu
+    assert "  clean       clean cache" in menu
+    assert "  stop        stop current task" in menu
+    assert "  exit        close app" in menu
+    assert "[1]" not in menu
+    assert "[0]" not in menu
+    assert "System Check" in menu
+    assert "[OK] Python venv:        " in menu
+    assert "[OK] SUPABASE_URL:       configured" in menu
+    assert "[OK] SERVICE_ROLE_KEY:   configured" in menu
     assert menu.rstrip().endswith("stake-gpt >")
 
 
@@ -135,10 +167,58 @@ def test_setup_screen_formats_command_style_check():
     )
 
     assert screen.startswith("System Check")
-    assert "[OK] Python venv:" in screen
+    assert "──────────────────────────────────────────────────────────────────────────────" in screen
+    assert "[OK] Python venv:        " in screen
     assert "Warnings:" in screen
     assert "[!] AZP_SUPABASE_AUTO_CLEANUP_MINUTES is not set; defaulting to 60." in screen
     assert screen.endswith("Ready.")
+
+
+def test_numeric_command_aliases_follow_visible_menu_order(monkeypatch):
+    cli = StakeGptCli(root_dir=Path("C:/fake/AZP"))
+    calls: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(cli, "start_helper", lambda mode: calls.append(("start", mode)))
+    monkeypatch.setattr(cli, "run_setup_check", lambda: calls.append(("setup", None)))
+    monkeypatch.setattr(cli, "run_cache_cleanup", lambda: calls.append(("clean", None)))
+    monkeypatch.setattr(cli, "run_color_menu", lambda: calls.append(("color", None)))
+    monkeypatch.setattr(cli, "stop_helper", lambda: calls.append(("stop", None)))
+
+    for command in ("1", "2", "3", "4", "5", "color"):
+        cli.handle_command(command)
+
+    assert calls == [
+        ("start", "review"),
+        ("start", "build"),
+        ("setup", None),
+        ("clean", None),
+        ("stop", None),
+        ("color", None),
+    ]
+
+
+def test_exit_command_accepts_visible_menu_number():
+    assert is_exit_command("6")
+    assert is_exit_command("exit")
+    assert not is_exit_command("5")
+
+
+def test_cli_run_starts_directly_on_main_screen(monkeypatch):
+    outputs: list[str] = []
+
+    monkeypatch.setattr(
+        "app.local_helper_cli.check_local_helper_setup",
+        lambda root_dir: {"ok": True, "checks": [], "warnings": []},
+    )
+    cli = StakeGptCli(
+        root_dir=Path("C:/fake/AZP"),
+        input_func=lambda prompt: outputs.append(prompt) or "6",
+        output_func=lambda text: outputs.append(text),
+    )
+
+    assert cli.run() == 0
+    assert "Stake-GPT CLI ready." not in "".join(outputs)
+    assert "Stake-GPT" in outputs[0]
 
 
 def test_cli_color_menu_has_back_option():

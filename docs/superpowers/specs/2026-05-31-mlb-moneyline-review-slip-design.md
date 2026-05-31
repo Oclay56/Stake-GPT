@@ -410,4 +410,3 @@ After implementation:
 3. Re-import the Custom GPT OpenAPI schema because one action is added.
 4. Replace the Custom GPT knowledge instructions with the updated markdown file.
 5. Test with a small two-team moneyline review slip before attempting a larger slate.
-

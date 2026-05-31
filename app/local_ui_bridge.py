@@ -13,6 +13,7 @@ STAKE_SGM_BOARD_JOB_TYPE = "stake_ui_sgm_board"
 STAKE_SGM_BOARD_BATCH_JOB_TYPE = "stake_ui_sgm_board_batch"
 STAKE_SGM_BUILD_SLIP_JOB_TYPE = "stake_ui_sgm_build_slip"
 STAKE_MLB_GAMES_JOB_TYPE = "stake_ui_mlb_games"
+STAKE_MLB_MONEYLINES_JOB_TYPE = "stake_ui_mlb_moneylines"
 STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE = "stake_ui_sgm_build_slip_batch"
 STAKE_UI_STATE_JOB_TYPE = "stake_ui_state"
 STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE = "stake_ui_sgm_clear_selections"
@@ -127,12 +128,13 @@ class SupabaseLocalUiJobStore:
         self,
         *,
         job_type: str,
-        fixture_slug: str,
+        fixture_slug: str = "",
+        cache_key: str = "",
         max_age_seconds: int,
         limit: int = 20,
     ) -> dict[str, Any] | None:
         self._require_enabled()
-        if max_age_seconds <= 0 or not fixture_slug:
+        if max_age_seconds <= 0 or not (fixture_slug or cache_key):
             return None
 
         rows = await self._request(
@@ -149,7 +151,9 @@ class SupabaseLocalUiJobStore:
         now = datetime.now(timezone.utc)
         for row in rows or []:
             request = row.get("request_json") or {}
-            if str(request.get("fixtureSlug") or "") != fixture_slug:
+            if fixture_slug and str(request.get("fixtureSlug") or "") != fixture_slug:
+                continue
+            if cache_key and str(request.get("cacheKey") or "") != cache_key:
                 continue
 
             updated_at = _parse_utc_datetime(

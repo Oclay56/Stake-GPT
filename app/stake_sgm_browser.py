@@ -12,6 +12,8 @@ from urllib.parse import urljoin, urlparse
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
 CLICK_ODDS_TOLERANCE = 0.006
+MONEYLINE_MARKET_LABEL = "Winner (incl. Extra Innings)"
+MONEYLINE_MARKET_KEY = "winner_including_extra_innings"
 _SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS: dict[str, dict[str, Any]] = {
     "singles": {
@@ -260,6 +262,34 @@ def read_stake_mlb_games(
             "games": games,
             "expansion": expansion,
             "warnings": warnings,
+        }
+
+
+def read_stake_mlb_moneylines(
+    *,
+    cdp_url: str = DEFAULT_CDP_URL,
+    limit: int = 50,
+) -> dict[str, Any]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(cdp_url)
+        if not browser.contexts:
+            raise RuntimeError("No Chrome context found on the debug port.")
+
+        page = _find_or_open_mlb_page(browser.contexts[0])
+        warnings = _check_stake_page_access(page)
+        expansion = _expand_mlb_game_list(page, limit=limit)
+        raw_cards = _extract_mlb_moneyline_cards(page)
+        normalized = _normalize_mlb_moneyline_cards(raw_cards, limit=limit)
+        return {
+            "source": "stake_ui_mlb_moneylines_raw",
+            "capturedAt": datetime.now(timezone.utc).isoformat(),
+            "url": page.url,
+            "returnedGames": len(normalized["games"]),
+            "games": normalized["games"],
+            "expansion": expansion,
+            "warnings": warnings + normalized["warnings"],
         }
 
 
@@ -3496,6 +3526,190 @@ def _extract_mlb_game_links(page: Any, *, limit: int) -> list[dict[str, Any]]:
         if len(games) >= max(limit, 1):
             break
     return games
+
+
+def _extract_mlb_moneyline_cards(page: Any) -> list[dict[str, Any]]:
+    return page.evaluate(
+        """
+        () => {
+          const marketLabel = "winner (incl. extra innings)";
+          const norm = (value) => String(value || "")
+            .toLowerCase()
+            .replace(/\\s+/g, " ")
+            .trim();
+          const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.visibility !== "hidden"
+              && style.display !== "none"
+              && rect.width > 0
+              && rect.height > 0;
+          };
+          const cardFor = (anchor) => {
+            let current = anchor;
+            let fallback = anchor.parentElement;
+            for (let depth = 0; current && depth < 8; depth += 1) {
+              const text = norm(current.innerText || current.textContent || "");
+              if (text.includes(marketLabel)) return current;
+              fallback = current;
+              current = current.parentElement;
+            }
+            return fallback || anchor;
+          };
+          const seen = new Set();
+          return Array.from(document.querySelectorAll('a[href*="/sports/baseball/usa/mlb/"]'))
+            .map((anchor) => {
+              const href = anchor.href || anchor.getAttribute("href") || "";
+              if (!href || seen.has(href)) return null;
+              seen.add(href);
+              const card = cardFor(anchor);
+              const text = (card.innerText || card.textContent || "")
+                .trim()
+                .replace(/\\s+/g, " ");
+              const outcomeTexts = Array.from(
+                card.querySelectorAll("button,[role='button'],a,div")
+              )
+                .filter(visible)
+                .map((el) => (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " "))
+                .filter((value) => value && value.length <= 160 && /\\d+\\.\\d+/.test(value));
+              return {
+                href,
+                text,
+                statusText: text,
+                outcomeTexts: Array.from(new Set(outcomeTexts)),
+              };
+            })
+            .filter(Boolean);
+        }
+        """
+    )
+
+
+def _normalize_mlb_moneyline_cards(
+    raw_cards: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    games = []
+    warnings = []
+    seen = set()
+    for raw_card in raw_cards or []:
+        link = _normalize_mlb_game_link((raw_card or {}).get("href"))
+        if not link or link["fixtureSlug"] in seen:
+            continue
+        if _is_live_mlb_moneyline_card(raw_card):
+            warnings.append("live_fixture_skipped")
+            continue
+
+        selections = _moneyline_selections_from_card(raw_card, link["teams"])
+        if len(selections) != 2:
+            warnings.append("moneyline_card_not_normalized")
+            continue
+
+        seen.add(link["fixtureSlug"])
+        games.append(
+            {
+                **link,
+                "status": "pregame",
+                "statusText": _fixture_status_text_from_card_text(
+                    (raw_card or {}).get("statusText") or (raw_card or {}).get("text")
+                ),
+                "marketLabel": MONEYLINE_MARKET_LABEL,
+                "selections": [
+                    {
+                        **selection,
+                        "rowId": make_mlb_moneyline_row_id(
+                            link["fixtureSlug"],
+                            selection["team"],
+                        ),
+                    }
+                    for selection in selections
+                ],
+                "warnings": [],
+            }
+        )
+        if len(games) >= max(1, int(limit or 1)):
+            break
+    return {
+        "games": games,
+        "warnings": list(dict.fromkeys(warnings)),
+    }
+
+
+def make_mlb_moneyline_row_id(fixture_slug: str, team: str) -> str:
+    identity = "|".join(
+        [
+            str(fixture_slug or "").strip(),
+            MONEYLINE_MARKET_KEY,
+            _text_key(team),
+        ]
+    )
+    return f"mlb_ml_{sha1(identity.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _moneyline_selections_from_card(
+    raw_card: dict[str, Any],
+    teams: list[str],
+) -> list[dict[str, Any]]:
+    market_outcomes = []
+    for market in raw_card.get("markets") or []:
+        if _text_key((market or {}).get("label")) == _text_key(MONEYLINE_MARKET_LABEL):
+            market_outcomes.extend((market or {}).get("outcomes") or [])
+
+    selections = []
+    for team in teams:
+        outcome = _find_moneyline_outcome(team, market_outcomes)
+        if outcome is None:
+            outcome = _find_moneyline_outcome_text(team, raw_card.get("outcomeTexts") or [])
+        if not outcome or outcome.get("disabled") is True:
+            continue
+        odds = _float_or_none(outcome.get("odds") or outcome.get("oddsText"))
+        if odds is None or odds < 1:
+            continue
+        selections.append(
+            {
+                "team": team,
+                "odds": odds,
+                "playable": True,
+            }
+        )
+    return selections
+
+
+def _find_moneyline_outcome(
+    team: str,
+    outcomes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    team_key = _text_key(team)
+    for outcome in outcomes:
+        if _text_key((outcome or {}).get("team")) == team_key:
+            return outcome
+    return None
+
+
+def _find_moneyline_outcome_text(
+    team: str,
+    values: list[Any],
+) -> dict[str, Any] | None:
+    team_key = _text_key(team)
+    for value in values:
+        text = str(value or "")
+        if team_key not in _text_key(text):
+            continue
+        match = re.search(r"(?<!\d)(\d+\.\d+)(?!\d)", text)
+        if match:
+            return {"team": team, "oddsText": match.group(1), "disabled": False}
+    return None
+
+
+def _is_live_mlb_moneyline_card(raw_card: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(raw_card.get("statusText") or ""),
+            str(raw_card.get("text") or ""),
+        ]
+    ).upper()
+    return "LIVE" in text or "IN PLAY" in text
 
 
 def _expand_mlb_game_list(page: Any, *, limit: int) -> dict[str, Any]:

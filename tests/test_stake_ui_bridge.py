@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
+import asyncio
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.local_ui_bridge import LocalUiBridgeTimeout, _row_to_job
+from app.local_ui_bridge import LocalUiBridgeTimeout, SupabaseLocalUiJobStore, _row_to_job
 from app.gpt_action import build_gpt_action_openapi_schema
 from app.main import (
     app,
@@ -34,6 +35,12 @@ class FakeStakeClient:
                 }
             ]
         }
+
+
+class _FixedUtcNow(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 5, 31, 12, 0, 30, tzinfo=timezone.utc)
 
 
 class FakeSlugNameStakeClient:
@@ -629,6 +636,39 @@ def test_local_ui_bridge_row_to_job_clamps_completed_at_before_created_at():
     )
 
     assert job["completedAt"] == job["createdAt"]
+
+
+def test_local_ui_bridge_finds_recent_completed_job_by_cache_key(monkeypatch):
+    async def fake_request(*args, **kwargs):
+        return [
+            {
+                "job_id": "job-moneylines",
+                "job_type": "stake_ui_mlb_moneylines",
+                "status": "completed",
+                "request_json": {"cacheKey": "mlb-moneylines:2026-05-31:50"},
+                "result_json": {"source": "stake_ui_mlb_moneylines_raw"},
+                "created_at": "2026-05-31T12:00:00+00:00",
+                "completed_at": "2026-05-31T12:00:01+00:00",
+                "updated_at": "2026-05-31T12:00:01+00:00",
+            }
+        ]
+
+    monkeypatch.setattr("app.local_ui_bridge.datetime", _FixedUtcNow)
+    store = SupabaseLocalUiJobStore(
+        supabase_url="https://example.supabase.co",
+        service_key="secret",
+    )
+    monkeypatch.setattr(store, "_request", fake_request)
+
+    cached = asyncio.run(
+        store.find_recent_completed_job(
+            job_type="stake_ui_mlb_moneylines",
+            cache_key="mlb-moneylines:2026-05-31:50",
+            max_age_seconds=60,
+        )
+    )
+
+    assert cached["jobType"] == "stake_ui_mlb_moneylines"
 
 
 def test_compact_sgm_board_returns_stable_row_ids_for_duplicate_odds():

@@ -16,6 +16,7 @@ from app.stake_sgm_browser import (
     _market_display_aliases,
     _market_click_identity,
     _market_search_text,
+    _normalize_mlb_moneyline_cards,
     _preflight_sgm_review_selections,
     _preflight_result_is_buildable,
     _review_add_summary,
@@ -23,6 +24,7 @@ from app.stake_sgm_browser import (
     _sidebar_remove_confirmed,
     _transactional_selection_plan,
     fixture_url,
+    make_mlb_moneyline_row_id,
 )
 
 
@@ -179,6 +181,57 @@ def test_normalize_mlb_game_link_accepts_localized_stake_urls():
 def test_normalize_mlb_game_link_rejects_non_fixture_links():
     assert _normalize_mlb_game_link("https://stake.com/sports/baseball/usa/mlb") is None
     assert _normalize_mlb_game_link("https://stake.com/sports/football/usa/nfl/123-test") is None
+
+
+def test_normalize_mlb_moneyline_cards_returns_pregame_main_winner_rows():
+    cards = [
+        {
+            "href": "https://stake.com/sports/baseball/usa/mlb/123-new-york-yankees-toronto-blue-jays",
+            "text": "New York Yankees Toronto Blue Jays Winner (incl. Extra Innings)",
+            "statusText": "NOT STARTED",
+            "markets": [
+                {
+                    "label": "Winner (incl. Extra Innings)",
+                    "outcomes": [
+                        {"team": "New York Yankees", "oddsText": "1.72", "disabled": False},
+                        {"team": "Toronto Blue Jays", "oddsText": "2.08", "disabled": False},
+                    ],
+                }
+            ],
+        }
+    ]
+
+    result = _normalize_mlb_moneyline_cards(cards, limit=50)
+
+    assert result["games"][0]["marketLabel"] == "Winner (incl. Extra Innings)"
+    assert result["games"][0]["status"] == "pregame"
+    assert result["games"][0]["selections"][0]["odds"] == 1.72
+    assert result["games"][0]["selections"][0]["rowId"].startswith("mlb_ml_")
+
+
+def test_normalize_mlb_moneyline_cards_skips_live_cards_with_warning():
+    cards = [
+        {
+            "href": "https://stake.com/sports/baseball/usa/mlb/123-new-york-yankees-toronto-blue-jays",
+            "text": "LIVE New York Yankees Toronto Blue Jays Winner (incl. Extra Innings)",
+            "statusText": "LIVE",
+            "markets": [],
+        }
+    ]
+
+    result = _normalize_mlb_moneyline_cards(cards, limit=50)
+
+    assert result["games"] == []
+    assert "live_fixture_skipped" in result["warnings"]
+
+
+def test_moneyline_row_id_is_stable_and_separate_from_sgm_ids():
+    first = make_mlb_moneyline_row_id("123-yankees-blue-jays", "New York Yankees")
+    second = make_mlb_moneyline_row_id("123-yankees-blue-jays", "New York Yankees")
+
+    assert first == second
+    assert first.startswith("mlb_ml_")
+    assert not first.startswith("sgm_")
 
 
 def test_fixture_matchup_from_slug_handles_multi_word_team_names():

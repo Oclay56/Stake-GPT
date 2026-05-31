@@ -100,6 +100,43 @@ def test_process_job_runs_mlb_game_reader(monkeypatch):
     assert store.completed[0][1]["games"][0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
 
 
+def test_process_job_runs_mlb_moneyline_reader(monkeypatch):
+    def fake_read_stake_mlb_moneylines(*, cdp_url: str, limit: int):
+        assert cdp_url == "http://127.0.0.1:9222"
+        assert limit == 40
+        return {
+            "source": "stake_ui_mlb_moneylines_raw",
+            "games": [{"fixtureSlug": "123-yankees-blue-jays"}],
+        }
+
+    monkeypatch.setattr(
+        local_stake_helper,
+        "read_stake_mlb_moneylines",
+        fake_read_stake_mlb_moneylines,
+    )
+    store = FakeJobStore()
+    job = {
+        "jobId": "job-moneylines",
+        "jobType": "stake_ui_mlb_moneylines",
+        "request": {"limit": 40},
+    }
+
+    asyncio.run(
+        local_stake_helper.process_job(
+            store,
+            job,
+            cdp_url="http://127.0.0.1:9222",
+        )
+    )
+
+    assert not store.failed
+    assert store.completed[0][1]["source"] == "stake_ui_mlb_moneylines_raw"
+
+
+def test_review_mode_claims_read_only_mlb_moneyline_jobs():
+    assert "stake_ui_mlb_moneylines" in local_stake_helper._job_types_for_mode("review")
+
+
 def test_process_job_runs_batch_sgm_board_reader(monkeypatch):
     def fake_read_stake_sgm_boards_batch(*, fixture_slugs: list[str], cdp_url: str, max_fixtures: int):
         assert cdp_url == "http://127.0.0.1:9222"

@@ -225,6 +225,22 @@ def test_normalize_mlb_moneyline_cards_skips_live_cards_with_warning():
     assert "live_fixture_skipped" in result["warnings"]
 
 
+def test_normalize_mlb_moneyline_cards_requires_main_winner_label():
+    cards = [
+        {
+            "href": "https://stake.com/sports/baseball/usa/mlb/123-new-york-yankees-toronto-blue-jays",
+            "text": "New York Yankees Toronto Blue Jays First 5 Innings Winner",
+            "statusText": "NOT STARTED",
+            "outcomeTexts": ["New York Yankees 1.72", "Toronto Blue Jays 2.08"],
+        }
+    ]
+
+    result = _normalize_mlb_moneyline_cards(cards, limit=50)
+
+    assert result["games"] == []
+    assert "moneyline_card_not_normalized" in result["warnings"]
+
+
 def test_moneyline_row_id_is_stable_and_separate_from_sgm_ids():
     first = make_mlb_moneyline_row_id("123-yankees-blue-jays", "New York Yankees")
     second = make_mlb_moneyline_row_id("123-yankees-blue-jays", "New York Yankees")

@@ -3600,6 +3600,9 @@ def _normalize_mlb_moneyline_cards(
         if _is_live_mlb_moneyline_card(raw_card):
             warnings.append("live_fixture_skipped")
             continue
+        if not _has_main_winner_market(raw_card):
+            warnings.append("moneyline_card_not_normalized")
+            continue
 
         selections = _moneyline_selections_from_card(raw_card, link["teams"])
         if len(selections) != 2:
@@ -3674,6 +3677,16 @@ def _moneyline_selections_from_card(
             }
         )
     return selections
+
+
+def _has_main_winner_market(raw_card: dict[str, Any]) -> bool:
+    expected = _text_key(MONEYLINE_MARKET_LABEL)
+    if expected in _text_key(raw_card.get("text")):
+        return True
+    return any(
+        _text_key((market or {}).get("label")) == expected
+        for market in raw_card.get("markets") or []
+    )
 
 
 def _find_moneyline_outcome(

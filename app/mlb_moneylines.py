@@ -145,6 +145,8 @@ def _recent_results_by_team(
 ) -> dict[int, list[dict[str, Any]]]:
     result: dict[int, list[dict[str, Any]]] = {}
     for game in games:
+        if not _is_completed_game(game):
+            continue
         for side, opponent_side in (("awayTeam", "homeTeam"), ("homeTeam", "awayTeam")):
             team_result = _team_result_for_game(
                 game,
@@ -157,6 +159,11 @@ def _recent_results_by_team(
     for rows in result.values():
         rows.sort(key=lambda row: str(row.get("date") or ""), reverse=True)
     return result
+
+
+def _is_completed_game(game: dict[str, Any]) -> bool:
+    status = str(game.get("status") or "").strip().lower()
+    return status == "final" or status.startswith("final:")
 
 
 def _team_result_for_game(

@@ -185,6 +185,48 @@ def test_enrich_mlb_moneyline_board_keeps_visible_row_with_partial_warning():
     assert "partial_recent_sample" in selection["warnings"]
 
 
+def test_enrich_mlb_moneyline_board_excludes_non_final_scored_games():
+    class LiveScoredGameEngine(FakeMoneylineMLBEngine):
+        async def get_schedule_range(self, start_date: str, end_date: str):
+            result = await super().get_schedule_range(start_date, end_date)
+            result["games"].append(
+                {
+                    "gamePk": 999999,
+                    "gameDate": "2026-05-31T16:00:00Z",
+                    "status": "In Progress",
+                    "awayTeam": {
+                        "mlbId": 147,
+                        "name": "New York Yankees",
+                        "key": "new-york-yankees",
+                        "score": 99,
+                        "isWinner": True,
+                        "probablePitcher": None,
+                    },
+                    "homeTeam": {
+                        "mlbId": 141,
+                        "name": "Toronto Blue Jays",
+                        "key": "toronto-blue-jays",
+                        "score": 0,
+                        "isWinner": False,
+                        "probablePitcher": None,
+                    },
+                }
+            )
+            return result
+
+    result = asyncio.run(
+        enrich_stake_ui_moneylines(
+            _raw_board(),
+            LiveScoredGameEngine(),
+            slate_date=SLATE_DATE,
+            fixture_slugs=["123-new-york-yankees-toronto-blue-jays"],
+        )
+    )
+
+    yankees = result["games"][0]["selections"][0]["teamContext"]
+    assert all(row["gamePk"] != 999999 for row in yankees["last15"]["results"])
+
+
 def test_enrich_mlb_moneyline_board_warns_when_team_identity_is_unmatched():
     board = _raw_board()
     board["games"][0]["selections"][0]["team"] = "Unknown Expansion Team"

@@ -437,9 +437,11 @@ def remove_stake_sidebar_group(
     cdp_url: str = DEFAULT_CDP_URL,
     fixture_slug: str | None = None,
     matchup: str | None = None,
+    row_id: str | None = None,
+    team: str | None = None,
 ) -> dict[str, Any]:
-    if not fixture_slug and not matchup:
-        raise RuntimeError("fixtureSlug or matchup is required to remove a sidebar group.")
+    if not fixture_slug and not matchup and not row_id:
+        raise RuntimeError("fixtureSlug, matchup, or rowId is required to remove a sidebar item.")
 
     from playwright.sync_api import sync_playwright
 
@@ -450,7 +452,12 @@ def remove_stake_sidebar_group(
 
         page = _diagnostic_page(browser.contexts[0], fixture_slug=fixture_slug)
         state_before = _read_stake_ui_state_from_page(page)
-        target = _sidebar_group_target(fixture_slug=fixture_slug, matchup=matchup)
+        target = _sidebar_group_target(
+            fixture_slug=fixture_slug,
+            matchup=matchup,
+            row_id=row_id,
+            team=team,
+        )
         remove_result = _remove_sidebar_group_from_page(page, target)
         state_after = _read_stake_ui_state_from_page(page)
         removed = _sidebar_remove_confirmed(

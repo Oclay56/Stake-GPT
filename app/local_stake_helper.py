@@ -12,6 +12,7 @@ from typing import Any
 from .local_ui_bridge import (
     STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
+    STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
     STAKE_MLB_MONEYLINES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
     STAKE_SGM_BOARD_BATCH_JOB_TYPE,
@@ -24,6 +25,7 @@ from .local_ui_bridge import (
 )
 from .stake_sgm_browser import (
     DEFAULT_CDP_URL,
+    build_stake_mlb_moneyline_review_slip,
     build_stake_sgm_review_slip_batch,
     build_stake_sgm_review_slip,
     clear_stake_sidebar,
@@ -119,6 +121,7 @@ async def process_job(
     fixture_slug = str(request.get("fixtureSlug") or "").strip()
     fixture_optional_types = {
         STAKE_MLB_GAMES_JOB_TYPE,
+        STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
         STAKE_MLB_MONEYLINES_JOB_TYPE,
         STAKE_SGM_BOARD_BATCH_JOB_TYPE,
         STAKE_SGM_BUILD_SLIP_BATCH_JOB_TYPE,
@@ -147,6 +150,13 @@ async def process_job(
                 cdp_url=cdp_url,
                 limit=int(request.get("limit") or 50),
             )
+        elif job_type == STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE:
+            result = await asyncio.to_thread(
+                build_stake_mlb_moneyline_review_slip,
+                list(request.get("selections") or []),
+                execution_timeout_seconds=request.get("localExecutionTimeoutSeconds"),
+                cdp_url=cdp_url,
+            )
         elif job_type == STAKE_SGM_BOARD_BATCH_JOB_TYPE:
             result = await asyncio.to_thread(
                 read_stake_sgm_boards_batch,
@@ -172,6 +182,8 @@ async def process_job(
                 cdp_url=cdp_url,
                 fixture_slug=fixture_slug or None,
                 matchup=str(request.get("matchup") or "").strip() or None,
+                row_id=str(request.get("rowId") or "").strip() or None,
+                team=str(request.get("team") or "").strip() or None,
             )
         elif job_type == STAKE_CLEAR_SIDEBAR_JOB_TYPE:
             result = await asyncio.to_thread(
@@ -356,6 +368,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
         return [
             STAKE_MLB_GAMES_JOB_TYPE,
             STAKE_MLB_MONEYLINES_JOB_TYPE,
+            STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
             STAKE_UI_STATE_JOB_TYPE,
             STAKE_SGM_BOARD_JOB_TYPE,
             STAKE_SGM_BOARD_BATCH_JOB_TYPE,
@@ -369,6 +382,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
         return [
             STAKE_MLB_GAMES_JOB_TYPE,
             STAKE_MLB_MONEYLINES_JOB_TYPE,
+            STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
             STAKE_UI_STATE_JOB_TYPE,
             STAKE_SGM_BOARD_JOB_TYPE,
             STAKE_SGM_BOARD_BATCH_JOB_TYPE,
@@ -381,6 +395,7 @@ def _job_types_for_mode(mode: str) -> list[str]:
     return [
         STAKE_MLB_GAMES_JOB_TYPE,
         STAKE_MLB_MONEYLINES_JOB_TYPE,
+        STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
         STAKE_UI_STATE_JOB_TYPE,
         STAKE_SGM_BOARD_JOB_TYPE,
         STAKE_SGM_BOARD_BATCH_JOB_TYPE,
@@ -392,6 +407,8 @@ def _job_label(job_type: str) -> str:
         return "Reading Stake MLB games"
     if job_type == STAKE_MLB_MONEYLINES_JOB_TYPE:
         return "Reading Stake MLB moneylines"
+    if job_type == STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE:
+        return "Building Stake MLB moneyline review slip"
     if job_type == STAKE_UI_STATE_JOB_TYPE:
         return "Reading Stake UI state"
     if job_type == STAKE_SGM_BOARD_BATCH_JOB_TYPE:

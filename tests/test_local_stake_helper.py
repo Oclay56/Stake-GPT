@@ -137,6 +137,67 @@ def test_review_mode_claims_read_only_mlb_moneyline_jobs():
     assert "stake_ui_mlb_moneylines" in local_stake_helper._job_types_for_mode("review")
 
 
+def test_process_job_runs_mlb_moneyline_review_slip_builder(monkeypatch):
+    def fake_build_stake_mlb_moneyline_review_slip(
+        selections: list[dict[str, object]],
+        *,
+        execution_timeout_seconds,
+        cdp_url: str,
+    ):
+        assert cdp_url == "http://127.0.0.1:9222"
+        assert execution_timeout_seconds == 55
+        assert selections == [
+            {
+                "rowId": "mlb_ml_yankees",
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "odds": 1.72,
+            }
+        ]
+        return {
+            "source": "stake_ui_mlb_moneyline_review_slip",
+            "status": "built_for_review",
+        }
+
+    monkeypatch.setattr(
+        local_stake_helper,
+        "build_stake_mlb_moneyline_review_slip",
+        fake_build_stake_mlb_moneyline_review_slip,
+    )
+    store = FakeJobStore()
+    job = {
+        "jobId": "job-moneyline-build",
+        "jobType": "stake_ui_mlb_moneyline_build_slip",
+        "request": {
+            "selections": [
+                {
+                    "rowId": "mlb_ml_yankees",
+                    "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                    "team": "New York Yankees",
+                    "odds": 1.72,
+                }
+            ],
+            "localExecutionTimeoutSeconds": 55,
+        },
+    }
+
+    asyncio.run(
+        local_stake_helper.process_job(
+            store,
+            job,
+            cdp_url="http://127.0.0.1:9222",
+        )
+    )
+
+    assert not store.failed
+    assert store.completed[0][0] == "job-moneyline-build"
+    assert store.completed[0][1]["status"] == "built_for_review"
+
+
+def test_review_mode_claims_moneyline_review_slip_jobs():
+    assert "stake_ui_mlb_moneyline_build_slip" in local_stake_helper._job_types_for_mode("review")
+
+
 def test_process_job_runs_batch_sgm_board_reader(monkeypatch):
     def fake_read_stake_sgm_boards_batch(*, fixture_slugs: list[str], cdp_url: str, max_fixtures: int):
         assert cdp_url == "http://127.0.0.1:9222"
@@ -322,10 +383,14 @@ def test_process_job_runs_sidebar_group_remover(monkeypatch):
         cdp_url: str,
         fixture_slug: str | None = None,
         matchup: str | None = None,
+        row_id: str | None = None,
+        team: str | None = None,
     ):
         assert cdp_url == "http://127.0.0.1:9222"
         assert fixture_slug == "46575351-new-york-yankees-toronto-blue-jays"
         assert matchup == "Yankees vs Blue Jays"
+        assert row_id is None
+        assert team is None
         return {
             "source": "stake_ui_remove_sidebar_group",
             "status": "removed",

@@ -17,6 +17,7 @@ from .local_archive import (
 from .local_ui_bridge import (
     STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
+    STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
     STAKE_MLB_MONEYLINES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
     STAKE_SGM_BOARD_BATCH_JOB_TYPE,
@@ -578,6 +579,108 @@ async def mlb_stake_ui_mlb_moneylines(
         "cacheHit": cache_hit,
     }
     return response
+
+
+@app.post("/mlb/stake-ui/moneyline-review-slip")
+async def mlb_stake_ui_moneyline_review_slip(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    _: None = Depends(require_gpt_api_key),
+    job_store: SupabaseLocalUiJobStore = Depends(get_local_ui_job_store),
+) -> Any:
+    if not job_store.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "source": "local_ui_bridge",
+                "message": (
+                    "Supabase local UI bridge is not configured. Set SUPABASE_URL "
+                    "and SUPABASE_SERVICE_ROLE_KEY on Render and the local helper."
+                ),
+            },
+        )
+
+    review_only = _bool_from_body(payload, "reviewOnly", "review_only", True)
+    if not review_only:
+        raise HTTPException(
+            status_code=422,
+            detail="reviewOnly must be true. AZP will not place bets or enter stake amounts.",
+        )
+
+    selections = payload.get("selections")
+    if not isinstance(selections, list) or not selections:
+        raise HTTPException(
+            status_code=422,
+            detail="selections must contain at least one MLB moneyline row.",
+        )
+
+    timeout_seconds = _clean_int_from_body(
+        payload,
+        "timeoutSeconds",
+        90,
+        minimum=1,
+        maximum=180,
+    )
+    request = {
+        "requestedBy": "custom_gpt",
+        "purpose": "stake_ui_mlb_moneyline_review_slip",
+        "reviewOnly": True,
+        "forbiddenActions": ["enter_stake_amount", "click_place_bet"],
+        "selections": selections[:30],
+        "localExecutionTimeoutSeconds": _local_helper_execution_timeout_seconds(
+            timeout_seconds
+        ),
+    }
+
+    job: dict[str, Any] | None = None
+    try:
+        job = await job_store.create_job(
+            job_type=STAKE_MLB_MONEYLINE_BUILD_SLIP_JOB_TYPE,
+            request=request,
+            timeout_seconds=timeout_seconds,
+        )
+        completed = await job_store.wait_for_completed_result(
+            job["jobId"],
+            timeout_seconds=timeout_seconds,
+        )
+    except LocalUiBridgeDisabled as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+    except LocalUiBridgeTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=_local_ui_timeout_detail(
+                message=str(exc),
+                job=job,
+                fixture_slug=None,
+                matchup="MLB moneyline review slip",
+            ),
+        ) from exc
+    except LocalUiBridgeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+
+    if completed.get("status") != "completed":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "source": "local_ui_bridge",
+                "message": completed.get("error") or "Local helper job did not complete.",
+                "status": completed.get("status"),
+                "jobId": completed.get("jobId"),
+            },
+        )
+
+    return {
+        "decisionOwner": "custom_gpt",
+        "source": "stake_ui_mlb_moneyline_review_slip_via_local_helper",
+        "purpose": "stake_ui_review_only_moneyline_builder",
+        "bridge": _local_ui_bridge_summary(completed),
+        "result": completed.get("result") or {},
+    }
 
 
 @app.post("/mlb/stake-ui/state")

@@ -894,6 +894,78 @@ def test_stake_ui_mlb_moneylines_route_returns_enriched_read_only_board():
     assert result["bridge"]["cacheHit"] is False
 
 
+def test_stake_ui_mlb_moneyline_review_slip_route_creates_helper_job():
+    class FakeMoneylineBuildJobStore(FakeCompletedMlbMoneylinesJobStore):
+        async def create_job(self, *, job_type, request, timeout_seconds):
+            self.created_jobs.append(
+                {
+                    "jobId": "job-moneyline-build",
+                    "jobType": job_type,
+                    "request": request,
+                    "timeoutSeconds": timeout_seconds,
+                }
+            )
+            return {"jobId": "job-moneyline-build"}
+
+        async def wait_for_completed_result(self, job_id, *, timeout_seconds):
+            return {
+                "jobId": job_id,
+                "status": "completed",
+                "workerId": "helper-1",
+                "createdAt": "2026-05-31T12:00:00+00:00",
+                "completedAt": "2026-05-31T12:00:01+00:00",
+                "result": {
+                    "source": "stake_ui_mlb_moneyline_review_slip",
+                    "status": "built_for_review",
+                    "reviewOnly": True,
+                    "requestedSelections": 1,
+                    "addedSelections": [
+                        {
+                            "rowId": "mlb_ml_yankees",
+                            "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                            "team": "New York Yankees",
+                        }
+                    ],
+                    "alreadyPresentSelections": [],
+                    "remainingSelections": [],
+                    "safety": {
+                        "enteredStakeAmount": False,
+                        "clickedPlaceBet": False,
+                    },
+                },
+            }
+
+    fake_store = FakeMoneylineBuildJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/moneyline-review-slip",
+            json={
+                "reviewOnly": True,
+                "timeoutSeconds": 2,
+                "selections": [
+                    {
+                        "rowId": "mlb_ml_yankees",
+                        "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                        "team": "New York Yankees",
+                        "odds": 1.72,
+                    }
+                ],
+            },
+        )
+
+    result = response.json()
+    created = fake_store.created_jobs[0]
+
+    assert response.status_code == 200
+    assert created["jobType"] == "stake_ui_mlb_moneyline_build_slip"
+    assert created["request"]["purpose"] == "stake_ui_mlb_moneyline_review_slip"
+    assert created["request"]["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
+    assert result["source"] == "stake_ui_mlb_moneyline_review_slip_via_local_helper"
+    assert result["result"]["status"] == "built_for_review"
+
+
 def test_stake_ui_sgm_candidate_pool_returns_ranked_support_rows():
     fake_store = FakeCompletedCandidatePoolJobStore()
     app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store

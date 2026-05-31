@@ -270,6 +270,18 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert "/gpt/mlb/matchup-picks" not in schema["paths"]
 
 
+def test_openapi_stays_under_custom_gpt_operation_cap():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+    operations = [
+        operation
+        for methods in schema["paths"].values()
+        for operation in methods.values()
+    ]
+
+    assert len(operations) == 29
+    assert len(operations) <= 30
+
+
 def test_gpt_api_key_is_optional_until_env_var_is_set(monkeypatch):
     monkeypatch.delenv("AZP_GPT_API_KEY", raising=False)
     assert require_gpt_api_key_value(None) is None

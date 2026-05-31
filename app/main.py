@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Path, Query, Request
 
@@ -16,6 +17,7 @@ from .local_archive import (
 from .local_ui_bridge import (
     STAKE_CLEAR_SIDEBAR_JOB_TYPE,
     STAKE_MLB_GAMES_JOB_TYPE,
+    STAKE_MLB_MONEYLINES_JOB_TYPE,
     STAKE_REMOVE_SIDEBAR_GROUP_JOB_TYPE,
     STAKE_SGM_BOARD_BATCH_JOB_TYPE,
     STAKE_SGM_CLEAR_SELECTIONS_JOB_TYPE,
@@ -50,6 +52,7 @@ from .gpt_action import (
 )
 from .mlb_data import MLBAPIError, MLBDataEngine, MLBStatsClient, build_mlb_http_client
 from .mlb_schedule import build_mlb_schedule_stake_map, build_mlb_schedule_view
+from .mlb_moneylines import enrich_stake_ui_moneylines
 from .mlb_props import slug_key
 from .sgm_candidate_pool import build_sgm_candidate_pool_from_boards
 from .slate import DEFAULT_TIMEZONE
@@ -451,6 +454,130 @@ async def mlb_stake_ui_mlb_games(
             "games": games,
         },
     }
+
+
+@app.post("/mlb/stake-ui/mlb-moneylines")
+async def mlb_stake_ui_mlb_moneylines(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    _: None = Depends(require_gpt_api_key),
+    job_store: SupabaseLocalUiJobStore = Depends(get_local_ui_job_store),
+    mlb_engine: MLBDataEngine = Depends(get_mlb_engine),
+) -> Any:
+    if not job_store.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "source": "local_ui_bridge",
+                "message": (
+                    "Supabase local UI bridge is not configured. Set SUPABASE_URL "
+                    "and SUPABASE_SERVICE_ROLE_KEY on Render and the local helper."
+                ),
+            },
+        )
+
+    slate_date = _date_from_body(payload) or datetime.now(
+        ZoneInfo(_timezone_name())
+    ).date()
+    timeout_seconds = _clean_int_from_body(
+        payload,
+        "timeoutSeconds",
+        45,
+        minimum=1,
+        maximum=90,
+    )
+    limit = _clean_int_from_body(payload, "limit", 50, minimum=1, maximum=100)
+    max_cache_age_seconds = _clean_int_from_body(
+        payload,
+        "maxCacheAgeSeconds",
+        60,
+        minimum=0,
+        maximum=600,
+    )
+    fixture_slugs = _string_list_from_body(payload, "fixtureSlugs", "fixture_slugs")
+    matchups = _string_list_from_body(payload, "matchups")
+    cache_key = f"mlb-moneylines:{slate_date.isoformat()}:{limit}"
+    job: dict[str, Any] | None = None
+    try:
+        completed = await job_store.find_recent_completed_job(
+            job_type=STAKE_MLB_MONEYLINES_JOB_TYPE,
+            cache_key=cache_key,
+            max_age_seconds=max_cache_age_seconds,
+        )
+        cache_hit = bool(completed and completed.get("result"))
+        if not cache_hit:
+            job = await job_store.create_job(
+                job_type=STAKE_MLB_MONEYLINES_JOB_TYPE,
+                request={
+                    "requestedBy": "custom_gpt",
+                    "purpose": "stake_ui_mlb_moneyline_research",
+                    "limit": limit,
+                    "cacheKey": cache_key,
+                },
+                timeout_seconds=timeout_seconds,
+            )
+            completed = await job_store.wait_for_completed_result(
+                job["jobId"],
+                timeout_seconds=timeout_seconds,
+            )
+    except LocalUiBridgeDisabled as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+    except LocalUiBridgeTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "source": "local_ui_bridge",
+                "message": str(exc),
+                "jobId": (job or {}).get("jobId"),
+            },
+        ) from exc
+    except LocalUiBridgeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"source": "local_ui_bridge", "message": str(exc)},
+        ) from exc
+
+    if not completed or completed.get("status") != "completed":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "source": "local_ui_bridge",
+                "message": (completed or {}).get("error")
+                or "Local helper job did not complete.",
+                "status": (completed or {}).get("status"),
+                "jobId": (completed or {}).get("jobId"),
+            },
+        )
+
+    try:
+        response = await enrich_stake_ui_moneylines(
+            completed.get("result") or {},
+            mlb_engine,
+            slate_date=slate_date,
+            fixture_slugs=fixture_slugs,
+            matchups=matchups,
+            limit=limit,
+        )
+    except MLBAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "source": "mlb_stats_api",
+                "message": exc.message,
+            },
+        ) from exc
+    response["bridge"] = {
+        "jobId": completed.get("jobId"),
+        "status": completed.get("status"),
+        "workerId": completed.get("workerId"),
+        "createdAt": completed.get("createdAt"),
+        "completedAt": completed.get("completedAt"),
+        "updatedAt": completed.get("updatedAt"),
+        "cacheHit": cache_hit,
+    }
+    return response
 
 
 @app.post("/mlb/stake-ui/state")

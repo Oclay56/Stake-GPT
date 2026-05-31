@@ -208,6 +208,115 @@ class FakeCompletedMlbGamesJobStore(FakeCompletedUiJobStore):
         }
 
 
+class FakeCompletedMlbMoneylinesJobStore(FakeCompletedUiJobStore):
+    async def find_recent_completed_job(self, **kwargs):
+        return None
+
+    async def wait_for_completed_result(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: int,
+        poll_interval_seconds: float = 1.0,
+    ):
+        assert job_id == "job-123"
+        return {
+            "jobId": job_id,
+            "status": "completed",
+            "workerId": "azp-local-test",
+            "result": {
+                "source": "stake_ui_mlb_moneylines_raw",
+                "capturedAt": "2026-05-31T12:00:00Z",
+                "url": "https://stake.com/sports/baseball/usa/mlb",
+                "games": [
+                    {
+                        "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                        "matchup": "New York Yankees vs Toronto Blue Jays",
+                        "status": "pregame",
+                        "marketLabel": "Winner (incl. Extra Innings)",
+                        "selections": [
+                            {
+                                "team": "New York Yankees",
+                                "odds": 1.72,
+                                "rowId": "mlb_ml_yankees",
+                            },
+                            {
+                                "team": "Toronto Blue Jays",
+                                "odds": 2.08,
+                                "rowId": "mlb_ml_blue-jays",
+                            },
+                        ],
+                        "warnings": [],
+                    }
+                ],
+                "warnings": [],
+            },
+            "error": None,
+        }
+
+
+class FakeMoneylineMLBEngine:
+    async def get_teams(self, season=None):
+        return {
+            "teams": [
+                {"mlbId": 147, "name": "New York Yankees", "key": "new-york-yankees"},
+                {"mlbId": 141, "name": "Toronto Blue Jays", "key": "toronto-blue-jays"},
+            ]
+        }
+
+    async def get_schedule(self, game_date: str):
+        return {
+            "games": [
+                {
+                    "gamePk": 900001,
+                    "gameDate": f"{game_date}T17:05:00Z",
+                    "status": "Scheduled",
+                    "awayTeam": {
+                        "mlbId": 147,
+                        "name": "New York Yankees",
+                        "key": "new-york-yankees",
+                        "score": None,
+                        "isWinner": None,
+                        "probablePitcher": {"mlbId": 1001, "name": "Yankees Starter"},
+                    },
+                    "homeTeam": {
+                        "mlbId": 141,
+                        "name": "Toronto Blue Jays",
+                        "key": "toronto-blue-jays",
+                        "score": None,
+                        "isWinner": None,
+                        "probablePitcher": {"mlbId": 1002, "name": "Blue Jays Starter"},
+                    },
+                }
+            ]
+        }
+
+    async def get_schedule_range(self, start_date: str, end_date: str):
+        return {"games": []}
+
+    async def get_standings(self, season: int):
+        return {
+            "teamsById": {
+                147: {
+                    "mlbId": 147,
+                    "name": "New York Yankees",
+                    "key": "new-york-yankees",
+                    "wins": 34,
+                    "losses": 22,
+                    "pct": ".607",
+                },
+                141: {
+                    "mlbId": 141,
+                    "name": "Toronto Blue Jays",
+                    "key": "toronto-blue-jays",
+                    "wins": 29,
+                    "losses": 27,
+                    "pct": ".518",
+                },
+            }
+        }
+
+
 class FakeCompletedCandidatePoolJobStore(FakeCompletedUiJobStore):
     async def wait_for_completed_result(
         self,
@@ -569,6 +678,18 @@ def test_gpt_schema_exposes_stake_ui_mlb_games_action():
     assert "MLB" in operation["summary"]
 
 
+def test_gpt_schema_exposes_stake_ui_mlb_moneylines_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    operation = schema["paths"]["/mlb/stake-ui/mlb-moneylines"]["post"]
+    properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+
+    assert operation["operationId"] == "getStakeUiMlbMoneylines"
+    assert "fixtureSlugs" in properties
+    assert "matchups" in properties
+    assert "date" in properties
+
+
 def test_gpt_schema_exposes_stake_ui_sgm_candidate_pool_action():
     schema = build_gpt_action_openapi_schema("https://azp-test.example")
 
@@ -742,6 +863,35 @@ def test_stake_ui_mlb_games_route_creates_job_and_returns_completed_result():
     assert body["uiGames"]["games"][0]["fixtureSlug"] == "46575351-new-york-yankees-toronto-blue-jays"
     assert created_request["purpose"] == "stake_ui_mlb_game_index"
     assert created_request["limit"] == 10
+
+
+def test_stake_ui_mlb_moneylines_route_returns_enriched_read_only_board():
+    fake_store = FakeCompletedMlbMoneylinesJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+    app.dependency_overrides[get_mlb_engine] = lambda: FakeMoneylineMLBEngine()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/mlb-moneylines",
+            json={
+                "date": "2026-05-31",
+                "fixtureSlugs": ["123-new-york-yankees-toronto-blue-jays"],
+                "timeoutSeconds": 2,
+                "limit": 50,
+            },
+        )
+
+    result = response.json()
+    created = fake_store.created_jobs[0]
+
+    assert response.status_code == 200
+    assert created["jobType"] == "stake_ui_mlb_moneylines"
+    assert created["request"]["purpose"] == "stake_ui_mlb_moneyline_research"
+    assert result["source"] == "stake_ui_mlb_moneylines"
+    assert result["decisionOwner"] == "custom_gpt"
+    assert result["builderRole"] == "read_only_moneyline_research_not_final_recommendation"
+    assert result["games"][0]["selections"][0]["teamContext"]["mlbTeamId"] == 147
+    assert result["bridge"]["cacheHit"] is False
 
 
 def test_stake_ui_sgm_candidate_pool_returns_ranked_support_rows():

@@ -23,6 +23,7 @@ Before giving any MLB prop, same-game parlay, or matchup recommendation:
 Rules:
 
 - Never invent a player, market, line, side, or odds number.
+- Do not route moneyline requests through SGM actions. Use `getStakeUiMlbMoneylines` for visible pregame MLB main-winner rows.
 - Never use a generic player suggestion if that player is not on the Stake board.
 - Never change a line. If Stake says `0.5`, do not answer with `1.5`.
 - For SGM requests, never answer from feed-only props when `getStakeUiSgmBoard` is unavailable. Say the UI helper is not ready instead.
@@ -61,6 +62,15 @@ When the user asks for a two-leg same-game parlay:
 8. Validate exact selections when matching feed selections are available; otherwise disclose that SGM UI board was the source of truth.
 9. Save the decision.
 10. Answer with only UI-backed selections.
+
+When the user asks for MLB moneyline or main-winner research:
+
+1. Call `getStakeUiMlbMoneylines`.
+2. Use only returned pregame `Winner (incl. Extra Innings)` rows.
+3. Compare the returned official MLB team context: season record, last 5/10/15 completed results, runs scored and allowed, relevant home/away split, opponent, and probable pitcher.
+4. Make the ranking yourself. The backend does not choose winners.
+5. Disclose partial-data warnings plainly.
+6. Do not claim the helper can click moneylines yet. Version one is read-only.
 
 When the user asks for multiple games in one review slip:
 

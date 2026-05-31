@@ -210,6 +210,20 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     request_body=_stake_ui_mlb_games_request_body(),
                 )
             },
+            "/mlb/stake-ui/mlb-moneylines": {
+                "post": _operation(
+                    "getStakeUiMlbMoneylines",
+                    "Get Stake UI MLB moneyline research",
+                    (
+                        "Reads visible pregame Winner (incl. Extra Innings) rows "
+                        "from the Stake MLB index through the local helper and "
+                        "enriches each team with official MLB context. This is "
+                        "read-only support data, not a recommendation endpoint, "
+                        "and it never clicks Stake selections."
+                    ),
+                    request_body=_stake_ui_mlb_moneylines_request_body(),
+                )
+            },
             "/mlb/stake-ui/state": {
                 "post": _operation(
                     "readStakeUiState",
@@ -2684,6 +2698,46 @@ def _stake_ui_mlb_games_request_body() -> dict[str, Any]:
                             "description": "Maximum visible Stake MLB games to return.",
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 90},
+                    },
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
+def _stake_ui_mlb_moneylines_request_body() -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "format": "date"},
+                        "fixtureSlugs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "matchups": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                        "timeoutSeconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 90,
+                        },
+                        "maxCacheAgeSeconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 600,
+                        },
                     },
                     "additionalProperties": True,
                 }

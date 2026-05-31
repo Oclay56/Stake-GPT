@@ -293,6 +293,98 @@ def read_stake_mlb_moneylines(
         }
 
 
+def build_stake_mlb_moneyline_review_slip(
+    selections: list[dict[str, Any]],
+    *,
+    execution_timeout_seconds: int | float | None = None,
+    cdp_url: str = DEFAULT_CDP_URL,
+) -> dict[str, Any]:
+    prepared = _prepare_moneyline_build_selections(selections)
+    if prepared["status"] != "ready":
+        return _moneyline_build_result(
+            status=prepared["status"],
+            requested=prepared["selections"],
+            added=[],
+            already_present=[],
+            remaining=[
+                {
+                    "selection": error.get("selection"),
+                    "reason": error.get("reason"),
+                }
+                for error in prepared["errors"]
+            ],
+            warnings=[],
+            sidebar={"mode": "not_read"},
+        )
+
+    from playwright.sync_api import sync_playwright
+
+    deadline = _build_execution_deadline(execution_timeout_seconds)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.connect_over_cdp(cdp_url)
+        if not browser.contexts:
+            raise RuntimeError("No Chrome context found on the debug port.")
+
+        page = _find_or_open_mlb_page(browser.contexts[0])
+        _expand_mlb_game_list(page, limit=100)
+        state = _read_stake_ui_state_from_page(page)
+        sidebar = _classify_moneyline_sidebar_state(
+            state.get("slip") or {},
+            requested=prepared["selections"],
+        )
+        if sidebar["mode"] == "blocked_mixed_or_unknown":
+            return _moneyline_build_result(
+                status="blocked_sidebar_not_moneyline_only",
+                requested=prepared["selections"],
+                added=[],
+                already_present=[],
+                remaining=[],
+                warnings=[],
+                sidebar=sidebar,
+            )
+
+        already_present: list[dict[str, Any]] = []
+        added: list[dict[str, Any]] = []
+        remaining: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        present_row_ids = set(sidebar.get("alreadyPresentRowIds") or [])
+        for selection in prepared["selections"]:
+            if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+                remaining.append({**selection, "reason": "local_helper_execution_timeout"})
+                continue
+            if selection["rowId"] in present_row_ids:
+                already_present.append({**selection, "reason": "selection_already_present"})
+                warnings.append("selection_already_present")
+                continue
+
+            click_result = _click_mlb_moneyline_selection_with_retry(
+                page,
+                selection,
+                deadline=deadline,
+            )
+            if click_result.get("status") == "added":
+                added.append(click_result["selection"])
+                if click_result["selection"].get("oddsMoved"):
+                    warnings.append("odds_moved")
+            else:
+                remaining.append({**selection, "reason": click_result.get("reason")})
+
+        final_state = _read_stake_ui_state_from_page(page)
+        final_sidebar = _classify_moneyline_sidebar_state(
+            final_state.get("slip") or {},
+            requested=prepared["selections"],
+        )
+        return _moneyline_build_result(
+            status=None,
+            requested=prepared["selections"],
+            added=added,
+            already_present=already_present,
+            remaining=remaining,
+            warnings=warnings,
+            sidebar=final_sidebar,
+        )
+
+
 def read_stake_ui_state(
     *,
     cdp_url: str = DEFAULT_CDP_URL,
@@ -3800,6 +3892,229 @@ def _prepare_moneyline_build_selections(selections: list[dict[str, Any]]) -> dic
             "errors": [{"reason": "no_valid_moneyline_selections"}],
         }
     return {"status": "ready", "selections": prepared, "errors": []}
+
+
+def _moneyline_build_result(
+    *,
+    status: str | None,
+    requested: list[dict[str, Any]],
+    added: list[dict[str, Any]],
+    already_present: list[dict[str, Any]],
+    remaining: list[dict[str, Any]],
+    warnings: list[str],
+    sidebar: dict[str, Any],
+) -> dict[str, Any]:
+    if status is None:
+        if remaining and (added or already_present):
+            status = "partial_review_slip"
+        elif remaining:
+            status = "blocked"
+        elif added:
+            status = "built_for_review"
+        elif already_present:
+            status = "already_built_for_review"
+        else:
+            status = "blocked_missing_selection_identity"
+
+    return {
+        "source": "stake_ui_mlb_moneyline_review_slip",
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "reviewOnly": True,
+        "requestedSelections": len(requested),
+        "addedSelections": added,
+        "alreadyPresentSelections": already_present,
+        "remainingSelections": remaining,
+        "warnings": list(dict.fromkeys(warnings)),
+        "sidebar": sidebar,
+        "safety": {
+            "enteredStakeAmount": False,
+            "clickedPlaceBet": False,
+        },
+    }
+
+
+def _click_mlb_moneyline_selection_with_retry(
+    page: Any,
+    selection: dict[str, Any],
+    *,
+    deadline: float | None,
+) -> dict[str, Any]:
+    first = _click_mlb_moneyline_selection_once(page, selection)
+    if first.get("status") == "added":
+        return first
+
+    _expand_mlb_game_list(page, limit=100)
+    second = _click_mlb_moneyline_selection_once(page, selection)
+    if second.get("status") == "added":
+        return second
+
+    if _execution_deadline_expired(deadline, reserve_seconds=2.0):
+        return {"status": "not_added", "reason": "local_helper_execution_timeout"}
+
+    page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
+    _expand_mlb_game_list(page, limit=100)
+    third = _click_mlb_moneyline_selection_once(page, selection)
+    if third.get("status") == "added":
+        return third
+    return {
+        "status": "not_added",
+        "reason": third.get("reason") or "visible_moneyline_selection_not_found_after_retry",
+    }
+
+
+def _click_mlb_moneyline_selection_once(page: Any, selection: dict[str, Any]) -> dict[str, Any]:
+    raw_cards = _extract_mlb_moneyline_cards(page)
+    board = _normalize_mlb_moneyline_cards(raw_cards, limit=100)
+    game = next(
+        (
+            item
+            for item in board.get("games") or []
+            if item.get("fixtureSlug") == selection.get("fixtureSlug")
+        ),
+        None,
+    )
+    if not game:
+        return {"status": "not_added", "reason": "fixture_not_visible"}
+
+    current = next(
+        (
+            item
+            for item in game.get("selections") or []
+            if item.get("rowId") == selection.get("rowId")
+            and _text_key(item.get("team")) == _text_key(selection.get("team"))
+        ),
+        None,
+    )
+    if not current:
+        return {"status": "not_added", "reason": "visible_moneyline_selection_not_found"}
+
+    clicked = _click_visible_moneyline_outcome_button(page, selection)
+    if not clicked.get("clicked"):
+        return {"status": "not_added", "reason": clicked.get("reason")}
+
+    state_after = _read_stake_ui_state_from_page(page)
+    sidebar = _classify_moneyline_sidebar_state(
+        state_after.get("slip") or {},
+        requested=[selection],
+    )
+    if selection["rowId"] not in set(sidebar.get("alreadyPresentRowIds") or []):
+        return {"status": "not_added", "reason": "sidebar_not_updated_after_click"}
+
+    clicked_odds = _float_or_none(current.get("odds"))
+    researched_odds = _float_or_none(selection.get("researchedOdds"))
+    return {
+        "status": "added",
+        "selection": {
+            **selection,
+            "clickedOdds": clicked_odds,
+            "oddsMoved": (
+                researched_odds is not None
+                and clicked_odds is not None
+                and abs(researched_odds - clicked_odds) > 0.000001
+            ),
+        },
+    }
+
+
+def _click_visible_moneyline_outcome_button(
+    page: Any,
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        result = page.evaluate(
+            """
+            async ({ fixtureSlug, team }) => {
+              const norm = (value) => String(value || "")
+                .normalize("NFD")
+                .replace(/[\\u0300-\\u036f]/g, "")
+                .toLowerCase()
+                .replace(/[^a-z0-9.]+/g, " ")
+                .replace(/\\s+/g, " ")
+                .trim();
+              const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.visibility !== "hidden"
+                  && style.display !== "none"
+                  && rect.width > 0
+                  && rect.height > 0;
+              };
+              const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+              const marketLabel = "winner incl. extra innings";
+              const teamKey = norm(team);
+              const hrefNeedle = `/sports/baseball/usa/mlb/${fixtureSlug}`;
+              const anchors = Array.from(document.querySelectorAll('a[href*="/sports/baseball/usa/mlb/"]'))
+                .filter((anchor) => String(anchor.href || anchor.getAttribute("href") || "").includes(hrefNeedle));
+              const cardFor = (anchor) => {
+                let current = anchor;
+                let fallback = anchor.parentElement;
+                for (let depth = 0; current && depth < 8; depth += 1) {
+                  const text = norm(current.innerText || current.textContent || "");
+                  if (text.includes(marketLabel)) return current;
+                  fallback = current;
+                  current = current.parentElement;
+                }
+                return fallback || anchor;
+              };
+              const nearestButton = (el) => {
+                let current = el;
+                for (let depth = 0; current && depth < 5; depth += 1) {
+                  const tag = String(current.tagName || "").toLowerCase();
+                  const role = current.getAttribute("role") || "";
+                  if (tag === "button" || role === "button") return current;
+                  current = current.parentElement;
+                }
+                return el;
+              };
+              for (const anchor of anchors) {
+                const card = cardFor(anchor);
+                if (!card || !visible(card)) continue;
+                const buttons = Array.from(card.querySelectorAll("button,[role='button'],a,div"))
+                  .filter(visible)
+                  .map(nearestButton)
+                  .filter((item, index, all) => all.indexOf(item) === index);
+                const candidates = buttons
+                  .map((el) => {
+                    const text = String(el.innerText || el.textContent || "").trim().replace(/\\s+/g, " ");
+                    const key = norm(text);
+                    const rect = el.getBoundingClientRect();
+                    return { el, text, key, rect };
+                  })
+                  .filter((item) => item.key.includes(teamKey) && /\\d+\\.\\d+/.test(item.text));
+                candidates.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
+                if (!candidates.length) continue;
+                const selected = candidates[0];
+                selected.el.scrollIntoView({ block: "center", inline: "center" });
+                await sleep(120);
+                const rect = selected.el.getBoundingClientRect();
+                selected.el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 }));
+                selected.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 }));
+                selected.el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 }));
+                await sleep(80);
+                selected.el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 }));
+                selected.el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 }));
+                selected.el.click();
+                await sleep(500);
+                return {
+                  clicked: true,
+                  team,
+                  fixtureSlug,
+                  clickedBy: "dom_pointer_sequence",
+                  clickedText: selected.text,
+                };
+              }
+              return { clicked: false, reason: "visible_moneyline_button_not_clicked" };
+            }
+            """,
+            {
+                "fixtureSlug": str(selection.get("fixtureSlug") or "").strip(),
+                "team": str(selection.get("team") or "").strip(),
+            },
+        )
+        return dict(result or {})
+    except Exception as exc:
+        return {"clicked": False, "reason": f"moneyline_click_failed:{exc}"}
 
 
 def _moneyline_selections_from_card(

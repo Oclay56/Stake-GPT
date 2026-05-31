@@ -17,6 +17,7 @@ from app.stake_sgm_browser import (
     _market_display_aliases,
     _market_click_identity,
     _market_search_text,
+    _moneyline_build_result,
     _normalize_mlb_moneyline_cards,
     _prepare_moneyline_build_selections,
     _preflight_sgm_review_selections,
@@ -532,6 +533,93 @@ def test_moneyline_sidebar_removal_target_requires_row_and_team():
     assert target["type"] == "mlb_moneyline"
     assert target["rowId"] == row_id
     assert target["team"] == "New York Yankees"
+
+
+def test_moneyline_build_status_reports_already_built():
+    row_id = make_mlb_moneyline_row_id(
+        "123-new-york-yankees-toronto-blue-jays",
+        "New York Yankees",
+    )
+    result = _moneyline_build_result(
+        status=None,
+        requested=[
+            {
+                "rowId": row_id,
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "researchedOdds": 1.72,
+            }
+        ],
+        added=[],
+        already_present=[
+            {
+                "rowId": row_id,
+                "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "researchedOdds": 1.72,
+                "reason": "selection_already_present",
+            }
+        ],
+        remaining=[],
+        warnings=["selection_already_present"],
+        sidebar={"mode": "moneyline_only"},
+    )
+
+    assert result["status"] == "already_built_for_review"
+    assert result["requestedSelections"] == 1
+    assert result["addedSelections"] == []
+    assert result["alreadyPresentSelections"][0]["rowId"] == row_id
+    assert result["remainingSelections"] == []
+    assert result["safety"] == {
+        "enteredStakeAmount": False,
+        "clickedPlaceBet": False,
+    }
+
+
+def test_moneyline_build_status_reports_partial_with_remaining_rows():
+    result = _moneyline_build_result(
+        status=None,
+        requested=[
+            {
+                "rowId": "mlb_ml_a",
+                "fixtureSlug": "fixture-a",
+                "team": "Team A",
+                "researchedOdds": 1.72,
+            },
+            {
+                "rowId": "mlb_ml_b",
+                "fixtureSlug": "fixture-b",
+                "team": "Team B",
+                "researchedOdds": 1.95,
+            },
+        ],
+        added=[
+            {
+                "rowId": "mlb_ml_a",
+                "fixtureSlug": "fixture-a",
+                "team": "Team A",
+                "researchedOdds": 1.72,
+                "clickedOdds": 1.68,
+                "oddsMoved": True,
+            }
+        ],
+        already_present=[],
+        remaining=[
+            {
+                "rowId": "mlb_ml_b",
+                "fixtureSlug": "fixture-b",
+                "team": "Team B",
+                "researchedOdds": 1.95,
+                "reason": "visible_moneyline_selection_not_found_after_retry",
+            }
+        ],
+        warnings=["odds_moved"],
+        sidebar={"mode": "moneyline_only"},
+    )
+
+    assert result["status"] == "partial_review_slip"
+    assert result["addedSelections"][0]["oddsMoved"] is True
+    assert result["remainingSelections"][0]["reason"] == "visible_moneyline_selection_not_found_after_retry"
 
 
 def test_sidebar_remove_confirmed_accepts_disappeared_target_or_sidebar_shrink():

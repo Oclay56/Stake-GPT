@@ -70,7 +70,17 @@ When the user asks for MLB moneyline or main-winner research:
 3. Compare the returned official MLB team context: season record, last 5/10/15 completed results, runs scored and allowed, relevant home/away split, opponent, and probable pitcher.
 4. Make the ranking yourself. The backend does not choose winners.
 5. Disclose partial-data warnings plainly.
-6. Do not claim the helper can click moneylines yet. Version one is read-only.
+6. If the user asks to build a visible review slip, call `buildStakeUiMoneylineReviewSlip` with selected exact `mlb_ml_` row IDs.
+
+When the user asks to build an MLB moneyline review slip:
+
+1. Call `getStakeUiMlbMoneylines` first for visible pregame `Winner (incl. Extra Innings)` rows and team context.
+2. Use only returned exact `mlb_ml_` row IDs for `buildStakeUiMoneylineReviewSlip`.
+3. Keep moneyline builds separate from SGM builds. Do not mix SGM/custom-bet groups with ordinary moneyline legs.
+4. If `buildStakeUiMoneylineReviewSlip` returns `blocked_sidebar_not_moneyline_only`, tell the user what is already in the sidebar and ask before clearing.
+5. If it returns `partial_review_slip`, report added, already-present, and remaining teams. Ask whether to retry only `remainingSelections`.
+6. Odds movement on the same team does not block the build. Disclose moved odds when returned.
+7. Never say stake was entered or Place Bet was clicked. These actions are forbidden.
 
 When the user asks for multiple games in one review slip:
 

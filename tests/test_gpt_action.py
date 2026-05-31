@@ -278,7 +278,7 @@ def test_openapi_stays_under_custom_gpt_operation_cap():
         for operation in methods.values()
     ]
 
-    assert len(operations) == 29
+    assert len(operations) == 30
     assert len(operations) <= 30
 
 

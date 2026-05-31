@@ -224,6 +224,19 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     request_body=_stake_ui_mlb_moneylines_request_body(),
                 )
             },
+            "/mlb/stake-ui/moneyline-review-slip": {
+                "post": _operation(
+                    "buildStakeUiMoneylineReviewSlip",
+                    "Build Stake UI MLB moneyline review slip",
+                    (
+                        "Adds exact visible pregame MLB Winner (incl. Extra Innings) "
+                        "moneyline teams to the review-only Stake sidebar through the "
+                        "local helper. This action is moneyline-only, never enters a "
+                        "stake amount, and never clicks Place Bet."
+                    ),
+                    request_body=_stake_ui_mlb_moneyline_review_slip_request_body(),
+                )
+            },
             "/mlb/stake-ui/state": {
                 "post": _operation(
                     "readStakeUiState",
@@ -256,9 +269,10 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     "Remove Stake UI sidebar group",
                     (
                         "Optional recovery action. Removes one already-added right-sidebar "
-                        "SGM/game group by exact fixture or matchup. Use only when the user "
-                        "asks to delete one game from the visible review slip. It never "
-                        "clears the whole slip, enters stake amount, or clicks Place Bet."
+                        "SGM/game group by exact fixture or matchup, or one MLB moneyline "
+                        "leg by exact rowId plus team. Use only when the user asks to "
+                        "delete one item from the visible review slip. It never clears "
+                        "the whole slip, enters stake amount, or clicks Place Bet."
                     ),
                     request_body=_stake_ui_remove_sidebar_group_request_body(),
                 )
@@ -2746,6 +2760,48 @@ def _stake_ui_mlb_moneylines_request_body() -> dict[str, Any]:
     }
 
 
+def _stake_ui_mlb_moneyline_review_slip_request_body() -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "reviewOnly": {
+                            "type": "boolean",
+                            "const": True,
+                        },
+                        "selections": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 30,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "rowId": {"type": "string"},
+                                    "fixtureSlug": {"type": "string"},
+                                    "team": {"type": "string"},
+                                    "odds": {"type": "number"},
+                                },
+                                "required": ["rowId", "fixtureSlug", "team", "odds"],
+                                "additionalProperties": True,
+                            },
+                        },
+                        "timeoutSeconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 180,
+                        },
+                    },
+                    "required": ["reviewOnly", "selections"],
+                    "additionalProperties": True,
+                }
+            }
+        },
+    }
+
+
 def _stake_ui_state_request_body() -> dict[str, Any]:
     return {
         "required": True,
@@ -2815,6 +2871,14 @@ def _stake_ui_remove_sidebar_group_request_body() -> dict[str, Any]:
                                 "Fallback matchup text, for example Cardinals vs Pirates. "
                                 "Used to resolve the fixture and match the sidebar group."
                             ),
+                        },
+                        "rowId": {
+                            "type": "string",
+                            "description": "Optional exact MLB moneyline row id to remove.",
+                        },
+                        "team": {
+                            "type": "string",
+                            "description": "Team name for one MLB moneyline sidebar leg.",
                         },
                         "date": {"type": "string", "format": "date"},
                         "reviewOnly": {

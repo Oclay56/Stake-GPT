@@ -690,6 +690,19 @@ def test_gpt_schema_exposes_stake_ui_mlb_moneylines_action():
     assert "date" in properties
 
 
+def test_gpt_schema_exposes_stake_ui_mlb_moneyline_review_slip_action():
+    schema = build_gpt_action_openapi_schema("https://azp-test.example")
+
+    operation = schema["paths"]["/mlb/stake-ui/moneyline-review-slip"]["post"]
+    properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+
+    assert operation["operationId"] == "buildStakeUiMoneylineReviewSlip"
+    assert properties["reviewOnly"]["const"] is True
+    assert properties["selections"]["items"]["properties"]["rowId"]["type"] == "string"
+    assert properties["selections"]["items"]["properties"]["fixtureSlug"]["type"] == "string"
+    assert properties["selections"]["items"]["properties"]["team"]["type"] == "string"
+
+
 def test_gpt_schema_exposes_stake_ui_sgm_candidate_pool_action():
     schema = build_gpt_action_openapi_schema("https://azp-test.example")
 

@@ -31,6 +31,42 @@ class MLBDataEngine:
             "games": games,
         }
 
+    async def get_schedule_range(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any]:
+        payload = await self._client.get_schedule_range(start_date, end_date)
+        games = [
+            _normalize_game(game)
+            for date_entry in payload.get("dates") or []
+            for game in date_entry.get("games") or []
+        ]
+        return {
+            "startDate": start_date,
+            "endDate": end_date,
+            "gameCount": len(games),
+            "games": games,
+        }
+
+    async def get_standings(self, season: int) -> dict[str, Any]:
+        payload = await self._client.get_standings(season)
+        teams = [
+            _normalize_standing(team)
+            for record in payload.get("records") or []
+            for team in record.get("teamRecords") or []
+        ]
+        return {
+            "season": season,
+            "teamCount": len(teams),
+            "teams": teams,
+            "teamsById": {
+                team["mlbId"]: team
+                for team in teams
+                if team.get("mlbId") is not None
+            },
+        }
+
     async def get_team_roster(
         self,
         team_id: int,
@@ -145,7 +181,22 @@ def _normalize_game_team(raw_side: dict[str, Any]) -> dict[str, Any]:
         "mlbId": team.get("id"),
         "name": name,
         "key": slug_key(name),
+        "score": raw_side.get("score"),
+        "isWinner": raw_side.get("isWinner"),
         "probablePitcher": _normalize_pitcher(pitcher),
+    }
+
+
+def _normalize_standing(raw_team: dict[str, Any]) -> dict[str, Any]:
+    team = raw_team.get("team") or {}
+    name = str(team.get("name") or "")
+    return {
+        "mlbId": team.get("id"),
+        "name": name,
+        "key": slug_key(name),
+        "wins": raw_team.get("wins"),
+        "losses": raw_team.get("losses"),
+        "pct": raw_team.get("winningPercentage"),
     }
 
 

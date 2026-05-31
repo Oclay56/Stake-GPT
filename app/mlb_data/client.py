@@ -42,6 +42,31 @@ class MLBStatsClient:
             },
         )
 
+    async def get_schedule_range(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/schedule",
+            params={
+                "sportId": 1,
+                "startDate": start_date,
+                "endDate": end_date,
+                "hydrate": "probablePitcher",
+            },
+        )
+
+    async def get_standings(self, season: int) -> dict[str, Any]:
+        return await self._get(
+            "/standings",
+            params={
+                "leagueId": "103,104",
+                "season": season,
+                "standingsTypes": "regularSeason",
+            },
+        )
+
     async def get_team_roster(
         self,
         team_id: int,

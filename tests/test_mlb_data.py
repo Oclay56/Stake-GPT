@@ -25,6 +25,8 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
             return httpx.Response(200, json={"people": []})
         if request.url.path.endswith("/schedule"):
             return httpx.Response(200, json={"dates": []})
+        if request.url.path.endswith("/standings"):
+            return httpx.Response(200, json={"records": []})
         return httpx.Response(200, json={"teams": []})
 
     async with httpx.AsyncClient(
@@ -39,6 +41,8 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
         await client.get_player(592450)
         await client.get_player_stats(592450, group="hitting", season=2026)
         await client.get_player_game_log(592450, group="hitting", season=2026)
+        await client.get_schedule_range("2026-04-15", "2026-05-08")
+        await client.get_standings(season=2026)
 
     assert seen_requests[0].url.path == "/api/v1/teams"
     assert dict(seen_requests[0].url.params) == {"sportId": "1", "season": "2026"}
@@ -69,6 +73,19 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
         "stats": "gameLog",
         "group": "hitting",
         "season": "2026",
+    }
+    assert seen_requests[7].url.path == "/api/v1/schedule"
+    assert dict(seen_requests[7].url.params) == {
+        "sportId": "1",
+        "startDate": "2026-04-15",
+        "endDate": "2026-05-08",
+        "hydrate": "probablePitcher",
+    }
+    assert seen_requests[8].url.path == "/api/v1/standings"
+    assert dict(seen_requests[8].url.params) == {
+        "leagueId": "103,104",
+        "season": "2026",
+        "standingsTypes": "regularSeason",
     }
 
 
@@ -108,6 +125,8 @@ class FakeMLBStatsClient:
                                 },
                                 "home": {
                                     "team": {"id": 117, "name": "Houston Astros"},
+                                    "score": 4,
+                                    "isWinner": True,
                                     "probablePitcher": {
                                         "id": 805123,
                                         "fullName": "AJ Blubaugh",
@@ -118,6 +137,25 @@ class FakeMLBStatsClient:
                     ],
                 }
             ],
+        }
+
+    async def get_schedule_range(self, start_date: str, end_date: str):
+        return await self.get_schedule(end_date)
+
+    async def get_standings(self, season: int):
+        return {
+            "records": [
+                {
+                    "teamRecords": [
+                        {
+                            "team": {"id": 117, "name": "Houston Astros"},
+                            "wins": 20,
+                            "losses": 16,
+                            "winningPercentage": ".556",
+                        }
+                    ]
+                }
+            ]
         }
 
     async def get_team_roster(self, team_id: int, season=None, roster_type="active"):
@@ -203,6 +241,8 @@ def test_mlb_data_engine_normalizes_core_shapes():
 
     teams = asyncio.run(engine.get_teams(season=2026))
     schedule = asyncio.run(engine.get_schedule("2026-05-08"))
+    recent = asyncio.run(engine.get_schedule_range("2026-04-15", "2026-05-08"))
+    standings = asyncio.run(engine.get_standings(season=2026))
     roster = asyncio.run(engine.get_team_roster(117, season=2026))
     players = asyncio.run(engine.search_players("Aaron Judge"))
     player = asyncio.run(engine.get_player_profile(592450, season=2026, group="hitting"))
@@ -228,11 +268,22 @@ def test_mlb_data_engine_normalizes_core_shapes():
         "mlbId": 117,
         "name": "Houston Astros",
         "key": "houston-astros",
+        "score": 4,
+        "isWinner": True,
         "probablePitcher": {
             "mlbId": 805123,
             "name": "AJ Blubaugh",
             "key": "aj-blubaugh",
         },
+    }
+    assert recent["games"][0]["homeTeam"]["score"] == 4
+    assert standings["teamsById"][117] == {
+        "mlbId": 117,
+        "name": "Houston Astros",
+        "key": "houston-astros",
+        "wins": 20,
+        "losses": 16,
+        "pct": ".556",
     }
     assert roster["players"][0]["name"] == "Aaron Judge"
     assert players["players"][0]["key"] == "aaron-judge"

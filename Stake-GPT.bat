@@ -2,7 +2,7 @@
 setlocal
 
 cd /d "%~dp0"
-title Stake-GPT Helper
+title Stake-GPT CLI
 
 if not exist ".venv\Scripts\python.exe" (
   echo ERROR: Could not find .venv\Scripts\python.exe
@@ -20,10 +20,12 @@ if not exist ".env" (
   exit /b 1
 )
 
-if exist ".venv\Scripts\pythonw.exe" (
-  start "" ".venv\Scripts\pythonw.exe" -m app.local_helper_gui
-) else (
-  start "" ".venv\Scripts\python.exe" -m app.local_helper_gui
-)
+".venv\Scripts\python.exe" -m app.local_helper_cli
+set EXIT_CODE=%ERRORLEVEL%
 
-exit /b 0
+echo.
+if not "%EXIT_CODE%"=="0" (
+  echo Stake-GPT CLI exited with code %EXIT_CODE%.
+)
+pause
+exit /b %EXIT_CODE%

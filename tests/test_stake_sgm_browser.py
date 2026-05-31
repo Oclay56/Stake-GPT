@@ -7,6 +7,7 @@ from app.stake_sgm_browser import (
     _add_bet_confirmed,
     _batch_should_stop_after_group_result,
     _check_page_ready,
+    _classify_moneyline_sidebar_state,
     _compact_preflight_result,
     _sidebar_clear_confirmed,
     _fixture_matchup_from_slug,
@@ -451,6 +452,86 @@ def test_sidebar_group_target_uses_fixture_slug_matchup():
         "matchup": "New York Yankees vs Toronto Blue Jays",
         "teams": ["New York Yankees", "Toronto Blue Jays"],
     }
+
+
+def test_classify_moneyline_sidebar_allows_empty_sidebar():
+    result = _classify_moneyline_sidebar_state(
+        {
+            "rightPanelEmpty": True,
+            "rightPanelText": "",
+            "rightPanelSelections": [],
+        },
+        requested=[],
+    )
+
+    assert result["mode"] == "empty"
+    assert result["blockingReason"] is None
+
+
+def test_classify_moneyline_sidebar_preserves_requested_moneyline():
+    row_id = make_mlb_moneyline_row_id(
+        "123-new-york-yankees-toronto-blue-jays",
+        "New York Yankees",
+    )
+    requested = [
+        {
+            "rowId": row_id,
+            "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+            "team": "New York Yankees",
+        }
+    ]
+
+    result = _classify_moneyline_sidebar_state(
+        {
+            "rightPanelEmpty": False,
+            "rightPanelText": "New York Yankees Winner (incl. Extra Innings) 1.72",
+            "rightPanelSelections": [
+                {
+                    "fixtureSlug": "123-new-york-yankees-toronto-blue-jays",
+                    "team": "New York Yankees",
+                    "market": "Winner (incl. Extra Innings)",
+                    "rowId": row_id,
+                    "odds": 1.72,
+                }
+            ],
+        },
+        requested=requested,
+    )
+
+    assert result["mode"] == "moneyline_only"
+    assert result["alreadyPresentRowIds"] == [row_id]
+
+
+def test_classify_moneyline_sidebar_blocks_sgm_group_text():
+    result = _classify_moneyline_sidebar_state(
+        {
+            "rightPanelEmpty": False,
+            "rightPanelText": "Same Game Multi New York Yankees Toronto Blue Jays",
+            "rightPanelSelections": [],
+        },
+        requested=[],
+    )
+
+    assert result["mode"] == "blocked_mixed_or_unknown"
+    assert result["blockingReason"] == "contains_sgm_or_custom_bet_group"
+
+
+def test_moneyline_sidebar_removal_target_requires_row_and_team():
+    row_id = make_mlb_moneyline_row_id(
+        "123-new-york-yankees-toronto-blue-jays",
+        "New York Yankees",
+    )
+
+    target = _sidebar_group_target(
+        fixture_slug="123-new-york-yankees-toronto-blue-jays",
+        matchup=None,
+        row_id=row_id,
+        team="New York Yankees",
+    )
+
+    assert target["type"] == "mlb_moneyline"
+    assert target["rowId"] == row_id
+    assert target["team"] == "New York Yankees"
 
 
 def test_sidebar_remove_confirmed_accepts_disappeared_target_or_sidebar_shrink():

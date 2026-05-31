@@ -1771,6 +1771,90 @@ def _add_bet_confirmed(before_state: dict[str, Any], after_state: dict[str, Any]
     return bool(after_digest and after_digest != before_digest and after_length > before_length + 10)
 
 
+def _classify_moneyline_sidebar_state(
+    slip: dict[str, Any],
+    *,
+    requested: list[dict[str, Any]],
+) -> dict[str, Any]:
+    text = str(
+        (slip or {}).get("rightPanelText")
+        or (slip or {}).get("rightPanelTextSample")
+        or ""
+    ).strip()
+    if bool((slip or {}).get("rightPanelEmpty")) or not text:
+        return {
+            "mode": "empty",
+            "blockingReason": None,
+            "alreadyPresentRowIds": [],
+            "moneylineSelections": [],
+        }
+
+    lowered = text.lower()
+    if "same game multi" in lowered or "custom bet" in lowered:
+        return {
+            "mode": "blocked_mixed_or_unknown",
+            "blockingReason": "contains_sgm_or_custom_bet_group",
+            "alreadyPresentRowIds": [],
+            "moneylineSelections": [],
+        }
+
+    sidebar_selections = [
+        item
+        for item in (slip or {}).get("rightPanelSelections") or []
+        if _text_key((item or {}).get("market")) == _text_key(MONEYLINE_MARKET_LABEL)
+        and str((item or {}).get("rowId") or "").startswith("mlb_ml_")
+    ]
+
+    requested_keys = {
+        (
+            str(item.get("fixtureSlug") or "").strip(),
+            _text_key(item.get("team")),
+            str(item.get("rowId") or "").strip(),
+        )
+        for item in requested or []
+    }
+    already_present = []
+    for item in sidebar_selections:
+        key = (
+            str(item.get("fixtureSlug") or "").strip(),
+            _text_key(item.get("team")),
+            str(item.get("rowId") or "").strip(),
+        )
+        if key in requested_keys:
+            already_present.append(str(item.get("rowId") or "").strip())
+
+    if sidebar_selections:
+        return {
+            "mode": "moneyline_only",
+            "blockingReason": None,
+            "alreadyPresentRowIds": already_present,
+            "moneylineSelections": sidebar_selections,
+        }
+
+    requested_matches = []
+    text_key = _text_key(text)
+    for item in requested or []:
+        row_id = str(item.get("rowId") or "").strip()
+        team = str(item.get("team") or "").strip()
+        if team and _text_key(team) in text_key:
+            requested_matches.append(row_id)
+
+    if requested_matches and not any(word in lowered for word in ("over", "under", "above", "below")):
+        return {
+            "mode": "moneyline_only",
+            "blockingReason": None,
+            "alreadyPresentRowIds": list(dict.fromkeys(requested_matches)),
+            "moneylineSelections": [],
+        }
+
+    return {
+        "mode": "blocked_mixed_or_unknown",
+        "blockingReason": "unknown_sidebar_selection",
+        "alreadyPresentRowIds": [],
+        "moneylineSelections": [],
+    }
+
+
 def _read_bet_slip_state(page: Any) -> dict[str, Any]:
     try:
         return dict(
@@ -1839,7 +1923,23 @@ def _sidebar_group_target(
     *,
     fixture_slug: str | None,
     matchup: str | None,
+    row_id: str | None = None,
+    team: str | None = None,
 ) -> dict[str, Any]:
+    if row_id and str(row_id).startswith("mlb_ml_"):
+        clean_fixture_slug = str(fixture_slug or "").strip()
+        clean_team = str(team or "").strip()
+        if not clean_fixture_slug or not clean_team:
+            raise RuntimeError("fixtureSlug and team are required to remove an MLB moneyline.")
+        return {
+            "type": "mlb_moneyline",
+            "fixtureSlug": clean_fixture_slug,
+            "rowId": str(row_id).strip(),
+            "team": clean_team,
+            "teams": [clean_team],
+            "matchup": matchup,
+        }
+
     fixture_matchup = _fixture_matchup_from_slug(fixture_slug) if fixture_slug else {}
     target_matchup = str(matchup or fixture_matchup.get("matchup") or "").strip()
     teams = list(fixture_matchup.get("teams") or [])

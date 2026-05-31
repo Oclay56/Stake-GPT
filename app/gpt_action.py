@@ -268,11 +268,9 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     "removeStakeUiSidebarGroup",
                     "Remove Stake UI sidebar group",
                     (
-                        "Optional recovery action. Removes one already-added right-sidebar "
-                        "SGM/game group by exact fixture or matchup, or one MLB moneyline "
-                        "leg by exact rowId plus team. Use only when the user asks to "
-                        "delete one item from the visible review slip. It never clears "
-                        "the whole slip, enters stake amount, or clicks Place Bet."
+                        "Removes one visible review-slip item: an SGM game group by "
+                        "fixture/matchup or one MLB moneyline leg by rowId plus team. "
+                        "Never clears the whole slip, enters stake, or clicks Place Bet."
                     ),
                     request_body=_stake_ui_remove_sidebar_group_request_body(),
                 )

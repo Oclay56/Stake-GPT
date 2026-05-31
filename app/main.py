@@ -875,8 +875,15 @@ async def mlb_stake_ui_remove_sidebar_group(
 
     matchup = str(payload.get("matchup") or "").strip()
     fixture_slug = str(payload.get("fixtureSlug") or "").strip()
-    if not fixture_slug and not matchup:
-        raise HTTPException(status_code=422, detail="fixtureSlug or matchup is required")
+    row_id = str(payload.get("rowId") or "").strip()
+    team = str(payload.get("team") or "").strip()
+    if row_id and (not fixture_slug or not team):
+        raise HTTPException(
+            status_code=422,
+            detail="fixtureSlug and team are required when rowId is provided",
+        )
+    if not fixture_slug and not matchup and not row_id:
+        raise HTTPException(status_code=422, detail="fixtureSlug, matchup, or rowId is required")
 
     slate_date = _date_from_body(payload)
     timeout_seconds = _clean_int_from_body(
@@ -904,6 +911,8 @@ async def mlb_stake_ui_remove_sidebar_group(
     request = {
         "matchup": matchup or None,
         "fixtureSlug": fixture_slug,
+        "rowId": row_id or None,
+        "team": team or None,
         "date": slate_date.isoformat() if slate_date else None,
         "requestedBy": "custom_gpt",
         "purpose": "stake_ui_remove_sidebar_group",

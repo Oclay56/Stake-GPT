@@ -1183,6 +1183,29 @@ def test_stake_ui_remove_sidebar_group_route_creates_safe_recovery_job():
     assert created_request["forbiddenActions"] == ["enter_stake_amount", "click_place_bet"]
 
 
+def test_stake_ui_remove_sidebar_group_route_passes_moneyline_identity():
+    fake_store = FakeCompletedRemoveSidebarGroupJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/remove-sidebar-group",
+            json={
+                "rowId": "mlb_ml_yankees",
+                "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+                "team": "New York Yankees",
+                "timeoutSeconds": 2,
+                "reviewOnly": True,
+            },
+        )
+
+    created_request = fake_store.created_jobs[0]["request"]
+
+    assert response.status_code == 200
+    assert created_request["rowId"] == "mlb_ml_yankees"
+    assert created_request["team"] == "New York Yankees"
+
+
 def test_stake_ui_clear_sidebar_route_creates_safe_recovery_job():
     fake_store = FakeCompletedClearSidebarJobStore()
     app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store

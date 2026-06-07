@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 
 from app.sgm_candidate_pool import (
+    _apply_game_level_contest,
     _apply_within_player_market_contest,
+    _market_concentration_diagnostics,
     _select_ranked_candidates,
     build_sgm_candidate_pool_from_boards,
     normalize_sgm_market_key,
@@ -128,6 +130,7 @@ def _scored_candidate(
         "odds": 2.0,
         "rowId": row_id,
         "score": score,
+        "contextQuality": "full",
         "reasonTags": [],
         "riskFlags": [],
     }
@@ -199,6 +202,168 @@ def test_within_player_market_contest_prioritizes_player_winners_before_alternat
         "row-same-singles",
         "row-other-walks",
     ]
+
+
+def test_singles_abundant_but_alternative_markets_win_when_scores_are_better():
+    rows = [
+        _scored_candidate("row-a-singles", "Player A", "Singles", 82),
+        _scored_candidate("row-a-rbi", "Player A", "RBI", 91),
+        _scored_candidate("row-b-singles", "Player B", "Singles", 84),
+        _scored_candidate("row-b-runs", "Player B", "Runs", 93),
+        _scored_candidate("row-c-singles", "Player C", "Singles", 81),
+        _scored_candidate("row-c-hrr", "Player C", "Hits + Runs + RBIs", 92),
+    ]
+
+    _apply_within_player_market_contest(rows)
+    _apply_game_level_contest(rows, legs_per_game=3, max_candidates_per_game=8)
+    selected = _select_ranked_candidates(
+        rows,
+        mode="per_game",
+        legs_per_game=3,
+        max_total_legs=3,
+        max_candidates_per_game=8,
+        max_total_candidates=10,
+    )
+
+    assert [row["market"] for row in selected] == [
+        "Runs",
+        "Hits + Runs + RBIs",
+        "RBI",
+    ]
+    assert all(row["marketContestWinner"] is True for row in selected)
+    assert all(row["selectionProof"]["closestAlternativeMarket"] == "Singles" for row in selected)
+
+
+def test_singles_can_dominate_when_they_win_on_merit_and_only_warns_diagnostically():
+    rows = []
+    for index in range(5):
+        player = f"Singles Player {index}"
+        rows.append(_scored_candidate(f"row-{index}-singles", player, "Singles", 94 - index))
+        rows.append(_scored_candidate(f"row-{index}-hits", player, "Hits", 80 - index))
+
+    _apply_within_player_market_contest(rows)
+    _apply_game_level_contest(rows, legs_per_game=5, max_candidates_per_game=8)
+    selected = _select_ranked_candidates(
+        rows,
+        mode="per_game",
+        legs_per_game=5,
+        max_total_legs=5,
+        max_candidates_per_game=8,
+        max_total_candidates=10,
+    )
+    before = [row["rowId"] for row in selected]
+    concentration = _market_concentration_diagnostics(selected)
+    after = [row["rowId"] for row in selected]
+
+    assert [row["market"] for row in selected] == ["Singles"] * 5
+    assert concentration["diagnosticOnly"] is True
+    assert concentration["warnings"]
+    assert before == after
+    assert all("beat closest alternative" in row["selectionProof"]["whySelectedBeatAlternative"] for row in selected)
+    assert all(row["selectionProof"]["closestAlternativeMarket"] == "Hits" for row in selected)
+
+
+def test_hits_do_not_win_by_default_when_total_bases_or_hrr_scores_better():
+    rows = [
+        _scored_candidate("row-power-hits", "Power Bat", "Hits", 87),
+        _scored_candidate("row-power-total-bases", "Power Bat", "Total Bases", 93),
+        _scored_candidate("row-table-hits", "Table Setter", "Hits", 86),
+        _scored_candidate("row-table-hrr", "Table Setter", "Hits + Runs + RBIs", 92),
+    ]
+
+    _apply_within_player_market_contest(rows)
+    selected = [row for row in rows if row.get("marketContestWinner")]
+
+    assert [row["market"] for row in sorted(selected, key=lambda row: row["player"])] == [
+        "Total Bases",
+        "Hits + Runs + RBIs",
+    ]
+
+
+def test_market_concentration_and_exposure_never_change_scores_or_picks_by_themselves():
+    candidate = {
+        "odds": 2.0,
+        "side": "under",
+        "context": {
+            "last10": {"sideHitRate": 0.8},
+            "last15": {"sideHitRate": 0.8},
+            "season": {"sideSupported": True},
+        },
+        "normalizedMarketKey": "singles",
+    }
+
+    base = score_sgm_candidate(candidate, mode="best_available", market_exposure_count=0)
+    repeated = score_sgm_candidate(
+        candidate,
+        mode="best_available",
+        market_exposure_count=99,
+        max_market_repeats=1,
+    )
+
+    assert repeated["score"] == base["score"]
+    assert repeated["marketExposurePenalty"] == 0.0
+    assert "market_repeat_cap_reached" not in repeated["riskFlags"]
+    assert "market_exposure_soft_penalty" not in repeated["reasonTags"]
+
+
+def test_selected_leg_proof_includes_closest_alternative_and_rejected_alternatives():
+    rows = [
+        _scored_candidate("row-proof-singles", "Proof Player", "Singles", 95),
+        _scored_candidate("row-proof-hits", "Proof Player", "Hits", 89),
+        _scored_candidate("row-proof-rbi", "Proof Player", "RBI", 80),
+    ]
+
+    _apply_within_player_market_contest(rows)
+    winner = next(row for row in rows if row["rowId"] == "row-proof-singles")
+    proof = winner["selectionProof"]
+
+    assert proof["selectedMarket"] == "Singles"
+    assert proof["selectedScore"] == 95
+    assert proof["closestAlternativeMarket"] == "Hits"
+    assert proof["closestAlternativeScore"] == 89
+    assert proof["availabilityRole"] == "eligibility_only"
+    assert proof["contextQuality"] == "full"
+    assert proof["rejectedAlternatives"][0]["market"] == "Hits"
+    assert proof["rejectedAlternatives"][0]["reasonLost"]
+    assert proof["rejectedAlternatives"][0]["lossType"] == "lower_merit"
+
+
+def test_availability_clickability_and_data_depth_are_not_direct_merit_bonuses():
+    context = {
+        "last10": {"sideHitRate": 0.75},
+        "last15": {"sideHitRate": 0.75},
+        "season": {"sideSupported": True},
+    }
+    base = score_sgm_candidate(
+        {
+            "odds": 2.0,
+            "side": "under",
+            "context": context,
+            "normalizedMarketKey": "singles",
+            "rowId": "clickable-row",
+            "playable": True,
+            "customBet": True,
+            "contextQuality": "full",
+        },
+        mode="best_available",
+    )
+    changed_availability_metadata = score_sgm_candidate(
+        {
+            "odds": 2.0,
+            "side": "under",
+            "context": context,
+            "normalizedMarketKey": "singles",
+            "rowId": "",
+            "playable": False,
+            "customBet": False,
+            "contextQuality": "unsupported",
+        },
+        mode="best_available",
+    )
+
+    assert changed_availability_metadata["score"] == base["score"]
+    assert changed_availability_metadata["availabilityRole"] == "eligibility_only"
+    assert changed_availability_metadata["dataDepthRole"] == "confidence_cap_not_direct_merit_bonus"
 
 
 def test_candidate_pool_ranks_context_backed_rows_and_skips_weak_per_game():

@@ -2723,12 +2723,11 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                                 "balanced",
                                 "longshot",
                                 "per_game",
-                                "strict_diversity",
                             ],
                         },
-                        "legsPerGame": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "legsPerGame": {"type": "integer", "minimum": 2, "maximum": 16},
                         "maxTotalLegs": {"type": "integer", "minimum": 1, "maximum": 300},
-                        "maxCandidatesPerGame": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxCandidatesPerGame": {"type": "integer", "minimum": 2, "maximum": 16},
                         "maxTotalCandidates": {"type": "integer", "minimum": 1, "maximum": 300},
                         "qualityFloor": {"type": "number", "minimum": 0, "maximum": 100},
                         "historyLimit": {"type": "integer", "minimum": 1, "maximum": 15},
@@ -2736,7 +2735,7 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                         "targetOddsMax": {"type": "number", "minimum": 1},
                         "minIndividualOdds": {"type": "number", "minimum": 1},
                         "maxIndividualOdds": {"type": "number", "minimum": 1},
-                        "maxLegsPerGameGroup": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxLegsPerGameGroup": {"type": "integer", "minimum": 2, "maximum": 16},
                         "maxSgmGroupOdds": {"type": "number", "minimum": 1, "maximum": 501},
                         "maxGames": {"type": "integer", "minimum": 1, "maximum": 20},
                         "maxCacheAgeSeconds": {"type": "integer", "minimum": 0, "maximum": 600},
@@ -2744,7 +2743,8 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                             "type": "boolean",
                             "description": (
                                 "When true, returns lean candidate rows only: fixture/matchup, rowId, "
-                                "player/team, market/side/line/odds, contextQuality, score, top reasonTags, and riskFlags."
+                                "player/team, market/side/line/odds, contextQuality, score, compact "
+                                "market/game contest proof, top reasonTags, and riskFlags."
                             ),
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 180},

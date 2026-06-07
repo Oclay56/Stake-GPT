@@ -18,13 +18,21 @@ DEFAULT_MAX_CANDIDATES_PER_GAME = 8
 DEFAULT_MAX_TOTAL_CANDIDATES = 75
 COMPACT_REASON_TAG_LIMIT = 3
 MARKET_CONTEST_ALTERNATIVE_LIMIT = 3
+MARKET_CONTEST_REJECTED_LIMIT = 12
+GAME_CONTEST_MIN_LEGS = 2
+BLOCKING_RISK_FLAGS = {
+    "lineup_not_starting",
+    "game_postponed",
+    "game_suspended",
+    "game_cancelled",
+    "stake_bet_factor_zero_or_negative",
+}
 SUPPORTED_MODES = {
     "best_available",
     "safe",
     "balanced",
     "longshot",
     "per_game",
-    "strict_diversity",
 }
 
 
@@ -57,6 +65,16 @@ def _compact_candidate_pool_row(row: dict[str, Any]) -> dict[str, Any]:
         "odds": row.get("odds"),
         "contextQuality": row.get("contextQuality"),
         "score": row.get("score"),
+        "marketContestRank": row.get("marketContestRank"),
+        "gameContestRank": row.get("gameContestRank"),
+        "selectedMarket": (row.get("selectionProof") or {}).get("selectedMarket"),
+        "selectedScore": (row.get("selectionProof") or {}).get("selectedScore"),
+        "marketsCompared": (row.get("selectionProof") or {}).get("marketsCompared"),
+        "closestAlternativeMarket": (row.get("selectionProof") or {}).get("closestAlternativeMarket"),
+        "closestAlternativeScore": (row.get("selectionProof") or {}).get("closestAlternativeScore"),
+        "whySelectedBeatAlternative": (row.get("selectionProof") or {}).get("whySelectedBeatAlternative"),
+        "availabilityRole": (row.get("selectionProof") or {}).get("availabilityRole")
+        or row.get("availabilityRole"),
         "reasonTags": list(row.get("reasonTags") or [])[:COMPACT_REASON_TAG_LIMIT],
         "riskFlags": list(row.get("riskFlags") or []),
     }
@@ -119,7 +137,6 @@ def score_sgm_candidate(
     volatility_penalty = _volatility_penalty(market_key, clean_mode)
     stake_metadata_penalty = 0.0
     correlation_penalty = _float_or_none(candidate.get("correlationPenalty")) or 0.0
-    market_exposure_penalty = 0.0
     risk_flags: list[str] = []
     reason_tags: list[str] = []
 
@@ -129,12 +146,6 @@ def score_sgm_candidate(
     if odds is not None and odds >= 4.0 and evidence_score < 55:
         odds_trap_penalty = 26.0 if clean_mode == "longshot" else 34.0
         risk_flags.append("high_odds_no_stat_support")
-    if max_market_repeats is not None and market_exposure_count >= max_market_repeats:
-        market_exposure_penalty = 25.0
-        risk_flags.append("market_repeat_cap_reached")
-    elif market_exposure_count >= 2:
-        market_exposure_penalty = min(18.0, market_exposure_count * 6.0)
-        reason_tags.append("market_exposure_soft_penalty")
     if candidate.get("balanced") is False:
         stake_metadata_penalty += 4.0
         risk_flags.append("stake_line_unbalanced")
@@ -180,9 +191,10 @@ def score_sgm_candidate(
         - volatility_penalty
         - stake_metadata_penalty
         - correlation_penalty
-        - market_exposure_penalty
     )
     return {
+        "availabilityRole": "eligibility_only",
+        "dataDepthRole": "confidence_cap_not_direct_merit_bonus",
         "evidenceScore": round(evidence_score, 2),
         "valueScore": round(value_score, 2),
         "modeFitScore": round(mode_fit_score, 2),
@@ -191,7 +203,7 @@ def score_sgm_candidate(
         "volatilityPenalty": round(volatility_penalty, 2),
         "stakeMetadataPenalty": round(stake_metadata_penalty, 2),
         "correlationPenalty": round(correlation_penalty, 2),
-        "marketExposurePenalty": round(market_exposure_penalty, 2),
+        "marketExposurePenalty": 0.0,
         "score": round(max(0.0, min(100.0, score)), 2),
         "reasonTags": sorted(set(reason_tags)),
         "riskFlags": sorted(set(risk_flags)),
@@ -225,7 +237,10 @@ async def build_sgm_candidate_pool_from_boards(
     clean_side = _clean_side(side)
     wanted_markets = _market_filter_set(markets)
     max_games = max(1, min(int(max_games or NORMAL_SLATE_GAME_CAP), HARD_SLATE_GAME_CAP))
-    max_candidates_per_game = max(1, min(int(max_candidates_per_game), DEFAULT_MAX_LEGS_PER_GAME_GROUP))
+    max_candidates_per_game = max(
+        GAME_CONTEST_MIN_LEGS,
+        min(int(max_candidates_per_game), DEFAULT_MAX_LEGS_PER_GAME_GROUP),
+    )
     max_total_candidates = max(1, min(int(max_total_candidates), 300))
     max_legs_per_game_group = max(1, min(int(max_legs_per_game_group), DEFAULT_MAX_LEGS_PER_GAME_GROUP))
     max_sgm_group_odds = min(float(max_sgm_group_odds or DEFAULT_MAX_SGM_GROUP_ODDS), DEFAULT_MAX_SGM_GROUP_ODDS)
@@ -253,7 +268,6 @@ async def build_sgm_candidate_pool_from_boards(
     enriched_by_id = {str(prop.get("propId") or ""): prop for prop in enriched.get("props") or []}
     scored_rows = []
     rejected = Counter(initial_rejections)
-    exposure_counter: Counter[str] = Counter()
 
     for row in flat_rows:
         enriched_prop = enriched_by_id.get(str(row.get("propId") or "")) or {}
@@ -261,8 +275,6 @@ async def build_sgm_candidate_pool_from_boards(
         score = score_sgm_candidate(
             candidate,
             mode=clean_mode,
-            market_exposure_count=exposure_counter[candidate["normalizedMarketKey"]],
-            max_market_repeats=1 if clean_mode == "strict_diversity" else None,
         )
         candidate.update(score)
         if candidate["score"] < clean_quality_floor:
@@ -276,9 +288,13 @@ async def build_sgm_candidate_pool_from_boards(
             rejected["mlb_identity_unmatched"] += 1
         else:
             scored_rows.append(candidate)
-            exposure_counter[candidate["normalizedMarketKey"]] += 1
 
     market_contest = _apply_within_player_market_contest(scored_rows)
+    game_contest = _apply_game_level_contest(
+        scored_rows,
+        legs_per_game=legs_per_game,
+        max_candidates_per_game=max_candidates_per_game,
+    )
     ranked = _select_ranked_candidates(
         scored_rows,
         mode=clean_mode,
@@ -288,6 +304,7 @@ async def build_sgm_candidate_pool_from_boards(
         max_total_candidates=max_total_candidates,
     )
     per_game = _per_game_summary(flat_rows, ranked, scored_rows, rejected)
+    market_concentration = _market_concentration_diagnostics(ranked)
     return {
         "source": "stake_ui_sgm_candidate_pool",
         "decisionOwner": "custom_gpt",
@@ -321,6 +338,9 @@ async def build_sgm_candidate_pool_from_boards(
             "noForcedWeakPicks": True,
             "withinPlayerMarketContest": True,
             "playerMarketWinnerFirst": True,
+            "gameLevelContest": True,
+            "gameContestMinLegs": GAME_CONTEST_MIN_LEGS,
+            "marketConcentrationDiagnosticOnly": True,
         },
         "candidateCounts": {
             "scannedRows": len(flat_rows),
@@ -334,12 +354,15 @@ async def build_sgm_candidate_pool_from_boards(
         "perGame": per_game,
         "rejectedSummary": dict(sorted(rejected.items())),
         "marketExposure": dict(Counter(row["normalizedMarketKey"] for row in ranked)),
+        "marketConcentration": market_concentration,
         "marketContest": market_contest,
+        "gameContest": game_contest,
         "contextCoverage": _context_coverage(ranked),
         "notes": [
             "Candidate pool is support data only; the Custom GPT owns final selections.",
             "This endpoint never clicks Stake UI selections or builds a review slip.",
             "Within-player market contest ranks each player's available markets first; rank-1 rows are winner-first in the slate ranking.",
+            "Market concentration is diagnostic only and does not replace higher-merit rows.",
         ],
     }
 
@@ -554,17 +577,18 @@ def _select_ranked_candidates(
     return selected
 
 
-def _ranked_candidate_sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
+def _ranked_candidate_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str]:
+    game_selected = bool(row.get("gameContestSelected"))
     contest_rank = _clean_contest_rank(row.get("marketContestRank"))
     score = _float_or_none(row.get("score")) or 0.0
     row_id = str(row.get("rowId") or "")
-    return (0 if contest_rank <= 1 else 1, -score, row_id)
+    return (0 if game_selected else 1, 0 if contest_rank <= 1 else 1, -score, row_id)
 
 
 def _apply_within_player_market_contest(rows: list[dict[str, Any]]) -> dict[str, Any]:
     groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        key = _player_market_contest_key(row)
+        key = _entity_market_contest_key(row)
         if key:
             groups[key].append(row)
 
@@ -584,32 +608,73 @@ def _apply_within_player_market_contest(rows: list[dict[str, Any]]) -> dict[str,
         max_contenders = max(max_contenders, len(ranked))
         if len(ranked) > 1:
             contested_groups += 1
+        markets_compared = [_market_comparison_row(row) for row in ranked]
         alternatives = [
-            _compact_market_contest_alternative(row, winner_score)
+            _compact_market_contest_alternative(winner, row)
             for row in ranked[1 : MARKET_CONTEST_ALTERNATIVE_LIMIT + 1]
         ]
-        market_count = len({str(row.get("normalizedMarketKey") or row.get("market") or "") for row in ranked})
+        rejected_alternatives = [
+            _rejected_market_alternative(winner, row)
+            for row in ranked[1 : MARKET_CONTEST_REJECTED_LIMIT + 1]
+        ]
+        market_count = len(
+            {str(row.get("normalizedMarketKey") or row.get("market") or "") for row in ranked}
+        )
         for rank, row in enumerate(ranked, start=1):
             score = _float_or_none(row.get("score")) or 0.0
             is_winner = rank == 1
+            closest_alternative = ranked[rank] if rank < len(ranked) else None
+            closest_for_winner = ranked[1] if is_winner and len(ranked) > 1 else closest_alternative
+            closest_proof = _closest_alternative_summary(closest_for_winner)
+            why_selected = _why_selected_beat_alternative(row, closest_for_winner)
+            loss_reason = None if is_winner else _why_alternative_lost(winner, row)
             row["marketContestRank"] = rank
             row["marketContestWinner"] = is_winner
             row["marketContestScoreGap"] = round(max(0.0, winner_score - score), 2)
             row["marketContest"] = {
-                "scope": "player",
-                "entity": row.get("player"),
+                "scope": _entity_market_contest_scope(row),
+                "entity": row.get("player") or row.get("team"),
                 "entityKey": key,
                 "rank": rank,
                 "winner": is_winner,
                 "contenderCount": len(ranked),
                 "marketCount": market_count,
+                "marketsCompared": markets_compared,
                 "winnerRowId": winner.get("rowId"),
                 "winnerMarket": winner.get("market"),
                 "winnerSide": winner.get("side"),
                 "scoreGapToWinner": round(max(0.0, winner_score - score), 2),
+                "availabilityRole": "eligibility_only",
+                "dataDepthRole": "confidence_cap_not_direct_merit_bonus",
             }
             if is_winner and alternatives:
                 row["marketContest"]["topAlternatives"] = alternatives
+                row["marketContest"]["rejectedAlternatives"] = rejected_alternatives
+            if not is_winner:
+                row["marketContest"]["lostTo"] = {
+                    "rowId": winner.get("rowId"),
+                    "market": winner.get("market"),
+                    "side": winner.get("side"),
+                    "line": winner.get("line"),
+                    "odds": winner.get("odds"),
+                    "score": winner.get("score"),
+                    "reason": loss_reason,
+                }
+            row["selectionProof"] = {
+                "selectedMarket": row.get("market"),
+                "selectedScore": row.get("score"),
+                "marketsCompared": markets_compared,
+                "closestAlternativeMarket": closest_proof.get("market"),
+                "closestAlternativeScore": closest_proof.get("score"),
+                "whySelectedBeatAlternative": why_selected,
+                "availabilityRole": "eligibility_only",
+                "dataDepthRole": "confidence_cap_not_direct_merit_bonus",
+                "riskFlags": list(row.get("riskFlags") or []),
+                "contextQuality": row.get("contextQuality"),
+                "marketContestRank": rank,
+                "marketContestWinner": is_winner,
+                "rejectedAlternatives": rejected_alternatives if is_winner else [],
+            }
             reason_tags = set(row.get("reasonTags") or [])
             reason_tags.add(
                 "player_market_fit_winner"
@@ -627,19 +692,28 @@ def _apply_within_player_market_contest(rows: list[dict[str, Any]]) -> dict[str,
         "alternativeRows": alternative_rows,
         "maxContendersForOnePlayer": max_contenders,
         "alternativeLimitPerWinner": MARKET_CONTEST_ALTERNATIVE_LIMIT,
+        "availabilityRole": "eligibility_only",
+        "dataDepthRole": "confidence_cap_not_direct_merit_bonus",
     }
 
 
-def _player_market_contest_key(row: dict[str, Any]) -> str | None:
+def _entity_market_contest_key(row: dict[str, Any]) -> str | None:
     player_key = slug_key(row.get("player"))
-    if not player_key:
-        return None
     fixture = slug_key(row.get("fixtureSlug") or row.get("matchup") or "unknown")
     team = slug_key(row.get("team") or "unknown")
-    return f"{fixture}:player:{team}:{player_key}"
+    if player_key:
+        return f"{fixture}:player:{team}:{player_key}"
+    if team and team != "unknown":
+        return f"{fixture}:team:{team}"
+    return None
 
 
-def _compact_market_contest_alternative(row: dict[str, Any], winner_score: float) -> dict[str, Any]:
+def _entity_market_contest_scope(row: dict[str, Any]) -> str:
+    return "player" if slug_key(row.get("player")) else "team"
+
+
+def _compact_market_contest_alternative(winner: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    winner_score = _float_or_none(winner.get("score")) or 0.0
     score = _float_or_none(row.get("score")) or 0.0
     return {
         "rowId": row.get("rowId"),
@@ -649,6 +723,232 @@ def _compact_market_contest_alternative(row: dict[str, Any], winner_score: float
         "odds": row.get("odds"),
         "score": row.get("score"),
         "scoreGapToWinner": round(max(0.0, winner_score - score), 2),
+        "reasonLost": _why_alternative_lost(winner, row),
+        "riskFlags": list(row.get("riskFlags") or []),
+        "contextQuality": row.get("contextQuality"),
+    }
+
+
+def _market_comparison_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "score": row.get("score"),
+        "contextQuality": row.get("contextQuality"),
+        "riskFlags": list(row.get("riskFlags") or []),
+        "availabilityRole": "eligibility_only",
+    }
+
+
+def _rejected_market_alternative(winner: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    reason = _why_alternative_lost(winner, row)
+    loss_type = _market_loss_type(row)
+    return {
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "score": row.get("score"),
+        "reasonLost": reason,
+        "blocker": reason if loss_type == "blocker" else None,
+        "lowerMeritReason": reason if loss_type == "lower_merit" else None,
+        "lossType": loss_type,
+        "riskFlags": list(row.get("riskFlags") or []),
+        "contextQuality": row.get("contextQuality"),
+    }
+
+
+def _closest_alternative_summary(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {"market": None, "score": None}
+    return {"market": row.get("market"), "score": row.get("score")}
+
+
+def _why_selected_beat_alternative(
+    selected: dict[str, Any],
+    alternative: dict[str, Any] | None,
+) -> str:
+    if not alternative:
+        return "Only eligible researched market-side row for this entity."
+    return _comparison_reason(selected, alternative, selected_label="Selected", alternative_label="closest alternative")
+
+
+def _why_alternative_lost(winner: dict[str, Any], alternative: dict[str, Any]) -> str:
+    if _market_loss_type(alternative) == "blocker":
+        flags = ", ".join(flag for flag in alternative.get("riskFlags") or [] if flag in BLOCKING_RISK_FLAGS)
+        return f"Blocked by material risk flag: {flags or 'blocking risk'}."
+    return _comparison_reason(winner, alternative, selected_label="Winner", alternative_label="alternative")
+
+
+def _comparison_reason(
+    selected: dict[str, Any],
+    alternative: dict[str, Any],
+    *,
+    selected_label: str,
+    alternative_label: str,
+) -> str:
+    selected_score = _float_or_none(selected.get("score")) or 0.0
+    alternative_score = _float_or_none(alternative.get("score")) or 0.0
+    score_gap = round(max(0.0, selected_score - alternative_score), 2)
+    reasons: list[str] = []
+    for key, label in (
+        ("evidenceScore", "stronger evidence"),
+        ("valueScore", "better price/value score"),
+        ("modeFitScore", "better build-mode fit"),
+    ):
+        selected_value = _float_or_none(selected.get(key)) or 0.0
+        alternative_value = _float_or_none(alternative.get(key)) or 0.0
+        if selected_value >= alternative_value + 3:
+            reasons.append(label)
+    for key, label in (
+        ("volatilityPenalty", "lower volatility penalty"),
+        ("stakeMetadataPenalty", "cleaner Stake metadata"),
+        ("oddsTrapPenalty", "less odds-trap risk"),
+        ("quotaFillerPenalty", "less filler risk"),
+        ("correlationPenalty", "lower correlation penalty"),
+    ):
+        selected_value = _float_or_none(selected.get(key)) or 0.0
+        alternative_value = _float_or_none(alternative.get(key)) or 0.0
+        if selected_value + 3 <= alternative_value:
+            reasons.append(label)
+    if len(selected.get("riskFlags") or []) < len(alternative.get("riskFlags") or []):
+        reasons.append("fewer risk flags")
+    if _quality_rank(selected.get("contextQuality")) > _quality_rank(alternative.get("contextQuality")):
+        reasons.append("better context quality")
+    detail = ", ".join(reasons[:3]) if reasons else "higher total merit score after line, odds, evidence, volatility, and risk"
+    return f"{selected_label} beat {alternative_label} by {score_gap} points: {detail}."
+
+
+def _market_loss_type(row: dict[str, Any]) -> str:
+    risk_flags = set(row.get("riskFlags") or [])
+    return "blocker" if risk_flags & BLOCKING_RISK_FLAGS else "lower_merit"
+
+
+def _quality_rank(value: Any) -> int:
+    key = str(value or "").strip().lower()
+    return {
+        "full": 4,
+        "high": 4,
+        "strong": 4,
+        "supported": 3,
+        "medium": 3,
+        "partial": 2,
+        "low": 1,
+        "unsupported": 0,
+    }.get(key, 0)
+
+
+def _apply_game_level_contest(
+    rows: list[dict[str, Any]],
+    *,
+    legs_per_game: int | None,
+    max_candidates_per_game: int,
+) -> dict[str, Any]:
+    groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(row.get("fixtureSlug") or "unknown")].append(row)
+
+    target_legs = max(
+        GAME_CONTEST_MIN_LEGS,
+        min(int(legs_per_game or GAME_CONTEST_MIN_LEGS), max_candidates_per_game),
+    )
+    fixture_summaries: dict[str, dict[str, Any]] = {}
+    ready_groups = 0
+    insufficient_groups = 0
+
+    for fixture, group in groups.items():
+        entity_winners = [row for row in group if row.get("marketContestWinner") is True]
+        primary = sorted(entity_winners or group, key=lambda row: (-(row.get("score") or 0), str(row.get("rowId") or "")))
+        fallback = sorted(
+            [row for row in group if row not in primary],
+            key=lambda row: (-(row.get("score") or 0), str(row.get("rowId") or "")),
+        )
+        ranked = primary + fallback
+        selected_rows = ranked[:target_legs]
+        status = "ready_for_two_plus_leg_sgm" if len(selected_rows) >= GAME_CONTEST_MIN_LEGS else "insufficient_two_leg_candidates"
+        if status == "ready_for_two_plus_leg_sgm":
+            ready_groups += 1
+        else:
+            insufficient_groups += 1
+        fixture_summaries[fixture] = {
+            "status": status,
+            "targetLegs": target_legs,
+            "candidateRows": len(group),
+            "entityWinnerRows": len(entity_winners),
+            "selectedRows": len(selected_rows),
+            "selectedRowIds": [row.get("rowId") for row in selected_rows],
+            "selectedMarkets": [row.get("market") for row in selected_rows],
+            "selectionBasis": "entity_market_winners_first_then_score",
+        }
+        selected_ids = {row.get("rowId") for row in selected_rows}
+        for rank, row in enumerate(ranked, start=1):
+            selected = row.get("rowId") in selected_ids
+            row["gameContestRank"] = rank
+            row["gameContestSelected"] = selected
+            row["gameContestWinner"] = selected
+            row["gameContest"] = {
+                "fixtureSlug": fixture,
+                "rank": rank,
+                "selected": selected,
+                "targetLegs": target_legs,
+                "requiredLegs": GAME_CONTEST_MIN_LEGS,
+                "candidateRows": len(group),
+                "entityWinnerRows": len(entity_winners),
+                "selectionBasis": "entity_market_winners_first_then_score",
+                "status": status,
+            }
+            proof = row.setdefault("selectionProof", {})
+            proof["gameContestRank"] = rank
+            proof["gameContestSelected"] = selected
+            proof["gameContestStatus"] = status
+
+    return {
+        "enabled": True,
+        "policy": "per_fixture_entity_winners_first",
+        "minLegsPerGame": GAME_CONTEST_MIN_LEGS,
+        "targetLegsPerGame": target_legs,
+        "fixtureGroups": len(groups),
+        "readyFixtureGroups": ready_groups,
+        "insufficientFixtureGroups": insufficient_groups,
+        "fixtures": fixture_summaries,
+    }
+
+
+def _market_concentration_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    exposure = Counter(str(row.get("normalizedMarketKey") or "unknown") for row in rows)
+    total = len(rows)
+    if not total:
+        return {
+            "diagnosticOnly": True,
+            "totalRows": 0,
+            "marketExposure": {},
+            "warnings": [],
+        }
+    dominant_market, dominant_count = exposure.most_common(1)[0]
+    dominant_share = dominant_count / total
+    warnings = []
+    if dominant_share >= 0.5 and total >= 4:
+        warnings.append(
+            {
+                "type": "market_concentration",
+                "market": dominant_market,
+                "share": round(dominant_share, 3),
+                "message": (
+                    f"{dominant_market} makes up {dominant_count}/{total} returned rows; "
+                    "this is diagnostic only and did not change selection order."
+                ),
+            }
+        )
+    return {
+        "diagnosticOnly": True,
+        "totalRows": total,
+        "dominantMarket": dominant_market,
+        "dominantCount": dominant_count,
+        "dominantShare": round(dominant_share, 3),
+        "marketExposure": dict(exposure),
+        "warnings": warnings,
     }
 
 
@@ -765,7 +1065,6 @@ def _mode_quality_floor(mode: str) -> float:
         "balanced": 58.0,
         "longshot": 50.0,
         "per_game": 55.0,
-        "strict_diversity": 57.0,
     }.get(mode, 60.0)
 
 

@@ -58,7 +58,9 @@ Evaluate player props as player-market-side rows, not as players forced into a p
 
 When a familiar high-data market survives, still ask whether another playable market for that same player is better suited. Do not stop at the first market that has enough stats. The selected row should win a player-market comparison, not merely be the easiest row to support.
 
-When `buildStakeUiSgmCandidatePool` returns `marketContest` or `marketContestRank`, treat `marketContestRank: 1` / `player_market_fit_winner` as the backend's best-fitting market for that player. Same-player alternatives are secondary review candidates unless the winner becomes unavailable, fails validation, or the user specifically wants more legs from that player.
+When `buildStakeUiSgmCandidatePool` returns `marketContest`, `gameContest`, or `selectionProof`, use those fields as merit proof. `marketContestRank: 1` / `player_market_fit_winner` means the row beat that player's or team's other available market-side rows. `gameContestSelected: true` means the row survived the fixture-level contest for the top 2+ SGM legs. Check `marketsCompared`, `closestAlternativeMarket`, `closestAlternativeScore`, `whySelectedBeatAlternative`, and `rejectedAlternatives` before treating a row as a finalist.
+
+Market concentration is diagnostic only. If singles, hits, total bases, or another market dominates, do not replace rows just to diversify and do not keep rows just because the market is common. Require proof that each selected row beat its same-player/team alternatives on merit.
 
 A player weak for one market may still be strong for another. Promote or reject the exact player-market-side row, not the whole player.
 

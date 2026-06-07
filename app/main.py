@@ -1342,7 +1342,7 @@ async def mlb_stake_ui_sgm_candidate_pool(
             payload,
             "maxCandidatesPerGame",
             8,
-            minimum=1,
+            minimum=2,
             maximum=16,
         ),
         max_total_candidates=_clean_int_from_body(
@@ -1362,7 +1362,7 @@ async def mlb_stake_ui_sgm_candidate_pool(
             payload,
             "maxLegsPerGameGroup",
             16,
-            minimum=1,
+            minimum=2,
             maximum=16,
         ),
         max_sgm_group_odds=min(

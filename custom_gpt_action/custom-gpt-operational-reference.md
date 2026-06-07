@@ -61,11 +61,17 @@ For each player under consideration, run a player-market comparison:
 - Let the best-fitting row win, even if it is not the most familiar or most heavily logged market.
 - If a high-data market wins, state why it beat the player's other playable markets. If it only wins because it has more data, reject or downgrade it and continue the comparison.
 
-`buildStakeUiSgmCandidatePool` applies a within-player market contest for market-neutral SGM scans. Use `marketContestRank: 1`, `marketContestWinner: true`, or the `player_market_fit_winner` reason tag as the player's first-choice market row. Rows marked `player_market_fit_alternative` are not blocked, but they should be treated as secondary alternatives after player winners have been compared across the slate.
+`buildStakeUiSgmCandidatePool` applies market-neutral contests for SGM scans:
+
+- Player/team contest: each entity's playable market-side rows compete first. Use `marketContestRank: 1`, `marketContestWinner: true`, or `player_market_fit_winner` as the entity's first-choice row.
+- Game contest: entity winners then compete inside each fixture. Use `gameContestSelected: true` and `gameContestRank` to identify the top 2+ legs for that SGM game.
+- Explainability: for each selected row, review `selectionProof.selectedMarket`, `selectedScore`, `marketsCompared`, `closestAlternativeMarket`, `closestAlternativeScore`, `whySelectedBeatAlternative`, `availabilityRole`, `riskFlags`, and `contextQuality`.
+- Rejected alternatives: use `selectionProof.rejectedAlternatives` / `marketContest.rejectedAlternatives` to see each losing market's line, odds, reason lost, blocker/lower-merit reason, risk flags, and context quality.
+- Availability, clickability, and data depth are not merit bonuses. They only decide eligibility or confidence limits.
 
 For broad build requests, do not pass a narrow `markets` filter to `buildStakeUiSgmCandidatePool`, `getPropPage`, `getComparisonBoard`, or `buildSlipCandidates` unless the user requested that filter. If the final slip repeats one market, justify the repetition with current data and disclose concentration.
 
-In normal mode, avoid building more than 50% of the slip from one `marketFamily` unless the user requested that market or the data clearly justifies the concentration. If the cap is exceeded, disclose why. Longshot mode may exceed the cap, but still label concentration risk.
+Market concentration is diagnostic only. Do not force replacements because one market appears often, and do not keep a market because it appears often. Singles, hits, total bases, HRR, walks, strikeouts, or any other market may dominate only when the selected rows prove they beat their same-entity alternatives on score, context, role, matchup, volatility, and risk.
 
 Market filters, preferred markets, sides, modes, and styles are request-scoped. A previous user request for hits, unders, strikeouts, longshot, or another narrow style does not carry into a later broad request.
 

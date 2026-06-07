@@ -721,8 +721,9 @@ def test_gpt_schema_exposes_stake_ui_sgm_candidate_pool_action():
         "balanced",
         "longshot",
         "per_game",
-        "strict_diversity",
     ]
+    assert properties["legsPerGame"]["minimum"] == 2
+    assert properties["maxCandidatesPerGame"]["minimum"] == 2
 
 
 def test_gpt_schema_exposes_batch_review_slip_action():
@@ -1050,10 +1051,21 @@ def test_stake_ui_sgm_candidate_pool_compact_mode_trims_nested_context():
         "odds",
         "contextQuality",
         "score",
+        "marketContestRank",
+        "gameContestRank",
+        "selectedMarket",
+        "selectedScore",
+        "marketsCompared",
+        "closestAlternativeMarket",
+        "closestAlternativeScore",
+        "whySelectedBeatAlternative",
+        "availabilityRole",
         "reasonTags",
         "riskFlags",
     }
     assert len(row["reasonTags"]) <= 3
+    assert row["availabilityRole"] == "eligibility_only"
+    assert row["selectedMarket"] == row["market"]
     assert "context" not in row
     assert "last15" not in row
 

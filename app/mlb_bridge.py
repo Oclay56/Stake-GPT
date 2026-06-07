@@ -57,6 +57,27 @@ MARKET_STAT_MAP = {
         "statKey": "totalBases",
         "label": "Total Bases",
     },
+    "hits-runs-rbis": {
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "hits_runs_rbis",
+        "label": "Hits + Runs + RBIs",
+        "contextQuality": "partial",
+    },
+    "hits-runs-rbi": {
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "hits_runs_rbis",
+        "label": "Hits + Runs + RBIs",
+        "contextQuality": "partial",
+    },
+    "hrr": {
+        "group": "hitting",
+        "statKey": None,
+        "statFormula": "hits_runs_rbis",
+        "label": "Hits + Runs + RBIs",
+        "contextQuality": "partial",
+    },
     "home-runs": {"group": "hitting", "statKey": "homeRuns", "label": "Home Runs"},
     "home-run": {"group": "hitting", "statKey": "homeRuns", "label": "Home Runs"},
     "rbi": {"group": "hitting", "statKey": "rbi", "label": "RBI"},
@@ -203,6 +224,13 @@ def stat_value_from_stats(mapping_or_key: Any, stats: dict[str, Any] | None) -> 
             triples = _float_or_none(stats.get("triples")) or 0.0
             home_runs = _float_or_none(stats.get("homeRuns")) or 0.0
             return max(0.0, round(hits - doubles - triples - home_runs, 4))
+        if formula == "hits_runs_rbis":
+            hits = _float_or_none(stats.get("hits"))
+            runs = _float_or_none(stats.get("runs"))
+            rbi = _float_or_none(stats.get("rbi"))
+            if hits is None or runs is None or rbi is None:
+                return None
+            return round(hits + runs + rbi, 4)
         stat_key = mapping_or_key.get("statKey")
     else:
         stat_key = mapping_or_key

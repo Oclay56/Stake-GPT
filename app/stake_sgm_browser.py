@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections import Counter
 from hashlib import sha1
 from datetime import datetime, timezone
 import os
@@ -14,10 +15,11 @@ DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 DEFAULT_STAKE_BASE_URL = "https://stake.com"
 STAKE_MLB_PATH = "/sports/baseball/usa/mlb"
 STAKE_MLB_URL = f"{DEFAULT_STAKE_BASE_URL}{STAKE_MLB_PATH}"
-CLICK_ODDS_TOLERANCE = 0.006
+CLICK_ODDS_TOLERANCE = 0.05
 MONEYLINE_MARKET_LABEL = "Winner (incl. Extra Innings)"
 MONEYLINE_MARKET_KEY = "winner_including_extra_innings"
 MIN_SGM_REVIEW_LEGS = 2
+SGM_BOARD_FRESH_SECONDS = 180
 _SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS: dict[str, dict[str, Any]] = {
     "singles": {
@@ -53,6 +55,15 @@ SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS: dict[str, dict[str, Any]] = {
             "strikeouts",
             "strikeout",
             "failed attempts",
+        ],
+        "batterOnly": True,
+    },
+    "hits runs rbis": {
+        "aliases": [
+            "hits runs rbis",
+            "hits + runs + rbis",
+            "hits runs and rbis",
+            "hrr",
         ],
         "batterOnly": True,
     },
@@ -892,12 +903,52 @@ def build_stake_sgm_review_slip_batch(
             "minGroupsRequired": required_groups,
             **resume,
             "groups": results,
+            "buildReport": _batch_build_report(
+                requested_groups=groups,
+                results=results,
+                stop_reason=stop_reason,
+            ),
             "safety": {
                 "enteredStakeAmount": False,
                 "clickedAddBet": bool(clicked_groups),
                 "clickedPlaceBet": False,
             },
         }
+
+
+def _batch_build_report(
+    *,
+    requested_groups: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    stop_reason: str | None,
+) -> dict[str, Any]:
+    completed_statuses = {"built_for_review", "skipped_existing"}
+    return {
+        "requestedGroups": len(requested_groups),
+        "processedGroups": len(results),
+        "completedGroups": sum(1 for result in results if result.get("status") in completed_statuses),
+        "skippedExistingGroups": sum(1 for result in results if result.get("status") == "skipped_existing"),
+        "stopReason": stop_reason,
+        "minimumLegsPerSgmGroup": MIN_SGM_REVIEW_LEGS,
+        "groups": [
+            {
+                "fixtureSlug": result.get("fixtureSlug"),
+                "matchup": result.get("matchup"),
+                "status": result.get("status"),
+                "clickedLegs": result.get("clickedLegs"),
+                "existingLegs": result.get("existingLegs"),
+                "selectedRowIds": [
+                    row.get("rowId")
+                    for row in result.get("selectedRows") or []
+                    if row.get("rowId")
+                ],
+                "twoPlusLegRequirementMet": (
+                    (result.get("buildReport") or {}).get("twoPlusLegRequirementMet")
+                ),
+            }
+            for result in results
+        ],
+    }
 
 
 def _batch_should_stop_after_group_result(
@@ -1043,6 +1094,13 @@ def _review_build_timeout_result(
         "lastAttemptedRowId": last_attempted_row_id,
         "missingSelections": (transaction or {}).get("missingSelections") or [],
         "transactionPlan": transaction_plan,
+        "buildReport": _review_build_report(
+            fixture_slug=str(fixture_slug or ""),
+            matchup=matchup,
+            status="timeout",
+            selected_rows=selected_rows or [],
+            transaction_plan=transaction_plan,
+        ),
         "safety": {
             "enteredStakeAmount": False,
             "clickedAddBet": False,
@@ -1087,7 +1145,7 @@ def match_sgm_review_selections(
             selection,
         )
         if match:
-            matched_rows.append(match)
+            matched_rows.append(_merge_selection_metadata(match, selection))
             continue
 
         match = _find_exact_selection_row(
@@ -1097,7 +1155,7 @@ def match_sgm_review_selections(
             odds_tolerance=odds_tolerance,
         )
         if match:
-            matched_rows.append(match)
+            matched_rows.append(_merge_selection_metadata(match, selection))
         else:
             missing_selections.append(
                 {
@@ -1107,6 +1165,28 @@ def match_sgm_review_selections(
             )
 
     return {"matchedRows": matched_rows, "missingSelections": missing_selections}
+
+
+def _merge_selection_metadata(row: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(row)
+    for key in (
+        "score",
+        "contextQuality",
+        "reasonTags",
+        "riskFlags",
+        "selectionProof",
+        "marketContest",
+        "gameContest",
+        "probabilityAssessment",
+        "lineupContext",
+        "opponentPitcherContext",
+        "opponentTeamContext",
+        "gameContext",
+        "boardFreshness",
+    ):
+        if key in selection:
+            merged[key] = selection.get(key)
+    return merged
 
 
 def _group_review_selections(group: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1499,6 +1579,7 @@ def normalize_sgm_response(
     slug_fixture = ((response.get("data") or {}).get("slugFixture")) or {}
     playability_context = _sgm_playability_context(slug_fixture)
     teams = slug_fixture.get("swishGameTeams") or []
+    captured_at = datetime.now(timezone.utc).isoformat()
 
     team_markets: list[dict[str, Any]] = []
     player_props: list[dict[str, Any]] = []
@@ -1540,7 +1621,13 @@ def normalize_sgm_response(
     board = {
         "source": "stake_ui_sgm",
         "fixtureSlug": fixture_slug,
-        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "capturedAt": captured_at,
+        "boardFreshness": sgm_board_freshness(captured_at),
+        "freshnessPolicy": {
+            "maxAgeSeconds": SGM_BOARD_FRESH_SECONDS,
+            "refetchOnStale": True,
+            "refetchAfterLineupOrPitcherChange": True,
+        },
         "fixture": {
             "id": slug_fixture.get("id"),
             "status": slug_fixture.get("status"),
@@ -1567,6 +1654,48 @@ def normalize_sgm_response(
     }
     _remember_sgm_board_rows(board)
     return board
+
+
+def sgm_board_freshness(
+    captured_at: Any,
+    *,
+    max_age_seconds: int | float = SGM_BOARD_FRESH_SECONDS,
+) -> dict[str, Any]:
+    captured = _parse_iso_datetime(captured_at)
+    if captured is None:
+        return {
+            "capturedAt": captured_at,
+            "status": "unknown",
+            "ageSeconds": None,
+            "maxAgeSeconds": max_age_seconds,
+            "refetchRequired": True,
+            "reason": "missing_or_invalid_capturedAt",
+        }
+    age = max(0.0, (datetime.now(timezone.utc) - captured).total_seconds())
+    stale = age > float(max_age_seconds)
+    return {
+        "capturedAt": captured.isoformat(),
+        "status": "stale" if stale else "fresh",
+        "ageSeconds": round(age, 3),
+        "maxAgeSeconds": max_age_seconds,
+        "refetchRequired": stale,
+        "reason": "board_older_than_max_age" if stale else None,
+    }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _find_exact_selection_row(
@@ -2931,7 +3060,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               && text.length <= 90
               && wanted.side
               && sideAliases.some((side) => normalizedText.includes(side))
-              && (targetOdds == null || textHasNumber(text, targetOdds, 0.006));
+              && (targetOdds == null || textHasNumber(text, targetOdds, 0.05));
           };
           const ownerMatchesText = (text) => {
             if (wanted.scope === "match props" || wanted.scope === "match_props") {
@@ -3073,7 +3202,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
               }
               if (ownerMatched) {
                 const oddsMismatch = targetOdds != null
-                  && (clickedOdds == null || Math.abs(targetOdds - clickedOdds) > 0.006);
+                  && (clickedOdds == null || Math.abs(targetOdds - clickedOdds) > 0.05);
                 if (oddsMismatch) {
                   oddsMismatchSamples.push({
                     requestedOdds: targetOdds,
@@ -3091,7 +3220,7 @@ def _interact_one_sgm_selection(page: Any, row: dict[str, Any], *, click: bool) 
                   clickedOdds,
                   requestedOdds: targetOdds,
                   oddsChanged: targetOdds != null && clickedOdds != null
-                    ? Math.abs(targetOdds - clickedOdds) > 0.006
+                    ? Math.abs(targetOdds - clickedOdds) > 0.05
                     : false,
                   area: rect.width * rect.height,
                   rect: {
@@ -3374,6 +3503,10 @@ def _market_search_text(value: str) -> str:
         "first hr": "first home run",
         "first-hr": "first home run",
         "first home run": "first home run",
+        "hits + runs + rbis": "hits runs rbis",
+        "hits runs rbis": "hits runs rbis",
+        "hits runs and rbis": "hits runs rbis",
+        "hrr": "hits runs rbis",
         "stolen bases": "steals",
         "team hits": "hits",
         "team rbi": "rbi",
@@ -3409,6 +3542,10 @@ def _market_display_aliases(value: str) -> list[str]:
         "first home run": ["First HR", "First Home Run"],
         "first so": ["First SO", "First Strike Out", "First Strikeout"],
         "hits allowed": ["Hits Allowed"],
+        "hits + runs + rbis": ["Hits + Runs + RBIs", "Hits Runs RBIs", "HRR"],
+        "hits runs rbis": ["Hits + Runs + RBIs", "Hits Runs RBIs", "HRR"],
+        "hits runs and rbis": ["Hits + Runs + RBIs", "Hits Runs RBIs", "HRR"],
+        "hrr": ["HRR", "Hits + Runs + RBIs", "Hits Runs RBIs"],
         "match home runs": ["Play Home Runs", "Match Home Runs", "Home Runs"],
         "match singles": ["Match Singles", "Singles"],
         "match triples": ["Match Triples", "Triples"],
@@ -3513,6 +3650,13 @@ def _review_slip_result(
         "addBetResult": add_bet_result or {},
         "addSummary": add_summary,
         "transactionPlan": transaction_plan or {},
+        "buildReport": _review_build_report(
+            fixture_slug=fixture_slug,
+            matchup=matchup,
+            status=status,
+            selected_rows=selected_rows,
+            transaction_plan=transaction_plan or {},
+        ),
         "warnings": board.get("warnings") or [],
         "safety": {
             "enteredStakeAmount": False,
@@ -3551,6 +3695,16 @@ def _review_existing_sgm_group_result(
             "transactionalBuild": True,
             "sidebarExisting": sidebar_match,
         },
+        "buildReport": _review_build_report(
+            fixture_slug=fixture_slug,
+            matchup=resolved_matchup,
+            status="skipped_existing",
+            selected_rows=selected_rows,
+            transaction_plan={
+                "status": "skipped_existing",
+                "requiredLegs": sidebar_match.get("requiredLegs"),
+            },
+        ),
         "warnings": ["sgm_group_already_present_in_sidebar"],
         "safety": {
             "enteredStakeAmount": False,
@@ -3608,7 +3762,7 @@ def _compact_sidebar_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_click_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    compact = {
         "rowId": row.get("rowId"),
         "player": row.get("player"),
         "team": row.get("team"),
@@ -3620,6 +3774,80 @@ def _compact_click_row(row: dict[str, Any]) -> dict[str, Any]:
         "playerId": row.get("playerId"),
         "marketId": row.get("marketId"),
         "lineId": row.get("lineId"),
+    }
+    for key in (
+        "score",
+        "contextQuality",
+        "reasonTags",
+        "riskFlags",
+        "selectionProof",
+        "probabilityAssessment",
+        "boardFreshness",
+    ):
+        value = row.get(key)
+        if value not in (None, [], {}):
+            compact[key] = value
+    return compact
+
+
+def _review_build_report(
+    *,
+    fixture_slug: str,
+    matchup: str | None,
+    status: str,
+    selected_rows: list[dict[str, Any]],
+    transaction_plan: dict[str, Any],
+) -> dict[str, Any]:
+    required_legs = _int_or_none(transaction_plan.get("requiredLegs")) or max(
+        MIN_SGM_REVIEW_LEGS,
+        len(selected_rows),
+    )
+    return {
+        "fixtureSlug": fixture_slug,
+        "matchup": matchup,
+        "status": status,
+        "requiredLegs": required_legs,
+        "selectedLegCount": len(selected_rows),
+        "minimumLegsPerSgmGroup": MIN_SGM_REVIEW_LEGS,
+        "twoPlusLegRequirementMet": len(selected_rows) >= MIN_SGM_REVIEW_LEGS,
+        "marketProofAvailable": any(row.get("selectionProof") for row in selected_rows),
+        "selectedLegs": [_review_leg_report(row) for row in selected_rows],
+        "riskFlags": sorted(
+            {
+                str(flag)
+                for row in selected_rows
+                for flag in (row.get("riskFlags") or [])
+            }
+        ),
+        "contextQuality": dict(
+            Counter(str(row.get("contextQuality") or "unknown") for row in selected_rows)
+        ),
+    }
+
+
+def _review_leg_report(row: dict[str, Any]) -> dict[str, Any]:
+    proof = row.get("selectionProof") or {}
+    probability = row.get("probabilityAssessment") or proof.get("probabilityAssessment") or {}
+    return {
+        "rowId": row.get("rowId"),
+        "chosenLeg": {
+            "player": row.get("player"),
+            "team": row.get("team"),
+            "market": row.get("market"),
+            "side": row.get("side"),
+            "line": row.get("line"),
+            "odds": row.get("odds"),
+        },
+        "selectedScore": row.get("score") or proof.get("selectedScore"),
+        "closestAlternativeMarket": proof.get("closestAlternativeMarket"),
+        "closestAlternativeScore": proof.get("closestAlternativeScore"),
+        "whySelectedBeatAlternative": proof.get("whySelectedBeatAlternative"),
+        "riskFlags": row.get("riskFlags") or proof.get("riskFlags") or [],
+        "contextQuality": row.get("contextQuality") or proof.get("contextQuality"),
+        "edgeStatus": probability.get("edgeStatus"),
+        "impliedProbability": probability.get("impliedProbability"),
+        "adjustedEstimatedProbability": probability.get("adjustedEstimatedProbability"),
+        "rejectedAlternatives": proof.get("rejectedAlternatives") or [],
     }
 
 

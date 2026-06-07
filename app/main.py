@@ -1370,6 +1370,13 @@ async def mlb_stake_ui_sgm_candidate_pool(
             501.0,
         ),
         max_games=max_games,
+        max_board_age_seconds=_clean_int_from_body(
+            payload,
+            "maxCacheAgeSeconds",
+            180,
+            minimum=0,
+            maximum=600,
+        ),
     )
     pool["bridge"] = _local_ui_bridge_summary(completed)
     pool["boardBatch"] = {

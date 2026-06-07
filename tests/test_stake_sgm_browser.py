@@ -23,12 +23,15 @@ from app.stake_sgm_browser import (
     _preflight_sgm_review_selections,
     _preflight_result_is_buildable,
     _review_add_summary,
+    _review_slip_result,
     _batch_resume_report,
     _sidebar_group_target,
     _sidebar_sgm_group_already_present,
     _sidebar_remove_confirmed,
     _transactional_selection_plan,
     fixture_url,
+    make_sgm_selection_row_id,
+    match_sgm_review_selections,
     make_mlb_moneyline_row_id,
     stake_base_url,
     stake_mlb_url,
@@ -512,6 +515,73 @@ def test_review_add_summary_reports_sidebar_before_after_counts():
         "sidebarSelectionDelta": 2,
         "sidebarChanged": True,
     }
+
+
+def test_review_slip_result_preserves_candidate_selection_proof_report():
+    fixture_slug = "46575351-new-york-yankees-toronto-blue-jays"
+    source_row = {
+        "team": "Toronto Blue Jays",
+        "player": "Proof Player",
+        "scope": "player",
+        "market": "Singles",
+        "line": 0.5,
+        "over": 1.8,
+        "under": 2.05,
+        "playable": True,
+        "marketId": "market-singles",
+        "lineId": "line-proof-singles",
+        "swishStatId": 302,
+        "playerId": "swish-proof",
+    }
+    row_id = make_sgm_selection_row_id(fixture_slug, source_row, "under")
+    selection_proof = {
+        "selectedMarket": "Singles",
+        "selectedScore": 91,
+        "closestAlternativeMarket": "Hits",
+        "closestAlternativeScore": 86,
+        "whySelectedBeatAlternative": "Selected beat closest alternative by 5 points.",
+        "riskFlags": [],
+        "contextQuality": "full",
+        "rejectedAlternatives": [
+            {"market": "Hits", "line": 0.5, "odds": 1.9, "reasonLost": "lower score"}
+        ],
+    }
+    match = match_sgm_review_selections(
+        {"fixtureSlug": fixture_slug, "playerProps": [source_row], "teamMarkets": []},
+        [
+            {
+                "rowId": row_id,
+                "score": 91,
+                "contextQuality": "full",
+                "selectionProof": selection_proof,
+                "probabilityAssessment": {
+                    "edgeStatus": "thin_edge",
+                    "impliedProbability": 0.4878,
+                    "adjustedEstimatedProbability": 0.52,
+                },
+            }
+        ],
+    )
+    selected = match["matchedRows"][0]
+
+    result = _review_slip_result(
+        fixture_slug=fixture_slug,
+        status="built_for_review",
+        board={"warnings": []},
+        selected_rows=[selected, selected],
+        missing_selections=[],
+        click_results=[{"status": "clicked"}, {"status": "clicked"}],
+        add_bet_result={"status": "clicked", "addBetConfirmed": True},
+        transaction_plan={"requiredLegs": 2},
+    )
+
+    leg_report = result["buildReport"]["selectedLegs"][0]
+
+    assert result["buildReport"]["marketProofAvailable"] is True
+    assert result["buildReport"]["twoPlusLegRequirementMet"] is True
+    assert leg_report["closestAlternativeMarket"] == "Hits"
+    assert leg_report["edgeStatus"] == "thin_edge"
+    assert leg_report["rejectedAlternatives"][0]["market"] == "Hits"
 
 
 def test_sidebar_group_target_uses_fixture_slug_matchup():

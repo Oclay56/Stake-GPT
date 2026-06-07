@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from app.sgm_candidate_pool import (
     _apply_game_level_contest,
@@ -11,6 +12,7 @@ from app.sgm_candidate_pool import (
     normalize_sgm_market_key,
     score_sgm_candidate,
 )
+from app.mlb_bridge import stat_mapping_for_market, stat_value_from_stats
 
 
 class CandidateFakeMLBEngine:
@@ -111,6 +113,10 @@ def _row(player: str, team: str, market: str, under: float, *, line: float = 0.5
     }
 
 
+def _fresh_captured_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _scored_candidate(
     row_id: str,
     player: str,
@@ -141,6 +147,72 @@ def test_normalizes_sgm_only_market_aliases():
     assert normalize_sgm_market_key("BB") == "batter_walks"
     assert normalize_sgm_market_key("Batter Ks") == "batter_strikeouts"
     assert normalize_sgm_market_key("Singles") == "singles"
+    assert normalize_sgm_market_key("Hits + Runs + RBIs") == "hits_runs_rbis"
+    mapping = stat_mapping_for_market("hits-runs-rbis")
+    assert mapping["supported"] is True
+    assert stat_value_from_stats(mapping, {"hits": 1, "runs": 2, "rbi": 3}) == 6
+
+
+def test_probability_assessment_uses_formula_inputs_and_labels_edge():
+    scored = score_sgm_candidate(
+        {
+            "odds": 1.9,
+            "side": "under",
+            "line": 0.5,
+            "contextQuality": "full",
+            "seasonSample": {"status": "robust"},
+            "context": {
+                "last10": {"sideHitRate": 0.8, "gamesUsed": 10},
+                "last15": {"sideHitRate": 0.8, "gamesUsed": 15},
+                "season": {"sideMargin": 0.5, "gamesUsed": 60},
+            },
+            "normalizedMarketKey": "hits",
+            "opponentPitcherContext": {
+                "status": "available",
+                "season": {
+                    "gamesStarted": 20,
+                    "hitsAllowed": 100,
+                    "walksAllowed": 40,
+                    "strikeOuts": 120,
+                    "homeRunsAllowed": 12,
+                },
+                "recent": {"perGame": {"hits": 5.0}},
+            },
+        },
+        mode="best_available",
+    )
+
+    probability = scored["probabilityAssessment"]
+
+    assert probability["impliedProbability"] == 0.5263
+    assert probability["inputs"]["seasonRateSource"] == "season_average_proxy"
+    assert probability["inputs"]["last15Rate"] == 0.8
+    assert probability["inputs"]["matchupFactor"] > 0.5
+    assert probability["edgeStatus"] == "clear_possible_edge"
+    assert scored["probabilityScoreAdjustment"] > 0
+
+
+def test_stale_board_requires_refetch_and_blocks_candidate_score():
+    scored = score_sgm_candidate(
+        {
+            "odds": 1.9,
+            "side": "under",
+            "line": 0.5,
+            "contextQuality": "full",
+            "seasonSample": {"status": "robust"},
+            "context": {
+                "last10": {"sideHitRate": 0.9, "gamesUsed": 10},
+                "last15": {"sideHitRate": 0.9, "gamesUsed": 15},
+                "season": {"sideMargin": 0.5, "gamesUsed": 60},
+            },
+            "normalizedMarketKey": "hits",
+            "boardFreshness": {"status": "stale", "refetchRequired": True},
+        },
+        mode="best_available",
+    )
+
+    assert "stake_board_stale_refetch_required" in scored["riskFlags"]
+    assert scored["score"] == 0.0
 
 
 def test_scoring_penalizes_short_filler_and_high_odds_without_support():
@@ -371,7 +443,7 @@ def test_candidate_pool_ranks_context_backed_rows_and_skips_weak_per_game():
         {
             "source": "stake_ui_sgm",
             "fixtureSlug": "fixture-a",
-            "capturedAt": "2026-05-25T12:00:00Z",
+            "capturedAt": _fresh_captured_at(),
             "playerProps": [
                 _row("Strong Under", "Test A", "Singles", 2.25),
                 _row("Diverse Under", "Test A", "Batter Walks", 2.05),
@@ -381,7 +453,7 @@ def test_candidate_pool_ranks_context_backed_rows_and_skips_weak_per_game():
         {
             "source": "stake_ui_sgm",
             "fixtureSlug": "fixture-b",
-            "capturedAt": "2026-05-25T12:00:00Z",
+            "capturedAt": _fresh_captured_at(),
             "playerProps": [
                 _row("Weak Under", "Test C", "Singles", 4.5, fixture_slug="fixture-b"),
             ],

@@ -7,7 +7,12 @@ from typing import Any
 from .decision_profiles import evidence_check, evidence_windows, season_evidence, trend_labels
 from .mlb_bridge import enrich_props_with_mlb_data, stat_mapping_for_market
 from .mlb_props import slug_key
-from .stake_sgm_browser import make_sgm_selection_row_id, sgm_market_filter_matches
+from .stake_sgm_browser import (
+    SGM_BOARD_FRESH_SECONDS,
+    make_sgm_selection_row_id,
+    sgm_board_freshness,
+    sgm_market_filter_matches,
+)
 
 
 DEFAULT_MAX_LEGS_PER_GAME_GROUP = 16
@@ -25,6 +30,7 @@ BLOCKING_RISK_FLAGS = {
     "game_postponed",
     "game_suspended",
     "game_cancelled",
+    "stake_board_stale_refetch_required",
     "stake_bet_factor_zero_or_negative",
 }
 SUPPORTED_MODES = {
@@ -75,6 +81,15 @@ def _compact_candidate_pool_row(row: dict[str, Any]) -> dict[str, Any]:
         "whySelectedBeatAlternative": (row.get("selectionProof") or {}).get("whySelectedBeatAlternative"),
         "availabilityRole": (row.get("selectionProof") or {}).get("availabilityRole")
         or row.get("availabilityRole"),
+        "edgeStatus": (row.get("probabilityAssessment") or {}).get("edgeStatus"),
+        "impliedProbability": (row.get("probabilityAssessment") or {}).get("impliedProbability"),
+        "estimatedProbability": (row.get("probabilityAssessment") or {}).get("estimatedProbability"),
+        "adjustedEstimatedProbability": (row.get("probabilityAssessment") or {}).get(
+            "adjustedEstimatedProbability"
+        ),
+        "matchupFactor": ((row.get("probabilityAssessment") or {}).get("inputs") or {}).get(
+            "matchupFactor"
+        ),
         "reasonTags": list(row.get("reasonTags") or [])[:COMPACT_REASON_TAG_LIMIT],
         "riskFlags": list(row.get("riskFlags") or []),
     }
@@ -107,6 +122,12 @@ def normalize_sgm_market_key(market: Any, *, scope: str | None = None, position:
         "batter-strikeouts": "batter_strikeouts",
         "hitter-strikeouts": "batter_strikeouts",
         "failed-attempts": "batter_strikeouts",
+        "hits-runs-rbi": "hits_runs_rbis",
+        "hits-runs-rbis": "hits_runs_rbis",
+        "hit-runs-rbis": "hits_runs_rbis",
+        "hits-runs-rbis-hrr": "hits_runs_rbis",
+        "h-r-r": "hits_runs_rbis",
+        "hrr": "hits_runs_rbis",
     }
     if key in aliases:
         return aliases[key]
@@ -168,6 +189,12 @@ def score_sgm_candidate(
             stake_metadata_penalty += 100.0
         elif flag in {"game_delay_risk", "start_time_tbd"}:
             stake_metadata_penalty += 8.0
+    board_freshness = candidate.get("boardFreshness") or {}
+    if board_freshness.get("refetchRequired"):
+        stake_metadata_penalty += 100.0
+        risk_flags.append("stake_board_stale_refetch_required")
+    elif board_freshness.get("status") == "unknown":
+        reason_tags.append("stake_board_freshness_unknown")
 
     if evidence_score >= 70:
         reason_tags.append("broader_context_supports_side")
@@ -181,11 +208,17 @@ def score_sgm_candidate(
     if clean_mode == "safe" and evidence_score < 70:
         risk_flags.append("safe_mode_evidence_below_strict_floor")
 
+    probability_assessment = _probability_assessment(candidate, risk_flags)
+    probability_adjustment = _probability_score_adjustment(probability_assessment)
+    risk_flags.extend(probability_assessment.get("riskFlags") or [])
+    reason_tags.extend(probability_assessment.get("reasonTags") or [])
+
     score = (
         evidence_score * 0.48
         + value_score * 0.22
         + mode_fit_score * 0.20
         + 10.0
+        + probability_adjustment
         - odds_trap_penalty
         - quota_filler_penalty
         - volatility_penalty
@@ -203,6 +236,8 @@ def score_sgm_candidate(
         "volatilityPenalty": round(volatility_penalty, 2),
         "stakeMetadataPenalty": round(stake_metadata_penalty, 2),
         "correlationPenalty": round(correlation_penalty, 2),
+        "probabilityScoreAdjustment": round(probability_adjustment, 2),
+        "probabilityAssessment": probability_assessment,
         "marketExposurePenalty": 0.0,
         "score": round(max(0.0, min(100.0, score)), 2),
         "reasonTags": sorted(set(reason_tags)),
@@ -232,6 +267,7 @@ async def build_sgm_candidate_pool_from_boards(
     max_legs_per_game_group: int = DEFAULT_MAX_LEGS_PER_GAME_GROUP,
     max_sgm_group_odds: float = DEFAULT_MAX_SGM_GROUP_ODDS,
     max_games: int = NORMAL_SLATE_GAME_CAP,
+    max_board_age_seconds: int = SGM_BOARD_FRESH_SECONDS,
 ) -> dict[str, Any]:
     clean_mode = _clean_mode(mode)
     clean_side = _clean_side(side)
@@ -254,6 +290,7 @@ async def build_sgm_candidate_pool_from_boards(
         market_filter=wanted_markets,
         min_odds=min_individual_odds or target_odds_min,
         max_odds=max_individual_odds or target_odds_max,
+        max_board_age_seconds=max_board_age_seconds,
     )
     prop_payload = _props_payload_from_rows(flat_rows, date)
     enriched = await enrich_props_with_mlb_data(
@@ -341,6 +378,9 @@ async def build_sgm_candidate_pool_from_boards(
             "gameLevelContest": True,
             "gameContestMinLegs": GAME_CONTEST_MIN_LEGS,
             "marketConcentrationDiagnosticOnly": True,
+            "maxBoardAgeSeconds": max_board_age_seconds,
+            "refetchOnStaleBoard": True,
+            "refetchAfterLineupOrPitcherChange": True,
         },
         "candidateCounts": {
             "scannedRows": len(flat_rows),
@@ -374,12 +414,17 @@ def _flatten_board_rows(
     market_filter: set[str],
     min_odds: float | None,
     max_odds: float | None,
+    max_board_age_seconds: int,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
     rows: list[dict[str, Any]] = []
     rejected: Counter[str] = Counter()
     wanted_sides = ("over", "under") if side == "any" else (side,)
     for board in boards:
         fixture_slug = str(board.get("fixtureSlug") or "")
+        board_freshness = board.get("boardFreshness") or sgm_board_freshness(
+            board.get("capturedAt"),
+            max_age_seconds=max_board_age_seconds,
+        )
         source_rows = list(board.get("playerProps") or []) + list(board.get("teamMarkets") or [])
         for source_row in source_rows:
             if not source_row.get("playable"):
@@ -418,6 +463,8 @@ def _flatten_board_rows(
                         "rowId": make_sgm_selection_row_id(fixture_slug, source_row, row_side),
                         "selectionId": f"{source_row.get('lineId') or ''}:{row_side}",
                         "propId": f"{fixture_slug}:{source_row.get('lineId') or source_row.get('marketId')}:{row_side}",
+                        "boardCapturedAt": board.get("capturedAt"),
+                        "boardFreshness": board_freshness,
                     }
                 )
                 rows.append(row)
@@ -477,6 +524,7 @@ def _candidate_from_enriched_row(row: dict[str, Any], enriched_prop: dict[str, A
     line = _float_or_none(row.get("line"))
     windows = evidence_windows(recent, stat_ref, line, side)
     season = season_evidence(profile, stat_ref, line, side)
+    season_sample = _season_sample_summary(profile, stat_context)
     guard = evidence_check(windows, season, side)
     labels = trend_labels(windows, season, side)
     mlb_match = enriched_prop.get("mlbMatch") or {}
@@ -531,14 +579,522 @@ def _candidate_from_enriched_row(row: dict[str, Any], enriched_prop: dict[str, A
         "last10": context["last10"],
         "last15": context["last15"],
         "season": season,
+        "seasonSample": season_sample,
         "context": context,
         "gameContext": enriched_prop.get("gameContext"),
         "lineupContext": enriched_prop.get("lineupContext"),
         "opponentPitcherContext": enriched_prop.get("opponentPitcherContext"),
         "opponentTeamContext": enriched_prop.get("opponentTeamContext"),
         "playerSplits": enriched_prop.get("playerSplits"),
+        "boardCapturedAt": row.get("boardCapturedAt"),
+        "boardFreshness": row.get("boardFreshness"),
         "capturedAt": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _season_sample_summary(profile: dict[str, Any], stat_context: dict[str, Any]) -> dict[str, Any]:
+    stats = (((profile or {}).get("player") or {}).get("stats") or {})
+    group = str((stat_context or {}).get("group") or "hitting")
+    games = (
+        _float_or_none(stats.get("gamesPlayed"))
+        or _float_or_none(stats.get("gamesPitched"))
+        or _float_or_none(stats.get("gamesStarted"))
+    )
+    plate_appearances = _float_or_none(stats.get("plateAppearances"))
+    innings_pitched = _innings_float(stats.get("inningsPitched"))
+    if group == "pitching":
+        sample_value = innings_pitched
+        sample_metric = "inningsPitched"
+        status = "robust" if sample_value is not None and sample_value >= 20 else "low_confidence"
+    else:
+        sample_value = plate_appearances
+        sample_metric = "plateAppearances"
+        if sample_value is None:
+            sample_value = games
+            sample_metric = "gamesPlayed"
+            status = "robust" if sample_value is not None and sample_value >= 20 else "unknown"
+        else:
+            status = "robust" if sample_value >= 50 else "low_confidence"
+    return {
+        "group": group,
+        "games": games,
+        "plateAppearances": plate_appearances,
+        "inningsPitched": innings_pitched,
+        "sampleMetric": sample_metric,
+        "sampleValue": sample_value,
+        "status": status,
+    }
+
+
+def _probability_assessment(
+    candidate: dict[str, Any],
+    scoring_risk_flags: list[str],
+) -> dict[str, Any]:
+    side = str(candidate.get("side") or "under").lower()
+    odds = _float_or_none(candidate.get("odds"))
+    implied = round(1 / odds, 4) if odds and odds > 0 else None
+    context = candidate.get("context") or {}
+    season = context.get("season") or candidate.get("season") or {}
+    season_rate, season_source = _season_probability_rate(season, candidate.get("line"), side)
+    recent_rate, recent_source, recent_games = _recent_probability_rate(context, side)
+    matchup = _matchup_factor(candidate, side)
+    penalties = _probability_penalties(candidate, scoring_risk_flags, matchup)
+    reliability_flags = _probability_reliability_flags(
+        candidate,
+        season_rate=season_rate,
+        season_source=season_source,
+        recent_rate=recent_rate,
+        recent_source=recent_source,
+        recent_games=recent_games,
+        matchup=matchup,
+        implied=implied,
+    )
+    data_quality = _probability_data_quality(
+        candidate,
+        reliability_flags=reliability_flags,
+        scoring_risk_flags=scoring_risk_flags,
+    )
+
+    estimated = None
+    adjusted = None
+    edge = None
+    if season_rate is not None and recent_rate is not None and implied is not None:
+        estimated = round(
+            season_rate * 0.50
+            + recent_rate * 0.30
+            + (_float_or_none(matchup.get("factor")) or 0.50) * 0.20,
+            4,
+        )
+        adjusted = round(
+            max(0.0, min(1.0, estimated - sum(item["amount"] for item in penalties))),
+            4,
+        )
+        edge = round(adjusted - implied, 4)
+
+    edge_status = _edge_status(edge, data_quality)
+    reason_tags = []
+    if edge_status in {"clear_possible_edge", "thin_edge"}:
+        reason_tags.append(f"probability_{edge_status}")
+    elif edge_status == "negative_edge":
+        reason_tags.append("probability_negative_edge")
+
+    return {
+        "formula": "estimatedProbability = (seasonRate * 0.50) + (last15Rate * 0.30) + (matchupFactor * 0.20)",
+        "impliedProbability": implied,
+        "estimatedProbability": estimated,
+        "adjustedEstimatedProbability": adjusted,
+        "edge": edge,
+        "edgeStatus": edge_status,
+        "dataQuality": data_quality,
+        "inputs": {
+            "seasonRate": season_rate,
+            "seasonRateSource": season_source,
+            "last15Rate": recent_rate,
+            "last15RateSource": recent_source,
+            "recentGamesUsed": recent_games,
+            "matchupFactor": matchup.get("factor"),
+            "matchupFactorSource": matchup.get("source"),
+        },
+        "penalties": penalties,
+        "matchupFactor": matchup,
+        "reliabilityFlags": reliability_flags,
+        "riskFlags": [],
+        "reasonTags": reason_tags,
+    }
+
+
+def _season_probability_rate(
+    season: dict[str, Any],
+    line: Any,
+    side: str,
+) -> tuple[float | None, str | None]:
+    margin = _float_or_none(season.get("sideMargin"))
+    if margin is None:
+        return None, None
+    numeric_line = _float_or_none(line)
+    denominator = max(1.0, abs(numeric_line or 0.0) + 1.0)
+    proxy = 0.50 + max(-0.30, min(0.30, margin / denominator * 0.35))
+    return round(max(0.05, min(0.95, proxy)), 4), "season_average_proxy"
+
+
+def _recent_probability_rate(
+    context: dict[str, Any],
+    side: str,
+) -> tuple[float | None, str | None, int | None]:
+    last15 = context.get("last15") or {}
+    last15_rate = _float_or_none(last15.get("sideHitRate"))
+    last15_games = _int_or_none(last15.get("gamesUsed"))
+    if last15_rate is not None and (last15_games or 0) >= 10:
+        return round(last15_rate, 4), "last15_exact", last15_games
+
+    last10 = context.get("last10") or {}
+    last10_rate = _float_or_none(last10.get("sideHitRate"))
+    last10_games = _int_or_none(last10.get("gamesUsed"))
+    if last10_rate is not None and (last10_games or 0) >= 10:
+        return round(last10_rate, 4), "last10_proxy", last10_games
+    if last15_rate is not None:
+        return round(last15_rate, 4), "last15_thin_sample", last15_games
+    return None, None, last15_games
+
+
+def _matchup_factor(candidate: dict[str, Any], side: str) -> dict[str, Any]:
+    market_key = str(candidate.get("normalizedMarketKey") or "").replace("-", "_")
+    factor = 0.50
+    adjustments: list[dict[str, Any]] = []
+    actual_sources: set[str] = set()
+
+    def add_over_delta(delta: float, source: str, reason: str) -> None:
+        nonlocal factor
+        side_delta = delta if side == "over" else -delta
+        factor = max(0.25, min(0.75, factor + side_delta))
+        adjustments.append(
+            {
+                "source": source,
+                "reason": reason,
+                "overDelta": round(delta, 3),
+                "sideDelta": round(side_delta, 3),
+            }
+        )
+        actual_sources.add(source)
+
+    lineup = candidate.get("lineupContext") or {}
+    batting_order = _int_or_none(lineup.get("battingOrder"))
+    if batting_order is not None:
+        if market_key in {"runs", "hits_runs_rbis"}:
+            if batting_order <= 2:
+                add_over_delta(0.04, "lineupContext", "top order supports run/HRR volume")
+            elif batting_order >= 7:
+                add_over_delta(-0.05, "lineupContext", "bottom order suppresses run/HRR volume")
+        elif market_key == "rbi":
+            if 3 <= batting_order <= 5:
+                add_over_delta(0.04, "lineupContext", "middle order supports RBI volume")
+            elif batting_order in {1, 8, 9}:
+                add_over_delta(-0.03, "lineupContext", "lineup spot suppresses RBI volume")
+        elif market_key in {"hits", "singles", "total_bases", "home_runs"}:
+            if batting_order <= 3:
+                add_over_delta(0.03, "lineupContext", "top order adds plate appearance volume")
+            elif batting_order >= 8:
+                add_over_delta(-0.04, "lineupContext", "bottom order cuts plate appearance volume")
+
+    pitcher_context = candidate.get("opponentPitcherContext") or {}
+    if pitcher_context.get("status") == "available":
+        actual_sources.add("opponentPitcherContext")
+        pitcher_season = pitcher_context.get("season") or {}
+        pitcher_recent = pitcher_context.get("recent") or {}
+        pitcher_games = (
+            _float_or_none(pitcher_season.get("gamesStarted"))
+            or _float_or_none(pitcher_season.get("gamesPitched"))
+        )
+        hits_pg = _per_game_from_total(pitcher_season.get("hitsAllowed"), pitcher_games)
+        walks_pg = _per_game_from_total(pitcher_season.get("walksAllowed"), pitcher_games)
+        strikeouts_pg = _per_game_from_total(pitcher_season.get("strikeOuts"), pitcher_games)
+        homers_pg = _per_game_from_total(pitcher_season.get("homeRunsAllowed"), pitcher_games)
+        recent_per_game = pitcher_recent.get("perGame") or {}
+
+        if market_key in {"hits", "singles", "total_bases", "hits_runs_rbis", "runs", "rbi"}:
+            _apply_threshold_adjustment(
+                hits_pg,
+                low=6.5,
+                high=8.5,
+                delta=0.04,
+                source="opponentPitcherContext",
+                low_reason="opposing pitcher suppresses hits allowed",
+                high_reason="opposing pitcher allows elevated hits",
+                add_over_delta=add_over_delta,
+            )
+        if market_key in {"total_bases", "home_runs", "hits_runs_rbis"}:
+            _apply_threshold_adjustment(
+                homers_pg,
+                low=0.7,
+                high=1.2,
+                delta=0.04,
+                source="opponentPitcherContext",
+                low_reason="opposing pitcher suppresses home run damage",
+                high_reason="opposing pitcher allows elevated home run damage",
+                add_over_delta=add_over_delta,
+            )
+        if market_key == "batter_walks":
+            _apply_threshold_adjustment(
+                walks_pg,
+                low=2.0,
+                high=3.2,
+                delta=0.05,
+                source="opponentPitcherContext",
+                low_reason="opposing pitcher limits walks",
+                high_reason="opposing pitcher walk rate is elevated",
+                add_over_delta=add_over_delta,
+            )
+        if market_key == "batter_strikeouts":
+            _apply_threshold_adjustment(
+                strikeouts_pg,
+                low=4.0,
+                high=6.5,
+                delta=0.05,
+                source="opponentPitcherContext",
+                low_reason="opposing pitcher has lower strikeout volume",
+                high_reason="opposing pitcher has elevated strikeout volume",
+                add_over_delta=add_over_delta,
+            )
+        recent_hits_pg = _float_or_none(recent_per_game.get("hits"))
+        if recent_hits_pg is not None and market_key in {"hits", "singles", "total_bases"}:
+            _apply_threshold_adjustment(
+                recent_hits_pg,
+                low=5.5,
+                high=8.5,
+                delta=0.025,
+                source="opponentPitcherContext.recent",
+                low_reason="recent pitcher form suppresses contact",
+                high_reason="recent pitcher form allows contact",
+                add_over_delta=add_over_delta,
+            )
+
+    team_context = candidate.get("opponentTeamContext") or {}
+    if team_context.get("status") == "available":
+        actual_sources.add("opponentTeamContext")
+        season_hitting = team_context.get("seasonHitting") or {}
+        if market_key in {"strikeouts", "pitcher_strikeouts"}:
+            _apply_threshold_adjustment(
+                _float_or_none(season_hitting.get("strikeoutRate")),
+                low=0.19,
+                high=0.24,
+                delta=0.05,
+                source="opponentTeamContext",
+                low_reason="opponent lineup has lower strikeout tendency",
+                high_reason="opponent lineup has elevated strikeout tendency",
+                add_over_delta=add_over_delta,
+            )
+        if market_key == "walks_allowed":
+            _apply_threshold_adjustment(
+                _float_or_none(season_hitting.get("walkRate")),
+                low=0.07,
+                high=0.09,
+                delta=0.05,
+                source="opponentTeamContext",
+                low_reason="opponent lineup has lower walk tendency",
+                high_reason="opponent lineup has elevated walk tendency",
+                add_over_delta=add_over_delta,
+            )
+        if market_key in {"hits_allowed", "earned_runs"}:
+            _apply_threshold_adjustment(
+                _float_or_none(season_hitting.get("hitsPerGame")),
+                low=7.0,
+                high=9.0,
+                delta=0.04,
+                source="opponentTeamContext",
+                low_reason="opponent lineup has lower contact output",
+                high_reason="opponent lineup has elevated contact output",
+                add_over_delta=add_over_delta,
+            )
+            _apply_threshold_adjustment(
+                _float_or_none(season_hitting.get("runsPerGame")),
+                low=3.8,
+                high=5.0,
+                delta=0.035,
+                source="opponentTeamContext",
+                low_reason="opponent lineup has lower run output",
+                high_reason="opponent lineup has elevated run output",
+                add_over_delta=add_over_delta,
+            )
+
+    if not actual_sources:
+        return {
+            "factor": 0.50,
+            "source": "neutral_no_matchup_context",
+            "adjustments": [],
+            "reliability": "limited",
+        }
+    return {
+        "factor": round(factor, 4),
+        "source": "actual_context_adjusted",
+        "adjustments": adjustments,
+        "reliability": "medium" if adjustments else "neutral_with_context",
+    }
+
+
+def _apply_threshold_adjustment(
+    value: float | None,
+    *,
+    low: float,
+    high: float,
+    delta: float,
+    source: str,
+    low_reason: str,
+    high_reason: str,
+    add_over_delta: Any,
+) -> None:
+    if value is None:
+        return
+    if value <= low:
+        add_over_delta(-delta, source, low_reason)
+    elif value >= high:
+        add_over_delta(delta, source, high_reason)
+
+
+def _probability_penalties(
+    candidate: dict[str, Any],
+    scoring_risk_flags: list[str],
+    matchup: dict[str, Any],
+) -> list[dict[str, Any]]:
+    penalties: list[dict[str, Any]] = []
+    flags = {str(flag) for flag in scoring_risk_flags}
+    evidence = ((candidate.get("context") or {}).get("evidenceCheck") or {})
+    trend = set(((candidate.get("context") or {}).get("trendLabels") or []))
+    if evidence.get("last5OverreactionRisk") or "last5_overreaction_risk" in trend or "recencyTrap" in flags:
+        penalties.append({"flag": "last5_overreaction_risk", "amount": 0.15})
+    if str(candidate.get("contextQuality") or "").lower() == "partial":
+        penalties.append({"flag": "context_quality_partial", "amount": 0.05})
+    for flag, amount in (
+        ("lineup_unconfirmed", 0.05),
+        ("probable_pitcher_unavailable", 0.05),
+        ("opponent_lineup_unconfirmed", 0.05),
+        ("game_delay_risk", 0.08),
+        ("start_time_tbd", 0.08),
+    ):
+        if flag in flags:
+            penalties.append({"flag": flag, "amount": amount})
+    if (matchup or {}).get("source") == "neutral_no_matchup_context":
+        penalties.append({"flag": "matchup_factor_neutral_missing_context", "amount": 0.03})
+    market_key = str(candidate.get("normalizedMarketKey") or "").replace("-", "_")
+    if market_key in {"home_runs", "stolen_bases"}:
+        penalties.append({"flag": "extreme_volatility_market", "amount": 0.07})
+    elif market_key in {"runs", "rbi", "total_bases", "batter_walks", "hits_runs_rbis"}:
+        penalties.append({"flag": "volatile_market", "amount": 0.04})
+    return _dedupe_penalties(penalties)
+
+
+def _probability_reliability_flags(
+    candidate: dict[str, Any],
+    *,
+    season_rate: float | None,
+    season_source: str | None,
+    recent_rate: float | None,
+    recent_source: str | None,
+    recent_games: int | None,
+    matchup: dict[str, Any],
+    implied: float | None,
+) -> list[str]:
+    flags = []
+    if implied is None:
+        flags.append("implied_probability_unavailable")
+    if season_rate is None:
+        flags.append("season_rate_unavailable")
+    if season_source and season_source.endswith("_proxy"):
+        flags.append("season_rate_proxy")
+    if recent_rate is None:
+        flags.append("recent_rate_unavailable")
+    if (recent_games or 0) < 10:
+        flags.append("recent_sample_under_10")
+    if recent_source and recent_source.endswith("_proxy"):
+        flags.append("recent_rate_proxy")
+    if recent_source == "last15_thin_sample":
+        flags.append("recent_rate_thin_sample")
+    if (matchup or {}).get("source") == "neutral_no_matchup_context":
+        flags.append("matchup_factor_neutral_no_context")
+    sample_status = str((candidate.get("seasonSample") or {}).get("status") or "")
+    if sample_status in {"low_confidence", "unknown"}:
+        flags.append(f"season_sample_{sample_status}")
+    elif sample_status == "robust":
+        flags.append("season_sample_robust")
+    return sorted(set(flags))
+
+
+def _probability_data_quality(
+    candidate: dict[str, Any],
+    *,
+    reliability_flags: list[str],
+    scoring_risk_flags: list[str],
+) -> str:
+    flags = set(scoring_risk_flags or [])
+    if flags & BLOCKING_RISK_FLAGS:
+        return "low"
+    context_quality = str(candidate.get("contextQuality") or "").lower()
+    if context_quality == "unsupported":
+        return "low"
+    required_missing = {
+        "implied_probability_unavailable",
+        "season_rate_unavailable",
+        "recent_rate_unavailable",
+    }
+    reliability = set(reliability_flags)
+    if reliability & required_missing:
+        return "low"
+    if "recent_sample_under_10" in reliability and "season_sample_robust" not in reliability:
+        return "low"
+    medium_flags = {
+        "season_rate_proxy",
+        "recent_rate_proxy",
+        "recent_rate_thin_sample",
+        "matchup_factor_neutral_no_context",
+        "season_sample_low_confidence",
+        "season_sample_unknown",
+    }
+    if context_quality == "partial" or reliability & medium_flags:
+        return "medium"
+    minor_risks = {
+        "lineup_unconfirmed",
+        "probable_pitcher_unavailable",
+        "opponent_lineup_unconfirmed",
+        "game_delay_risk",
+        "start_time_tbd",
+    }
+    if flags & minor_risks:
+        return "medium"
+    return "high"
+
+
+def _edge_status(edge: float | None, data_quality: str) -> str:
+    if edge is None or data_quality == "low":
+        return "unknown_edge"
+    if edge >= 0.05:
+        return "clear_possible_edge"
+    if edge >= 0.02:
+        return "thin_edge"
+    if edge <= -0.02:
+        return "negative_edge"
+    return "no_clear_edge"
+
+
+def _probability_score_adjustment(probability: dict[str, Any]) -> float:
+    if probability.get("dataQuality") == "low":
+        return 0.0
+    return {
+        "clear_possible_edge": 6.0,
+        "thin_edge": 2.5,
+        "no_clear_edge": -1.5,
+        "negative_edge": -6.0,
+    }.get(str(probability.get("edgeStatus") or ""), 0.0)
+
+
+def _dedupe_penalties(penalties: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for penalty in penalties:
+        flag = str(penalty.get("flag") or "")
+        if not flag or flag in deduped:
+            continue
+        deduped[flag] = {"flag": flag, "amount": round(float(penalty.get("amount") or 0.0), 4)}
+    return list(deduped.values())
+
+
+def _per_game_from_total(total: Any, games: Any) -> float | None:
+    total_float = _float_or_none(total)
+    games_float = _float_or_none(games)
+    if total_float is None or not games_float:
+        return None
+    return round(total_float / games_float, 4)
+
+
+def _innings_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if "." in text:
+        whole, fraction = text.split(".", 1)
+        if fraction in {"1", "2"}:
+            try:
+                return int(whole) + int(fraction) / 3
+            except ValueError:
+                return _float_or_none(value)
+    return _float_or_none(value)
 
 
 def _select_ranked_candidates(
@@ -663,6 +1219,9 @@ def _apply_within_player_market_contest(rows: list[dict[str, Any]]) -> dict[str,
             row["selectionProof"] = {
                 "selectedMarket": row.get("market"),
                 "selectedScore": row.get("score"),
+                "probabilityAssessment": _compact_probability_assessment(
+                    row.get("probabilityAssessment") or {}
+                ),
                 "marketsCompared": markets_compared,
                 "closestAlternativeMarket": closest_proof.get("market"),
                 "closestAlternativeScore": closest_proof.get("score"),
@@ -722,6 +1281,10 @@ def _compact_market_contest_alternative(winner: dict[str, Any], row: dict[str, A
         "line": row.get("line"),
         "odds": row.get("odds"),
         "score": row.get("score"),
+        "edgeStatus": (row.get("probabilityAssessment") or {}).get("edgeStatus"),
+        "adjustedEstimatedProbability": (row.get("probabilityAssessment") or {}).get(
+            "adjustedEstimatedProbability"
+        ),
         "scoreGapToWinner": round(max(0.0, winner_score - score), 2),
         "reasonLost": _why_alternative_lost(winner, row),
         "riskFlags": list(row.get("riskFlags") or []),
@@ -736,6 +1299,10 @@ def _market_comparison_row(row: dict[str, Any]) -> dict[str, Any]:
         "line": row.get("line"),
         "odds": row.get("odds"),
         "score": row.get("score"),
+        "edgeStatus": (row.get("probabilityAssessment") or {}).get("edgeStatus"),
+        "adjustedEstimatedProbability": (row.get("probabilityAssessment") or {}).get(
+            "adjustedEstimatedProbability"
+        ),
         "contextQuality": row.get("contextQuality"),
         "riskFlags": list(row.get("riskFlags") or []),
         "availabilityRole": "eligibility_only",
@@ -751,6 +1318,7 @@ def _rejected_market_alternative(winner: dict[str, Any], row: dict[str, Any]) ->
         "line": row.get("line"),
         "odds": row.get("odds"),
         "score": row.get("score"),
+        "edgeStatus": (row.get("probabilityAssessment") or {}).get("edgeStatus"),
         "reasonLost": reason,
         "blocker": reason if loss_type == "blocker" else None,
         "lowerMeritReason": reason if loss_type == "lower_merit" else None,
@@ -764,6 +1332,25 @@ def _closest_alternative_summary(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {"market": None, "score": None}
     return {"market": row.get("market"), "score": row.get("score")}
+
+
+def _compact_probability_assessment(probability: dict[str, Any]) -> dict[str, Any]:
+    if not probability:
+        return {}
+    inputs = probability.get("inputs") or {}
+    return {
+        "impliedProbability": probability.get("impliedProbability"),
+        "estimatedProbability": probability.get("estimatedProbability"),
+        "adjustedEstimatedProbability": probability.get("adjustedEstimatedProbability"),
+        "edge": probability.get("edge"),
+        "edgeStatus": probability.get("edgeStatus"),
+        "dataQuality": probability.get("dataQuality"),
+        "seasonRate": inputs.get("seasonRate"),
+        "last15Rate": inputs.get("last15Rate"),
+        "matchupFactor": inputs.get("matchupFactor"),
+        "penalties": probability.get("penalties") or [],
+        "reliabilityFlags": probability.get("reliabilityFlags") or [],
+    }
 
 
 def _why_selected_beat_alternative(
@@ -797,6 +1384,7 @@ def _comparison_reason(
         ("evidenceScore", "stronger evidence"),
         ("valueScore", "better price/value score"),
         ("modeFitScore", "better build-mode fit"),
+        ("probabilityScoreAdjustment", "better implied-vs-estimated probability edge"),
     ):
         selected_value = _float_or_none(selected.get(key)) or 0.0
         alternative_value = _float_or_none(alternative.get(key)) or 0.0
@@ -1094,5 +1682,12 @@ def _season_from_date(value: str | None) -> int | None:
 def _float_or_none(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
     except (TypeError, ValueError):
         return None

@@ -339,7 +339,7 @@ class FakeCompletedCandidatePoolJobStore(FakeCompletedUiJobStore):
                     {
                         "source": "stake_ui_sgm",
                         "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
-                        "capturedAt": "2026-05-20T20:00:00Z",
+                        "capturedAt": datetime.now(timezone.utc).isoformat(),
                         "playerProps": [
                             {
                                 "team": "Toronto Blue Jays",
@@ -1060,6 +1060,11 @@ def test_stake_ui_sgm_candidate_pool_compact_mode_trims_nested_context():
         "closestAlternativeScore",
         "whySelectedBeatAlternative",
         "availabilityRole",
+        "edgeStatus",
+        "impliedProbability",
+        "estimatedProbability",
+        "adjustedEstimatedProbability",
+        "matchupFactor",
         "reasonTags",
         "riskFlags",
     }

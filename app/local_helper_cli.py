@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .local_helper_setup import check_local_helper_setup
 
@@ -55,11 +56,12 @@ COMMAND_ROWS = [
     ("review, r", "Scan board"),
     ("build, b", "Build validated slip"),
     ("status, s", "Show status"),
-    ("logs", "View logs"),
-    ("doctor", "Run full system check"),
-    ("clean", "Clear cache"),
-    ("help", "Show help"),
-    ("exit, q", "Close app"),
+    ("domain, q", "Toggle Stake site"),
+    ("logs, l", "View logs"),
+    ("doctor, d", "Run full system check"),
+    ("clean, c", "Clear cache"),
+    ("help, h", "Show help"),
+    ("exit, e", "Close app"),
 ]
 HELP_EXTRA_ROWS = [
     ("logs --tail", "Tail the latest helper log"),
@@ -67,11 +69,27 @@ HELP_EXTRA_ROWS = [
     ("clean --yes", "Clear cache without confirmation"),
     ("setup", "Run quick setup checks"),
     ("stop", "Stop the running helper"),
+    ("domain bet", "Use stake.bet profile"),
+    ("domain com", "Use stake.com profile"),
     ("color", "Adjust CLI accent color"),
 ]
 LOADING_PROMPT_STATES = {"building", "reviewing", "cleaning"}
 LOADING_DOT_FRAMES = (".  ", ".. ", "...")
 LOADING_PROMPT_INTERVAL_SECONDS = 0.35
+STAKE_SITE_PROFILES = {
+    "com": {
+        "label": "stake.com",
+        "baseUrl": "https://stake.com",
+        "cdpUrl": "http://127.0.0.1:9222",
+        "profileDir": Path("data") / "chrome-stake-ui",
+    },
+    "bet": {
+        "label": "stake.bet",
+        "baseUrl": "https://stake.bet",
+        "cdpUrl": "http://127.0.0.1:9223",
+        "profileDir": Path("data") / "chrome-stake-ui-bet",
+    },
+}
 
 
 def cli_color_settings_path(*, root_dir: Path = ROOT_DIR) -> Path:
@@ -84,6 +102,33 @@ def cli_color_presets_dir(*, root_dir: Path = ROOT_DIR) -> Path:
 
 def cli_log_path(*, root_dir: Path = ROOT_DIR) -> Path:
     return root_dir / "logs" / "latest.log"
+
+
+def clean_stake_site(value: Any, *, fallback: str = "com") -> str:
+    raw = str(value or "").strip().lower()
+    if "://" in raw:
+        parsed = urlparse(raw)
+        raw = str(parsed.netloc or parsed.path).strip().lower()
+    raw = raw.split("/", 1)[0]
+    aliases = {
+        "stake.com": "com",
+        "https://stake.com": "com",
+        "com": "com",
+        ".com": "com",
+        "stake.bet": "bet",
+        "https://stake.bet": "bet",
+        "bet": "bet",
+        ".bet": "bet",
+    }
+    return aliases.get(raw, fallback if fallback in STAKE_SITE_PROFILES else "com")
+
+
+def stake_site_profile(site: str, *, root_dir: Path = ROOT_DIR) -> dict[str, Any]:
+    clean_site = clean_stake_site(site)
+    profile = dict(STAKE_SITE_PROFILES[clean_site])
+    profile["site"] = clean_site
+    profile["profileDir"] = root_dir / profile["profileDir"]
+    return profile
 
 
 def normalize_color_choice(value: Any, *, fallback: str) -> str:
@@ -198,7 +243,7 @@ def colorize(text: str, hex_color: str) -> str:
 
 
 def is_exit_command(command: str) -> bool:
-    return command.strip().lower() in {"0", "6", "exit", "q", "quit"}
+    return command.strip().lower() in {"0", "6", "e", "exit", "quit"}
 
 
 def strip_ansi(text: str) -> str:
@@ -422,6 +467,7 @@ def format_main_menu(
     last_scan: str = "none",
     last_build: str = "none",
     last_exit: str = "none",
+    stake_site: str = "com",
     use_color: bool = False,
 ) -> str:
     browser_label, browser_role = _browser_status(setup_report, browser)
@@ -446,6 +492,7 @@ def format_main_menu(
         "Status:",
         f"  State: {_display_state(status)}",
         f"  Mode: {mode}",
+        f"  Stake site: {stake_site_profile(stake_site, root_dir=root_dir)['label']}",
         f"  Last scan: {last_scan}",
         f"  Last build: {last_build}",
         "",
@@ -471,6 +518,7 @@ def format_status_screen(
     last_scan: str = "none",
     last_build: str = "none",
     last_exit: str = "none",
+    stake_site: str = "com",
     use_color: bool = False,
 ) -> str:
     menu = format_main_menu(
@@ -485,6 +533,7 @@ def format_status_screen(
         last_scan=last_scan,
         last_build=last_build,
         last_exit=last_exit,
+        stake_site=stake_site,
         use_color=use_color,
     )
     return menu.rsplit("\n\nstake-gpt [", 1)[0]
@@ -639,6 +688,9 @@ class StakeGptCli:
         self.last_build = "none"
         self.last_helper_exit = "none"
         self.environment = load_environment_label(root_dir)
+        self.stake_site = clean_stake_site(
+            os.getenv("AZP_STAKE_SITE") or os.getenv("AZP_STAKE_DOMAIN")
+        )
         self.log_path = cli_log_path(root_dir=root_dir)
         self.text_color = load_cli_color_settings(
             cli_color_settings_path(root_dir=root_dir)
@@ -676,6 +728,7 @@ class StakeGptCli:
                 last_scan=self.last_scan,
                 last_build=self.last_build,
                 last_exit=self.last_helper_exit,
+                stake_site=self.stake_site,
                 use_color=True,
             )
             + " "
@@ -777,6 +830,7 @@ class StakeGptCli:
                 last_scan=self.last_scan,
                 last_build=self.last_build,
                 last_exit=self.last_helper_exit,
+                stake_site=self.stake_site,
             )
 
         browser_label, browser_role = _browser_status(setup_report, self.browser)
@@ -819,6 +873,10 @@ class StakeGptCli:
         line("Status:", "bold")
         line(f"  State: {_display_state(self.status)}")
         line(f"  Mode: {self.mode}")
+        line(
+            f"  Stake site: "
+            f"{stake_site_profile(self.stake_site, root_dir=self.root_dir)['label']}"
+        )
         line(f"  Last scan: {self.last_scan}")
         line(f"  Last build: {self.last_build}")
         line()
@@ -834,14 +892,20 @@ class StakeGptCli:
 
     def handle_command(self, command: str) -> None:
         parts = command.split()
-        base = parts[0] if parts else ""
-        args = set(parts[1:])
+        base = parts[0].lower() if parts else ""
+        args = {part.lower() for part in parts[1:]}
         if base in {"1", "review", "r"}:
+            self._set_site_from_command_args(args)
             self.start_helper("review")
         elif base in {"2", "build", "b"}:
+            self._set_site_from_command_args(args)
             self.start_helper("build")
         elif base in {"status", "s"}:
             self.run_status()
+        elif base == "q":
+            self.toggle_stake_site()
+        elif base in {"domain", "site"}:
+            self.run_stake_site_command(args)
         elif base in {"logs", "l"}:
             self.run_logs(args)
         elif base in {"doctor", "d"}:
@@ -861,6 +925,44 @@ class StakeGptCli:
             self.emit(format_help_screen(use_color=True) + "\n", role="info")
         elif command:
             self.emit(f"Unknown command: {command}\nType help to see available commands.\n", role="warn")
+
+    def _set_site_from_command_args(self, args: set[str]) -> None:
+        for arg in args:
+            if arg in {"com", "stake.com", "bet", "stake.bet"}:
+                self.set_stake_site(arg, announce=False)
+                return
+
+    def set_stake_site(self, value: str, *, announce: bool = True) -> None:
+        clean_site = clean_stake_site(value, fallback=self.stake_site)
+        if clean_site == self.stake_site:
+            if announce:
+                profile = stake_site_profile(self.stake_site, root_dir=self.root_dir)
+                self.emit(f"Stake site already set to {profile['label']}.\n", role="info")
+            return
+        if self.process and self.process.poll() is None:
+            self.emit("Stopping helper before switching Stake site...\n", role="warn")
+            self.stop_helper()
+        self.stake_site = clean_site
+        profile = stake_site_profile(self.stake_site, root_dir=self.root_dir)
+        if announce:
+            self.emit(
+                f"Stake site set to {profile['label']} "
+                f"({profile['cdpUrl']}, {profile['profileDir']}).\n",
+                role="ok",
+            )
+
+    def toggle_stake_site(self) -> None:
+        self.set_stake_site("bet" if self.stake_site == "com" else "com")
+
+    def run_stake_site_command(self, args: set[str]) -> None:
+        if not args:
+            self.toggle_stake_site()
+            return
+        target = next(iter(args))
+        if target not in {"com", "stake.com", "bet", "stake.bet"}:
+            self.emit("Use domain com or domain bet.\n", role="warn")
+            return
+        self.set_stake_site(target)
 
     def emit(self, text: str, *, role: str = "accent", log: bool = True) -> None:
         if self.rich_console is not None:
@@ -913,9 +1015,34 @@ class StakeGptCli:
         else:
             self.last_scan = f"started {datetime.now().strftime('%H:%M:%S')}"
         self.emit("[2/3] Launching local helper...\n", role="info")
+        stake_profile = stake_site_profile(self.stake_site, root_dir=self.root_dir)
+        helper_env = os.environ.copy()
+        helper_env.update(
+            {
+                "AZP_STAKE_SITE": stake_profile["site"],
+                "AZP_STAKE_BASE_URL": stake_profile["baseUrl"],
+                "AZP_STAKE_START_URL": stake_profile["baseUrl"],
+                "AZP_STAKE_CHROME_PROFILE": str(stake_profile["profileDir"]),
+            }
+        )
         self.process = subprocess.Popen(
-            [str(python_exe), "-m", "app.local_stake_helper", "--mode", mode],
+            [
+                str(python_exe),
+                "-m",
+                "app.local_stake_helper",
+                "--mode",
+                mode,
+                "--cdp-url",
+                stake_profile["cdpUrl"],
+                "--stake-base-url",
+                stake_profile["baseUrl"],
+                "--stake-start-url",
+                stake_profile["baseUrl"],
+                "--chrome-profile",
+                str(stake_profile["profileDir"]),
+            ],
             cwd=self.root_dir,
+            env=helper_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -944,6 +1071,7 @@ class StakeGptCli:
                 last_scan=self.last_scan,
                 last_build=self.last_build,
                 last_exit=self.last_helper_exit,
+                stake_site=self.stake_site,
                 use_color=True,
             )
             + "\n",

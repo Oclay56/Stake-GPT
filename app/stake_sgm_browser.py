@@ -5,12 +5,15 @@ import re
 import time
 from hashlib import sha1
 from datetime import datetime, timezone
+import os
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
-STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
+DEFAULT_STAKE_BASE_URL = "https://stake.com"
+STAKE_MLB_PATH = "/sports/baseball/usa/mlb"
+STAKE_MLB_URL = f"{DEFAULT_STAKE_BASE_URL}{STAKE_MLB_PATH}"
 CLICK_ODDS_TOLERANCE = 0.006
 MONEYLINE_MARKET_LABEL = "Winner (incl. Extra Innings)"
 MONEYLINE_MARKET_KEY = "winner_including_extra_innings"
@@ -170,8 +173,30 @@ query AzpSgmBoard($fixture: String!) {
 """
 
 
-def fixture_url(fixture_slug: str) -> str:
-    return f"https://stake.com/sports/baseball/usa/mlb/{fixture_slug}"
+def stake_base_url(value: Any | None = None) -> str:
+    raw = str(
+        value
+        or os.getenv("AZP_STAKE_BASE_URL")
+        or os.getenv("AZP_STAKE_START_URL")
+        or DEFAULT_STAKE_BASE_URL
+    )
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = str(parsed.netloc or parsed.path).strip().lower().split("/", 1)[0]
+    if host not in {"stake.com", "stake.bet"}:
+        host = "stake.com"
+    return f"https://{host}"
+
+
+def stake_host(value: Any | None = None) -> str:
+    return urlparse(stake_base_url(value)).netloc
+
+
+def stake_mlb_url(base_url: Any | None = None) -> str:
+    return f"{stake_base_url(base_url)}{STAKE_MLB_PATH}"
+
+
+def fixture_url(fixture_slug: str, *, base_url: Any | None = None) -> str:
+    return f"{stake_mlb_url(base_url)}/{fixture_slug}"
 
 
 def read_stake_sgm_board(
@@ -3904,8 +3929,9 @@ def _sgm_market_diagnostic_row(fixture_slug: str, row: dict[str, Any]) -> dict[s
 
 def _find_or_open_fixture_page(context: Any, fixture_slug: str) -> Any:
     expected = fixture_url(fixture_slug)
+    host = stake_host()
     for page in context.pages:
-        if fixture_slug in page.url and "stake.com" in page.url:
+        if fixture_slug in page.url and host in page.url:
             if _restricted_region_url(page.url):
                 page.goto(expected, wait_until="domcontentloaded", timeout=45_000)
             return page
@@ -3916,21 +3942,24 @@ def _find_or_open_fixture_page(context: Any, fixture_slug: str) -> Any:
 
 
 def _shared_stake_page(context: Any) -> Any:
+    host = stake_host()
     for page in context.pages:
-        if "stake.com" in str(page.url):
+        if host in str(page.url):
             return page
     return context.pages[0] if context.pages else context.new_page()
 
 
 def _find_or_open_mlb_page(context: Any) -> Any:
+    host = stake_host()
+    mlb_url = stake_mlb_url()
     for page in context.pages:
-        if "stake.com" in str(page.url) and "/sports/baseball/usa/mlb" in str(page.url):
+        if host in str(page.url) and STAKE_MLB_PATH in str(page.url):
             if _restricted_region_url(page.url):
-                page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
+                page.goto(mlb_url, wait_until="domcontentloaded", timeout=45_000)
             return page
 
     page = _shared_stake_page(context)
-    page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
+    page.goto(mlb_url, wait_until="domcontentloaded", timeout=45_000)
     return page
 
 
@@ -3958,7 +3987,7 @@ def _read_stake_ui_state_from_page(page: Any) -> dict[str, Any]:
     normalized_body = str(body or "").lower()
     url = str(page.url or "")
     current_fixture_slug = _fixture_slug_from_url(url)
-    is_stake_page = "stake.com" in url
+    is_stake_page = stake_host() in url
     is_mlb_fixture_page = bool(current_fixture_slug)
     sgm_visible = _has_same_game_multi_tab(body)
     region_blocked = _is_region_blocked_body(body) or _restricted_region_url(url)
@@ -4325,7 +4354,7 @@ def _click_mlb_moneyline_selection_with_retry(
     if _execution_deadline_expired(deadline, reserve_seconds=2.0):
         return {"status": "not_added", "reason": "local_helper_execution_timeout"}
 
-    page.goto(STAKE_MLB_URL, wait_until="domcontentloaded", timeout=45_000)
+    page.goto(stake_mlb_url(), wait_until="domcontentloaded", timeout=45_000)
     _expand_mlb_game_list(page, limit=100)
     third = _click_mlb_moneyline_selection_once(page, selection)
     if third.get("status") == "added":
@@ -4665,7 +4694,7 @@ def _expand_mlb_game_list(page: Any, *, limit: int) -> dict[str, Any]:
 def _normalize_mlb_game_link(href: Any) -> dict[str, Any] | None:
     if not href:
         return None
-    absolute = urljoin("https://stake.com", str(href))
+    absolute = urljoin(stake_base_url(), str(href))
     parsed = urlparse(absolute)
     path = parsed.path.strip("/")
     match = re.search(r"(?:^|/)sports/baseball/usa/mlb/(\d+[a-z0-9-]*)$", path)

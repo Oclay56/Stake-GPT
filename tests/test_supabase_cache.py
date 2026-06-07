@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.supabase_cache import (
+    LOCAL_CLEANUP_TARGETS,
     LocalCleanupTarget,
     _content_range_total,
+    chrome_cleanup_targets,
     cleanup_local_cache,
     cleanup_operations,
 )
@@ -72,6 +74,47 @@ def test_cleanup_local_cache_deletes_only_rebuildable_targets(tmp_path):
     assert not cache_file.exists()
     assert not temp_file.exists()
     assert cookie_file.exists()
+
+
+def test_default_cleanup_targets_include_both_stake_chrome_profiles():
+    paths = {target.relative_path for target in chrome_cleanup_targets()}
+
+    assert "data/chrome-stake-ui/Default/Cache" in paths
+    assert "data/chrome-stake-ui/Default/Code Cache" in paths
+    assert "data/chrome-stake-ui-bet/Profile 1/Cache" in paths
+    assert "data/chrome-stake-ui-bet/Profile 1/Code Cache" in paths
+    assert "data/chrome-stake-ui-bet/BrowserMetrics-spare.pma" in paths
+    assert not any(path.endswith("/Cookies") for path in paths)
+    assert not any(path.endswith("/Local Storage") for path in paths)
+    assert not any(path.endswith("/Sessions") for path in paths)
+
+
+def test_default_cleanup_deletes_stake_com_and_stake_bet_cache_without_login_state(tmp_path):
+    stake_com_cache = tmp_path / "data" / "chrome-stake-ui" / "Default" / "Cache" / "entry.bin"
+    stake_bet_cache = tmp_path / "data" / "chrome-stake-ui-bet" / "Profile 1" / "Cache" / "entry.bin"
+    stake_bet_metrics = tmp_path / "data" / "chrome-stake-ui-bet" / "BrowserMetrics-spare.pma"
+    stake_com_cookie = tmp_path / "data" / "chrome-stake-ui" / "Default" / "Cookies"
+    stake_bet_cookie = tmp_path / "data" / "chrome-stake-ui-bet" / "Profile 1" / "Cookies"
+
+    for path, content in (
+        (stake_com_cache, b"x" * 32),
+        (stake_bet_cache, b"y" * 64),
+        (stake_bet_metrics, b"z" * 16),
+        (stake_com_cookie, b"keep-com-login"),
+        (stake_bet_cookie, b"keep-bet-login"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    result = cleanup_local_cache(root_dir=tmp_path, targets=LOCAL_CLEANUP_TARGETS)
+
+    assert result["errors"] == []
+    assert result["deletedFiles"] == 3
+    assert not stake_com_cache.exists()
+    assert not stake_bet_cache.exists()
+    assert not stake_bet_metrics.exists()
+    assert stake_com_cookie.exists()
+    assert stake_bet_cookie.exists()
 
 
 def test_cleanup_local_cache_dry_run_counts_without_deleting(tmp_path):

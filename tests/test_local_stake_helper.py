@@ -518,6 +518,29 @@ def test_debug_chrome_launch_allows_start_url_override(monkeypatch, tmp_path):
     assert args[-1] == "https://stake.com/sports"
 
 
+def test_debug_chrome_launch_uses_selected_stake_bet_domain(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZP_STAKE_BASE_URL", "https://stake.bet")
+    monkeypatch.delenv("AZP_STAKE_START_URL", raising=False)
+
+    args = local_stake_helper._debug_chrome_args(
+        Path("C:/Chrome/chrome.exe"),
+        tmp_path / "profile",
+        9223,
+    )
+
+    assert "--remote-debugging-port=9223" in args
+    assert args[-1] == "https://stake.bet"
+
+
+def test_stake_bet_uses_separate_default_chrome_profile(monkeypatch):
+    monkeypatch.setenv("AZP_STAKE_BASE_URL", "https://stake.bet")
+    monkeypatch.delenv("AZP_STAKE_CHROME_PROFILE", raising=False)
+
+    assert local_stake_helper._stake_chrome_profile_dir() == (
+        Path("data") / "chrome-stake-ui-bet"
+    )
+
+
 def test_supabase_cache_cleanup_sync_uses_env_settings(monkeypatch):
     seen: dict[str, object] = {}
 

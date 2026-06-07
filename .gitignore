@@ -10,4 +10,5 @@ __pycache__/
 data/*.sqlite
 data/*.sqlite-*
 data/chrome-stake-ui/
+data/chrome-stake-ui-bet/
 data/logs/

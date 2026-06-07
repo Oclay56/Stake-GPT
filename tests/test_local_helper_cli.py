@@ -12,6 +12,7 @@ from app.local_helper_cli import (
     StakeGptCli,
     _colored_prompt_line,
     clean_cli_color_settings,
+    clean_stake_site,
     cli_color_presets_dir,
     cli_color_settings_path,
     cli_log_path,
@@ -28,6 +29,7 @@ from app.local_helper_cli import (
     safe_color_preset_name,
     save_cli_color_preset,
     save_cli_color_settings,
+    stake_site_profile,
     strip_ansi,
 )
 
@@ -72,6 +74,22 @@ def test_cli_color_presets_dir_uses_workflow_folder(tmp_path):
 
 def test_cli_log_path_uses_logs_folder(tmp_path):
     assert cli_log_path(root_dir=tmp_path) == tmp_path / "logs" / "latest.log"
+
+
+def test_stake_site_profiles_use_separate_domains_ports_and_profiles(tmp_path):
+    assert clean_stake_site("stake.bet") == "bet"
+    assert clean_stake_site("https://stake.bet/sports/baseball/usa/mlb") == "bet"
+    assert clean_stake_site("https://stake.com") == "com"
+
+    com = stake_site_profile("com", root_dir=tmp_path)
+    bet = stake_site_profile("bet", root_dir=tmp_path)
+
+    assert com["baseUrl"] == "https://stake.com"
+    assert com["cdpUrl"] == "http://127.0.0.1:9222"
+    assert com["profileDir"] == tmp_path / "data" / "chrome-stake-ui"
+    assert bet["baseUrl"] == "https://stake.bet"
+    assert bet["cdpUrl"] == "http://127.0.0.1:9223"
+    assert bet["profileDir"] == tmp_path / "data" / "chrome-stake-ui-bet"
 
 
 def test_normalize_color_choice_accepts_rgb_tuple_and_hex():
@@ -155,14 +173,17 @@ def test_main_menu_uses_polished_status_and_commands():
     assert "[OK] Python       .venv active" in menu
     assert "Status:" in menu
     assert "  State: Ready" in menu
+    assert "  Stake site: stake.com" in menu
     assert "Commands:" in menu
     assert "review, r" in menu and "Scan board" in menu
     assert "build, b" in menu and "Build validated slip" in menu
     assert "status, s" in menu and "Show status" in menu
-    assert "logs" in menu and "View logs" in menu
-    assert "doctor" in menu and "Run full system check" in menu
-    assert "clean" in menu and "Clear cache" in menu
-    assert "exit, q" in menu and "Close app" in menu
+    assert "domain, q" in menu and "Toggle Stake site" in menu
+    assert "logs, l" in menu and "View logs" in menu
+    assert "doctor, d" in menu and "Run full system check" in menu
+    assert "clean, c" in menu and "Clear cache" in menu
+    assert "help, h" in menu and "Show help" in menu
+    assert "exit, e" in menu and "Close app" in menu
     assert "[1]" not in menu
     assert "[0]" not in menu
     assert menu.rstrip().endswith("stake-gpt [ready] >")
@@ -229,6 +250,9 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
     monkeypatch.setattr(cli, "run_cache_cleanup", lambda assume_yes=False: calls.append(("clean", "yes" if assume_yes else "ask")))
     monkeypatch.setattr(cli, "run_color_menu", lambda: calls.append(("color", None)))
     monkeypatch.setattr(cli, "stop_helper", lambda: calls.append(("stop", None)))
+    monkeypatch.setattr(cli, "emit", lambda *args, **kwargs: calls.append(("help", None)))
+    monkeypatch.setattr(cli, "run_stake_site_command", lambda args: calls.append(("domain", ",".join(sorted(args)))))
+    monkeypatch.setattr(cli, "toggle_stake_site", lambda: calls.append(("toggle", None)))
 
     for command in (
         "review",
@@ -237,13 +261,16 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         "b",
         "status",
         "s",
+        "domain bet",
+        "q",
         "logs",
-        "l --errors",
+        "L --errors",
         "doctor",
-        "d",
+        "D",
         "setup",
         "clean",
-        "clean --yes",
+        "C --yes",
+        "H",
         "stop",
         "color",
     ):
@@ -256,6 +283,8 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("start", "build"),
         ("status", None),
         ("status", None),
+        ("domain", "bet"),
+        ("toggle", None),
         ("logs", ""),
         ("logs", "--errors"),
         ("doctor", None),
@@ -263,6 +292,7 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("setup", None),
         ("clean", "ask"),
         ("clean", "yes"),
+        ("help", None),
         ("stop", None),
         ("color", None),
     ]
@@ -358,9 +388,67 @@ def test_stop_helper_returns_prompt_to_ready(tmp_path):
     assert cli.status == "ready"
 
 
-def test_exit_command_accepts_visible_menu_number():
+def test_start_helper_uses_selected_stake_bet_profile(monkeypatch, tmp_path):
+    seen: dict[str, object] = {}
+
+    class FakeProcess:
+        stdout = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.local_helper_cli.check_local_helper_setup",
+        lambda root_dir: {"ok": True, "checks": [], "warnings": []},
+    )
+
+    def fake_popen(args, **kwargs):
+        seen["args"] = args
+        seen["env"] = kwargs.get("env")
+        seen["cwd"] = kwargs.get("cwd")
+        return FakeProcess()
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.Popen", fake_popen)
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: None)
+    cli.set_stake_site("bet", announce=False)
+
+    cli.start_helper("build")
+
+    args = list(seen["args"])
+    env = seen["env"]
+    assert "--cdp-url" in args
+    assert args[args.index("--cdp-url") + 1] == "http://127.0.0.1:9223"
+    assert args[args.index("--stake-base-url") + 1] == "https://stake.bet"
+    assert args[args.index("--chrome-profile") + 1] == str(
+        tmp_path / "data" / "chrome-stake-ui-bet"
+    )
+    assert env["AZP_STAKE_BASE_URL"] == "https://stake.bet"
+    assert env["AZP_STAKE_CHROME_PROFILE"] == str(
+        tmp_path / "data" / "chrome-stake-ui-bet"
+    )
+    assert seen["cwd"] == tmp_path
+
+
+def test_q_toggles_stake_site_back_and_forth(tmp_path):
+    outputs: list[str] = []
+    cli = StakeGptCli(root_dir=tmp_path, output_func=outputs.append)
+
+    assert cli.stake_site == "com"
+
+    cli.handle_command("q")
+    assert cli.stake_site == "bet"
+    assert any("Stake site set to stake.bet" in output for output in outputs)
+
+    cli.handle_command("Q")
+    assert cli.stake_site == "com"
+    assert any("Stake site set to stake.com" in output for output in outputs)
+
+
+def test_exit_command_accepts_e_alias():
     assert is_exit_command("6")
+    assert is_exit_command("e")
     assert is_exit_command("exit")
+    assert not is_exit_command("q")
     assert not is_exit_command("5")
 
 
@@ -373,7 +461,7 @@ def test_cli_run_starts_directly_on_main_screen(monkeypatch):
     )
     cli = StakeGptCli(
         root_dir=Path("C:/fake/AZP"),
-        input_func=lambda prompt: outputs.append(prompt) or "6",
+        input_func=lambda prompt: outputs.append(prompt) or "e",
         output_func=lambda text: outputs.append(text),
     )
 

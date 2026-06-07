@@ -30,6 +30,8 @@ from app.stake_sgm_browser import (
     _transactional_selection_plan,
     fixture_url,
     make_mlb_moneyline_row_id,
+    stake_base_url,
+    stake_mlb_url,
 )
 
 
@@ -75,6 +77,17 @@ class FakeReadyPage:
 
     def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
         self.navigated_to.append(url)
+
+
+def test_stake_url_helpers_switch_to_selected_stake_bet_domain(monkeypatch):
+    monkeypatch.setenv("AZP_STAKE_BASE_URL", "https://stake.bet")
+
+    assert stake_base_url() == "https://stake.bet"
+    assert stake_mlb_url() == "https://stake.bet/sports/baseball/usa/mlb"
+    assert (
+        fixture_url("123-new-york-yankees-toronto-blue-jays")
+        == "https://stake.bet/sports/baseball/usa/mlb/123-new-york-yankees-toronto-blue-jays"
+    )
 
 
 def test_find_or_open_fixture_page_refreshes_restricted_region_tab():

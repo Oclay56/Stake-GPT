@@ -46,7 +46,10 @@ from .supabase_cache import (
 
 
 DEFAULT_CHROME_USER_DATA_DIR = Path("data") / "chrome-stake-ui"
+DEFAULT_STAKE_BET_CHROME_USER_DATA_DIR = Path("data") / "chrome-stake-ui-bet"
 DEFAULT_STAKE_START_URL = "https://stake.com"
+DEFAULT_STAKE_BET_START_URL = "https://stake.bet"
+DEFAULT_STAKE_BET_CDP_URL = "http://127.0.0.1:9223"
 DEFAULT_AUTO_CLEANUP_MINUTES = 60.0
 
 
@@ -58,8 +61,19 @@ async def run_helper(
     autostart_chrome: bool = True,
     mode: str = "review",
     auto_cleanup_minutes: float = DEFAULT_AUTO_CLEANUP_MINUTES,
+    stake_base_url: str | None = None,
+    chrome_profile: Path | str | None = None,
+    stake_start_url: str | None = None,
 ) -> None:
     _load_dotenv()
+    resolved_base_url = _clean_stake_base_url(
+        stake_base_url or os.getenv("AZP_STAKE_BASE_URL")
+    )
+    os.environ["AZP_STAKE_BASE_URL"] = resolved_base_url
+    if stake_start_url:
+        os.environ["AZP_STAKE_START_URL"] = _clean_stake_start_url(stake_start_url, resolved_base_url)
+    if chrome_profile:
+        os.environ["AZP_STAKE_CHROME_PROFILE"] = str(chrome_profile)
     store = SupabaseLocalUiJobStore()
     if not store.enabled():
         raise RuntimeError(
@@ -68,13 +82,18 @@ async def run_helper(
         )
 
     if autostart_chrome:
-        ensure_debug_chrome(cdp_url)
+        ensure_debug_chrome(
+            cdp_url,
+            profile_dir=Path(chrome_profile) if chrome_profile else None,
+            start_url=stake_start_url or resolved_base_url,
+        )
 
     resolved_worker_id = worker_id or f"azp-local-{socket.gethostname()}"
     job_types = _job_types_for_mode(mode)
     print("AZP Local Helper")
     print(f"Status: waiting for Stake UI jobs as {resolved_worker_id}")
     print(f"Mode: {mode} ({', '.join(job_types)})")
+    print(f"Stake site: {resolved_base_url}")
     print("Stop: press Ctrl+C in this window.")
     cleanup_interval_seconds = max(auto_cleanup_minutes, 0.0) * 60
     next_cleanup_at = 0.0
@@ -249,7 +268,12 @@ async def _safe_fail_job(
         print(f"[{time.strftime('%H:%M:%S')}] Could not report failed job {job_id}: {exc}")
 
 
-def ensure_debug_chrome(cdp_url: str = DEFAULT_CDP_URL) -> None:
+def ensure_debug_chrome(
+    cdp_url: str = DEFAULT_CDP_URL,
+    *,
+    profile_dir: Path | None = None,
+    start_url: str | None = None,
+) -> None:
     cdp_ready = _cdp_is_ready(cdp_url)
     chrome_path = _chrome_path()
     if not chrome_path:
@@ -259,14 +283,19 @@ def ensure_debug_chrome(cdp_url: str = DEFAULT_CDP_URL) -> None:
             "Could not find Chrome. Set AZP_CHROME_PATH to chrome.exe and retry."
         )
 
-    profile_dir = Path(os.getenv("AZP_STAKE_CHROME_PROFILE") or DEFAULT_CHROME_USER_DATA_DIR)
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    resolved_profile_dir = profile_dir or _stake_chrome_profile_dir()
+    resolved_profile_dir.mkdir(parents=True, exist_ok=True)
     port = _cdp_port(cdp_url)
     if cdp_ready:
-        _open_visible_stake_chrome(chrome_path, profile_dir, port)
+        _open_visible_stake_chrome(
+            chrome_path,
+            resolved_profile_dir,
+            port,
+            start_url=start_url,
+        )
         return
 
-    _open_visible_stake_chrome(chrome_path, profile_dir, port)
+    _open_visible_stake_chrome(chrome_path, resolved_profile_dir, port, start_url=start_url)
 
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
@@ -280,16 +309,27 @@ def _open_visible_stake_chrome(
     chrome_path: Path,
     profile_dir: Path,
     port: int,
+    *,
+    start_url: str | None = None,
 ) -> None:
     subprocess.Popen(
-        _debug_chrome_args(chrome_path, profile_dir, port),
+        _debug_chrome_args(chrome_path, profile_dir, port, start_url=start_url),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
 
-def _debug_chrome_args(chrome_path: Path, profile_dir: Path, port: int) -> list[str]:
-    start_url = os.getenv("AZP_STAKE_START_URL") or DEFAULT_STAKE_START_URL
+def _debug_chrome_args(
+    chrome_path: Path,
+    profile_dir: Path,
+    port: int,
+    *,
+    start_url: str | None = None,
+) -> list[str]:
+    resolved_start_url = _clean_stake_start_url(
+        start_url or os.getenv("AZP_STAKE_START_URL"),
+        _clean_stake_base_url(os.getenv("AZP_STAKE_BASE_URL")),
+    )
     return [
         str(chrome_path),
         f"--remote-debugging-port={port}",
@@ -298,8 +338,41 @@ def _debug_chrome_args(chrome_path: Path, profile_dir: Path, port: int) -> list[
         "--start-maximized",
         "--window-size=1400,900",
         "--window-position=80,40",
-        start_url,
+        resolved_start_url,
     ]
+
+
+def _clean_stake_base_url(value: str | None) -> str:
+    raw = str(value or os.getenv("AZP_STAKE_BASE_URL") or DEFAULT_STAKE_START_URL).strip()
+    if not raw:
+        raw = DEFAULT_STAKE_START_URL
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    host = raw.split("://", 1)[1].split("/", 1)[0].strip().lower()
+    if host in {"stake.bet", "bet"}:
+        return DEFAULT_STAKE_BET_START_URL
+    return DEFAULT_STAKE_START_URL
+
+
+def _clean_stake_start_url(value: str | None, base_url: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return base_url
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    if not raw.lower().startswith(base_url.lower()):
+        return base_url
+    return raw
+
+
+def _stake_chrome_profile_dir() -> Path:
+    configured = os.getenv("AZP_STAKE_CHROME_PROFILE")
+    if configured:
+        return Path(configured)
+    base_url = _clean_stake_base_url(os.getenv("AZP_STAKE_BASE_URL"))
+    if base_url == DEFAULT_STAKE_BET_START_URL:
+        return DEFAULT_STAKE_BET_CHROME_USER_DATA_DIR
+    return DEFAULT_CHROME_USER_DATA_DIR
 
 
 async def _run_supabase_cache_cleanup(reason: str) -> None:
@@ -460,6 +533,21 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--worker-id")
     parser.add_argument("--no-autostart-chrome", action="store_true")
+    parser.add_argument(
+        "--stake-base-url",
+        default=os.getenv("AZP_STAKE_BASE_URL") or DEFAULT_STAKE_START_URL,
+        help="Stake web base URL for UI automation: https://stake.com or https://stake.bet.",
+    )
+    parser.add_argument(
+        "--stake-start-url",
+        default=os.getenv("AZP_STAKE_START_URL"),
+        help="Optional start URL inside the selected Stake domain.",
+    )
+    parser.add_argument(
+        "--chrome-profile",
+        default=os.getenv("AZP_STAKE_CHROME_PROFILE"),
+        help="Chrome user data directory for this Stake domain/profile.",
+    )
     parser.add_argument("--no-auto-cleanup", action="store_true")
     parser.add_argument(
         "--auto-cleanup-minutes",
@@ -483,6 +571,9 @@ def main() -> int:
                 worker_id=args.worker_id,
                 autostart_chrome=not args.no_autostart_chrome,
                 mode=args.mode,
+                stake_base_url=args.stake_base_url,
+                chrome_profile=args.chrome_profile,
+                stake_start_url=args.stake_start_url,
                 auto_cleanup_minutes=0.0
                 if args.no_auto_cleanup
                 else args.auto_cleanup_minutes,

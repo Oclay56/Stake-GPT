@@ -30,25 +30,60 @@ class LocalCleanupTarget:
     relative_path: str
 
 
+CHROME_USER_DATA_DIRS = {
+    "stake.com": "data/chrome-stake-ui",
+    "stake.bet": "data/chrome-stake-ui-bet",
+}
+CHROME_PROFILE_DIRS = ("Default", "Profile 1", "Profile 2", "Profile 3")
+CHROME_PROFILE_CACHE_TARGETS = [
+    ("HTTP cache", "Cache"),
+    ("code cache", "Code Cache"),
+    ("GPU cache", "GPUCache"),
+    ("Dawn graphite cache", "DawnGraphiteCache"),
+    ("Dawn WebGPU cache", "DawnWebGPUCache"),
+    ("service worker cache", "Service Worker/CacheStorage"),
+    ("service worker script cache", "Service Worker/ScriptCache"),
+    ("blob cache", "blob_storage"),
+]
+CHROME_ROOT_CACHE_TARGETS = [
+    ("profile GPU persistent cache", "GPUPersistentCache"),
+    ("profile shader cache", "ShaderCache"),
+    ("profile graph shader cache", "GrShaderCache"),
+    ("browser metrics", "BrowserMetrics"),
+    ("browser metrics file", "BrowserMetrics-spare.pma"),
+    ("crash metrics file", "CrashpadMetrics-active.pma"),
+    ("crash reports", "Crashpad/reports"),
+    ("crash attachments", "Crashpad/attachments"),
+    ("component CRX cache", "component_crx_cache"),
+    ("extension CRX cache", "extensions_crx_cache"),
+]
+
+
+def chrome_cleanup_targets() -> list[LocalCleanupTarget]:
+    targets: list[LocalCleanupTarget] = []
+    for domain, user_data_dir in CHROME_USER_DATA_DIRS.items():
+        for profile_dir in CHROME_PROFILE_DIRS:
+            for name, relative_path in CHROME_PROFILE_CACHE_TARGETS:
+                targets.append(
+                    LocalCleanupTarget(
+                        f"{domain} Chrome {profile_dir} {name}",
+                        f"{user_data_dir}/{profile_dir}/{relative_path}",
+                    )
+                )
+        for name, relative_path in CHROME_ROOT_CACHE_TARGETS:
+            targets.append(
+                LocalCleanupTarget(
+                    f"{domain} Chrome {name}",
+                    f"{user_data_dir}/{relative_path}",
+                )
+            )
+    return targets
+
+
 LOCAL_CLEANUP_TARGETS = [
     LocalCleanupTarget("temporary workspace files", ".tmp"),
     LocalCleanupTarget("pytest cache", ".pytest-cache-local"),
-    LocalCleanupTarget("Chrome HTTP cache", "data/chrome-stake-ui/Default/Cache"),
-    LocalCleanupTarget("Chrome code cache", "data/chrome-stake-ui/Default/Code Cache"),
-    LocalCleanupTarget("Chrome GPU cache", "data/chrome-stake-ui/Default/GPUCache"),
-    LocalCleanupTarget("Chrome Dawn graphite cache", "data/chrome-stake-ui/Default/DawnGraphiteCache"),
-    LocalCleanupTarget("Chrome Dawn WebGPU cache", "data/chrome-stake-ui/Default/DawnWebGPUCache"),
-    LocalCleanupTarget("Chrome service worker cache", "data/chrome-stake-ui/Default/Service Worker/CacheStorage"),
-    LocalCleanupTarget("Chrome service worker script cache", "data/chrome-stake-ui/Default/Service Worker/ScriptCache"),
-    LocalCleanupTarget("Chrome blob cache", "data/chrome-stake-ui/Default/blob_storage"),
-    LocalCleanupTarget("Chrome profile GPU persistent cache", "data/chrome-stake-ui/GPUPersistentCache"),
-    LocalCleanupTarget("Chrome profile shader cache", "data/chrome-stake-ui/ShaderCache"),
-    LocalCleanupTarget("Chrome profile graph shader cache", "data/chrome-stake-ui/GrShaderCache"),
-    LocalCleanupTarget("Chrome browser metrics", "data/chrome-stake-ui/BrowserMetrics"),
-    LocalCleanupTarget("Chrome crash reports", "data/chrome-stake-ui/Crashpad/reports"),
-    LocalCleanupTarget("Chrome crash attachments", "data/chrome-stake-ui/Crashpad/attachments"),
-    LocalCleanupTarget("Chrome component CRX cache", "data/chrome-stake-ui/component_crx_cache"),
-    LocalCleanupTarget("Chrome extension CRX cache", "data/chrome-stake-ui/extensions_crx_cache"),
+    *chrome_cleanup_targets(),
 ]
 
 

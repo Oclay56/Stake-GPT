@@ -982,8 +982,8 @@ class StakeGptCli:
 
         if not assume_yes:
             self.emit(
-                "This will clear Supabase local-helper cache rows and temporary scan data.\n"
-                "It will not delete GPT decision ledger rows or place/cancel bets.\n",
+                "This will delete old Supabase local-helper job rows and rebuildable local cache files.\n"
+                "It keeps GPT decision ledger rows, Chrome login/session data, logs, and never places/cancels bets.\n",
                 role="warn",
             )
             confirm = self.input(colorize("Continue? [y/N]: ", SEMANTIC_COLORS["warn"])).strip().lower()
@@ -994,9 +994,9 @@ class StakeGptCli:
                 return
 
         self.status = "cleaning cache"
-        self.emit("Running Supabase cache cleanup...\n", role="info")
+        self.emit("Running Supabase and local cache cleanup...\n", role="info")
         completed = subprocess.run(
-            [str(python_exe), "-m", "app.supabase_cache"],
+            [str(python_exe), "-m", "app.supabase_cache", "--root-dir", str(self.root_dir)],
             cwd=self.root_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

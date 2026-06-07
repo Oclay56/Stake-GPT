@@ -2,7 +2,7 @@
 setlocal
 
 cd /d "%~dp0"
-title Stake-GPT Supabase Cache Cleanup
+title Stake-GPT Cache Cleanup
 
 if not exist ".venv\Scripts\python.exe" (
   echo ERROR: Could not find .venv\Scripts\python.exe
@@ -21,19 +21,26 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 if not exist ".env" (
-  echo ERROR: Could not find .env
+  echo WARNING: Could not find .env
   if exist "env" (
     echo Found a file named "env". Rename it to ".env" if it contains your local settings.
   ) else (
-    echo The cleanup needs local Supabase settings in %CD%\.env
+    echo Supabase cleanup needs local settings in %CD%\.env
     echo Use .env.example as the template, then fill in your local values.
   )
   echo.
+  echo Running local-only cleanup for rebuildable cache/temp files.
+  ".venv\Scripts\python.exe" -m app.supabase_cache --local-only --root-dir "%CD%" %*
+  set EXIT_CODE=%ERRORLEVEL%
+  echo.
+  if not "%EXIT_CODE%"=="0" (
+    echo Local cleanup failed with code %EXIT_CODE%.
+  )
   pause
-  exit /b 1
+  exit /b %EXIT_CODE%
 )
 
-".venv\Scripts\python.exe" -m app.supabase_cache %*
+".venv\Scripts\python.exe" -m app.supabase_cache --root-dir "%CD%" %*
 set EXIT_CODE=%ERRORLEVEL%
 
 echo.

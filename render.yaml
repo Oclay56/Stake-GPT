@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: azp-gpt-action
+    name: stake-gpt
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

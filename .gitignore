@@ -1,7 +1,10 @@
 .env
+env
 .venv/
+.tools/
 __pycache__/
 .pytest_cache/
+.tmp/
 .worktrees/
 *.log
 data/*.sqlite

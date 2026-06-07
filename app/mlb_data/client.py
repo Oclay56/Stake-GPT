@@ -7,6 +7,7 @@ import httpx
 
 
 DEFAULT_MLB_BASE_URL = "https://statsapi.mlb.com/api/v1"
+DEFAULT_MLB_GAME_FEED_BASE_URL = "https://statsapi.mlb.com/api/v1.1"
 
 
 class MLBAPIError(Exception):
@@ -78,6 +79,17 @@ class MLBStatsClient:
             params["season"] = season
         return await self._get(f"/teams/{team_id}/roster", params=params)
 
+    async def get_team_stats(
+        self,
+        team_id: int,
+        group: str,
+        season: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"stats": "season", "group": group}
+        if season:
+            params["season"] = season
+        return await self._get(f"/teams/{team_id}/stats", params=params)
+
     async def search_players(self, query: str) -> dict[str, Any]:
         return await self._get(
             "/people/search",
@@ -101,6 +113,20 @@ class MLBStatsClient:
             params["season"] = season
         return await self._get(f"/people/{player_id}/stats", params=params)
 
+    async def get_player_stat_splits(
+        self,
+        player_id: int,
+        group: str,
+        season: int | None = None,
+        sit_codes: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"stats": "statSplits", "group": group}
+        if season:
+            params["season"] = season
+        if sit_codes:
+            params["sitCodes"] = sit_codes
+        return await self._get(f"/people/{player_id}/stats", params=params)
+
     async def get_player_game_log(
         self,
         player_id: int,
@@ -111,6 +137,13 @@ class MLBStatsClient:
         if season:
             params["season"] = season
         return await self._get(f"/people/{player_id}/stats", params=params)
+
+    async def get_game_feed(self, game_pk: int) -> dict[str, Any]:
+        base_url = os.getenv(
+            "MLB_GAME_FEED_BASE_URL",
+            DEFAULT_MLB_GAME_FEED_BASE_URL,
+        ).rstrip("/")
+        return await self._get(f"{base_url}/game/{game_pk}/feed/live")
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         try:

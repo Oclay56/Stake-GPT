@@ -17,8 +17,12 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
         seen_requests.append(request)
         if request.url.path.endswith("/teams/117/roster"):
             return httpx.Response(200, json={"roster": []})
+        if request.url.path.endswith("/teams/147/stats"):
+            return httpx.Response(200, json={"stats": [{"splits": []}]})
         if request.url.path.endswith("/people/search"):
             return httpx.Response(200, json={"people": []})
+        if request.url.path.endswith("/game/824522/feed/live"):
+            return httpx.Response(200, json={"gameData": {}, "liveData": {}})
         if request.url.path.endswith("/people/592450/stats"):
             return httpx.Response(200, json={"stats": [{"splits": []}]})
         if request.url.path.endswith("/people/592450"):
@@ -43,6 +47,14 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
         await client.get_player_game_log(592450, group="hitting", season=2026)
         await client.get_schedule_range("2026-04-15", "2026-05-08")
         await client.get_standings(season=2026)
+        await client.get_team_stats(147, group="hitting", season=2026)
+        await client.get_player_stat_splits(
+            592450,
+            group="hitting",
+            season=2026,
+            sit_codes="h,a,vr,vl",
+        )
+        await client.get_game_feed(824522)
 
     assert seen_requests[0].url.path == "/api/v1/teams"
     assert dict(seen_requests[0].url.params) == {"sportId": "1", "season": "2026"}
@@ -87,6 +99,20 @@ async def _run_mlb_stats_client_uses_official_endpoint_paths():
         "season": "2026",
         "standingsTypes": "regularSeason",
     }
+    assert seen_requests[9].url.path == "/api/v1/teams/147/stats"
+    assert dict(seen_requests[9].url.params) == {
+        "stats": "season",
+        "group": "hitting",
+        "season": "2026",
+    }
+    assert seen_requests[10].url.path == "/api/v1/people/592450/stats"
+    assert dict(seen_requests[10].url.params) == {
+        "stats": "statSplits",
+        "group": "hitting",
+        "season": "2026",
+        "sitCodes": "h,a,vr,vl",
+    }
+    assert seen_requests[11].url.path == "/api/v1.1/game/824522/feed/live"
 
 
 class FakeMLBStatsClient:
@@ -169,6 +195,26 @@ class FakeMLBStatsClient:
             ]
         }
 
+    async def get_team_stats(self, team_id: int, group: str, season=None):
+        return {
+            "stats": [
+                {
+                    "splits": [
+                        {
+                            "stat": {
+                                "gamesPlayed": 40,
+                                "runs": 190,
+                                "hits": 330,
+                                "strikeOuts": 305,
+                                "baseOnBalls": 140,
+                                "plateAppearances": 1500,
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
     async def search_players(self, query: str):
         return {
             "people": [
@@ -211,6 +257,28 @@ class FakeMLBStatsClient:
             ]
         }
 
+    async def get_player_stat_splits(
+        self,
+        player_id: int,
+        group: str,
+        season=None,
+        sit_codes=None,
+    ):
+        return {
+            "stats": [
+                {
+                    "splits": [
+                        {
+                            "split": "Home",
+                            "type": "home/away",
+                            "season": str(season),
+                            "stat": {"gamesPlayed": 10, "hits": 12},
+                        }
+                    ]
+                }
+            ]
+        }
+
     async def get_player_game_log(self, player_id: int, group: str, season=None):
         return {
             "stats": [
@@ -235,6 +303,56 @@ class FakeMLBStatsClient:
             ]
         }
 
+    async def get_game_feed(self, game_pk: int):
+        return {
+            "gameData": {
+                "game": {"pk": game_pk, "type": "R", "doubleHeader": "N", "gameNumber": 1},
+                "datetime": {
+                    "dateTime": "2026-05-08T23:05:00Z",
+                    "officialDate": "2026-05-08",
+                    "dayNight": "night",
+                },
+                "status": {"detailedState": "Scheduled", "abstractGameState": "Preview"},
+                "venue": {
+                    "id": 1,
+                    "name": "Test Park",
+                    "fieldInfo": {"roofType": "Open", "turfType": "Grass"},
+                    "location": {"city": "Houston", "state": "Texas"},
+                    "timeZone": {"id": "America/Chicago"},
+                },
+                "weather": {"condition": "Clear", "temp": "78", "wind": "5 mph"},
+                "players": {
+                    "ID592450": {
+                        "fullName": "Aaron Judge",
+                        "batSide": {"code": "R"},
+                        "pitchHand": {"code": "R"},
+                        "primaryPosition": {"abbreviation": "RF", "name": "Outfielder"},
+                    }
+                },
+            },
+            "liveData": {
+                "boxscore": {
+                    "teams": {
+                        "away": {
+                            "team": {"id": 147, "name": "New York Yankees"},
+                            "battingOrder": [592450],
+                            "players": {
+                                "ID592450": {
+                                    "person": {"id": 592450, "fullName": "Aaron Judge"},
+                                    "position": {"abbreviation": "RF", "name": "Outfielder"},
+                                }
+                            },
+                        },
+                        "home": {
+                            "team": {"id": 117, "name": "Houston Astros"},
+                            "battingOrder": [],
+                            "players": {},
+                        },
+                    }
+                }
+            },
+        }
+
 
 def test_mlb_data_engine_normalizes_core_shapes():
     engine = MLBDataEngine(FakeMLBStatsClient())
@@ -244,8 +362,11 @@ def test_mlb_data_engine_normalizes_core_shapes():
     recent = asyncio.run(engine.get_schedule_range("2026-04-15", "2026-05-08"))
     standings = asyncio.run(engine.get_standings(season=2026))
     roster = asyncio.run(engine.get_team_roster(117, season=2026))
+    team_profile = asyncio.run(engine.get_team_profile(147, season=2026, group="hitting"))
     players = asyncio.run(engine.search_players("Aaron Judge"))
     player = asyncio.run(engine.get_player_profile(592450, season=2026, group="hitting"))
+    splits = asyncio.run(engine.get_player_splits(592450, season=2026, group="hitting"))
+    game_context = asyncio.run(engine.get_game_context(824522))
     history = asyncio.run(
         engine.get_player_recent_history(
             592450,
@@ -286,8 +407,13 @@ def test_mlb_data_engine_normalizes_core_shapes():
         "pct": ".556",
     }
     assert roster["players"][0]["name"] == "Aaron Judge"
+    assert team_profile["stats"]["strikeOuts"] == 305
     assert players["players"][0]["key"] == "aaron-judge"
     assert player["player"]["stats"] == {"avg": ".270", "homeRuns": 15, "rbi": 38}
+    assert splits["splits"][0]["split"] == "Home"
+    assert game_context["venue"]["roofType"] == "Open"
+    assert game_context["teams"]["away"]["lineupConfirmed"] is True
+    assert game_context["teams"]["away"]["lineup"][0]["battingOrder"] == 1
     assert history["games"][0]["gamePk"] == 824522
     assert history["games"][0]["date"] == "2026-05-07"
     assert history["totals"] == {"hits": 3.0, "rbi": 1.0, "homeRuns": 1.0}

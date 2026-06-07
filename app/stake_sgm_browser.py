@@ -1392,6 +1392,7 @@ def normalize_sgm_response(
             player_props,
             visible_market_text=visible_market_text,
         ),
+        "marketCatalog": _sgm_market_catalog(team_markets, player_props),
         "teamMarkets": team_markets,
         "playerProps": player_props,
     }
@@ -1455,6 +1456,9 @@ def _matched_selection_row(row: dict[str, Any], side: str, row_id: str) -> dict[
         "odds": _float_or_none(row.get(side)),
         "playable": bool(row.get("playable")),
         "suspended": bool(row.get("suspended")),
+        "balanced": row.get("balanced"),
+        "push": row.get("push"),
+        "betFactor": row.get("betFactor"),
         "customBet": bool(row.get("customBet")),
         "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
         "playabilityMode": row.get("playabilityMode"),
@@ -3352,6 +3356,7 @@ def _line_rows(
             "push": line.get("push"),
             "suspended": bool(line.get("suspended")),
             "balanced": line.get("balanced"),
+            "betFactor": ((market.get("trading") or {}).get("betFactor")),
             "customBet": bool(stat.get("customBet")),
             "liveCustomBetAvailable": bool(stat.get("liveCustomBetAvailable")),
             "playable": playable,
@@ -3461,6 +3466,52 @@ def _sgm_market_diagnostics(
             )
             for target_market in SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS
         ]
+    }
+
+
+def _sgm_market_catalog(
+    team_markets: list[dict[str, Any]],
+    player_props: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    for scope, source_rows in (("team", team_markets), ("player", player_props)):
+        for row in source_rows:
+            key = (scope, _text_key(row.get("market")))
+            item = rows.setdefault(
+                key,
+                {
+                    "scope": scope,
+                    "market": row.get("market"),
+                    "rowCount": 0,
+                    "playableRowCount": 0,
+                    "suspendedRowCount": 0,
+                    "customBetRowCount": 0,
+                    "lines": set(),
+                    "nonPlayableReasons": {},
+                },
+            )
+            item["rowCount"] += 1
+            if row.get("playable"):
+                item["playableRowCount"] += 1
+            if row.get("suspended"):
+                item["suspendedRowCount"] += 1
+            if row.get("customBet"):
+                item["customBetRowCount"] += 1
+            if row.get("line") is not None:
+                item["lines"].add(row.get("line"))
+            for reason in row.get("nonPlayableReasons") or []:
+                reasons = item["nonPlayableReasons"]
+                reasons[reason] = reasons.get(reason, 0) + 1
+
+    return {
+        "marketCount": len(rows),
+        "markets": [
+            {
+                **item,
+                "lines": sorted(item["lines"], key=lambda value: str(value)),
+            }
+            for item in sorted(rows.values(), key=lambda value: (value["scope"], str(value["market"] or "")))
+        ],
     }
 
 

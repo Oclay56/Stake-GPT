@@ -1336,6 +1336,11 @@ async def _prop_context_response(
         "availability": selection.get("availability"),
         "mlbMatch": prop.get("mlbMatch"),
         "matchupGame": prop.get("mlbGame"),
+        "gameContext": prop.get("gameContext"),
+        "lineupContext": prop.get("lineupContext"),
+        "opponentPitcherContext": prop.get("opponentPitcherContext"),
+        "opponentTeamContext": prop.get("opponentTeamContext"),
+        "playerSplits": prop.get("playerSplits"),
         "statContext": stat_context,
         "season": _season_context(prop.get("mlbProfile")),
         "recent": recent,
@@ -1720,6 +1725,9 @@ def _comparison_selection_row(
         **_compact_selection_row(selection),
         "mlbMatch": prop.get("mlbMatch"),
         "matchupGame": _compact_game(prop.get("mlbGame")),
+        "gameContext": prop.get("gameContext"),
+        "lineupContext": prop.get("lineupContext"),
+        "matchupContext": _compact_matchup_context(prop),
         "metrics": metrics,
         "flags": flags,
         "decisionProfile": profile,
@@ -1775,6 +1783,7 @@ def _selection_metrics(
         "season": season,
         "evidenceCheck": guard,
         "trendLabels": labels,
+        "matchupContext": _matchup_metric_context(prop),
     }
 
 
@@ -1793,7 +1802,45 @@ def _comparison_flags(
         flags.append("mlb_player_unmatched")
     if match.get("status") == "name_match_team_unconfirmed":
         flags.append("team_unconfirmed")
+    game_context = prop.get("gameContext") or {}
+    flags.extend(game_context.get("statusRiskFlags") or [])
+    lineup = prop.get("lineupContext") or {}
+    if lineup.get("status") == "not_in_confirmed_lineup":
+        flags.append("lineup_not_starting")
+    elif lineup.get("status") == "lineup_unconfirmed":
+        flags.append("lineup_unconfirmed")
+    elif lineup.get("status") == "team_side_unknown":
+        flags.append("lineup_team_side_unknown")
+    opponent_pitcher = prop.get("opponentPitcherContext") or {}
+    flags.extend(opponent_pitcher.get("riskFlags") or [])
+    opponent_team = prop.get("opponentTeamContext") or {}
+    flags.extend(opponent_team.get("riskFlags") or [])
+    player_splits = prop.get("playerSplits") or {}
+    flags.extend(player_splits.get("riskFlags") or [])
     return sorted(set(flags))
+
+
+def _compact_matchup_context(prop: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "lineup": prop.get("lineupContext"),
+        "opponentPitcher": prop.get("opponentPitcherContext"),
+        "opponentTeam": prop.get("opponentTeamContext"),
+        "playerSplits": prop.get("playerSplits"),
+    }
+
+
+def _matchup_metric_context(prop: dict[str, Any]) -> dict[str, Any]:
+    game_context = prop.get("gameContext") or {}
+    return {
+        "lineupStatus": (prop.get("lineupContext") or {}).get("status"),
+        "battingOrder": (prop.get("lineupContext") or {}).get("battingOrder"),
+        "platoonSide": (prop.get("lineupContext") or {}).get("platoonSide"),
+        "opponentPitcherStatus": (prop.get("opponentPitcherContext") or {}).get("status"),
+        "opponentTeamStatus": (prop.get("opponentTeamContext") or {}).get("status"),
+        "gameStatusRiskFlags": game_context.get("statusRiskFlags") or [],
+        "venue": (game_context.get("venue") or {}).get("name") if isinstance(game_context.get("venue"), dict) else None,
+        "weather": game_context.get("weather"),
+    }
 
 
 def _compact_game(game: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2182,6 +2229,13 @@ def _player_context_notes(prop: dict[str, Any]) -> list[str]:
         notes.append("Market has no direct MLB stat mapping yet.")
     elif stat_context.get("contextQuality") == "partial":
         notes.append("Market has partial MLB context support; use extra caution.")
+    lineup = prop.get("lineupContext") or {}
+    if lineup.get("status") == "lineup_unconfirmed":
+        notes.append("Official lineup was not confirmed when context was generated.")
+    if lineup.get("status") == "not_in_confirmed_lineup":
+        notes.append("Player was not found in the confirmed starting lineup.")
+    for flag in (prop.get("gameContext") or {}).get("statusRiskFlags") or []:
+        notes.append(f"Game status risk flag: {flag}.")
     return notes
 
 

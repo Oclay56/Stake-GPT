@@ -84,6 +84,24 @@ class MLBDataEngine:
             "players": players,
         }
 
+    async def get_team_profile(
+        self,
+        team_id: int,
+        season: int | None = None,
+        group: str = "hitting",
+    ) -> dict[str, Any]:
+        payload = await self._client.get_team_stats(
+            team_id,
+            group=group,
+            season=season,
+        )
+        return {
+            "teamId": team_id,
+            "season": season,
+            "group": group,
+            "stats": _first_split_stat(payload),
+        }
+
     async def search_players(
         self,
         query: str,
@@ -146,6 +164,33 @@ class MLBDataEngine:
             "totals": totals,
             "perGame": _per_game(totals, len(games)),
         }
+
+    async def get_player_splits(
+        self,
+        player_id: int,
+        group: str = "hitting",
+        season: int | None = None,
+        sit_codes: str | None = "h,a,vr,vl",
+    ) -> dict[str, Any]:
+        payload = await self._client.get_player_stat_splits(
+            player_id,
+            group=group,
+            season=season,
+            sit_codes=sit_codes,
+        )
+        splits = [_normalize_stat_split(split) for split in _game_splits(payload)]
+        return {
+            "playerId": player_id,
+            "group": group,
+            "season": season,
+            "sitCodes": sit_codes,
+            "splitCount": len(splits),
+            "splits": splits,
+        }
+
+    async def get_game_context(self, game_pk: int) -> dict[str, Any]:
+        payload = await self._client.get_game_feed(game_pk)
+        return _normalize_live_game_context(payload)
 
 
 def _normalize_team(raw_team: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +288,162 @@ def _normalize_person(raw_person: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_live_game_context(payload: dict[str, Any]) -> dict[str, Any]:
+    game_data = payload.get("gameData") or {}
+    live_data = payload.get("liveData") or {}
+    boxscore = live_data.get("boxscore") or {}
+    status = game_data.get("status") or {}
+    datetime_payload = game_data.get("datetime") or {}
+    game_payload = game_data.get("game") or {}
+    venue = game_data.get("venue") or {}
+    teams_payload = boxscore.get("teams") or {}
+    game_players = game_data.get("players") or {}
+
+    return {
+        "gamePk": game_payload.get("pk") or payload.get("gamePk"),
+        "gameDate": datetime_payload.get("dateTime"),
+        "officialDate": datetime_payload.get("officialDate"),
+        "status": {
+            "abstractGameState": status.get("abstractGameState"),
+            "detailedState": status.get("detailedState"),
+            "codedGameState": status.get("codedGameState"),
+            "statusCode": status.get("statusCode"),
+            "reason": status.get("reason"),
+            "startTimeTBD": status.get("startTimeTBD"),
+        },
+        "statusRiskFlags": _game_status_risk_flags(status),
+        "gameInfo": {
+            "gameType": game_payload.get("type"),
+            "doubleHeader": game_payload.get("doubleHeader"),
+            "gameNumber": game_payload.get("gameNumber"),
+            "dayNight": datetime_payload.get("dayNight"),
+        },
+        "venue": _normalize_venue(venue),
+        "weather": _normalize_weather(game_data.get("weather") or {}),
+        "teams": {
+            "away": _normalize_boxscore_team(
+                teams_payload.get("away") or {},
+                game_players,
+            ),
+            "home": _normalize_boxscore_team(
+                teams_payload.get("home") or {},
+                game_players,
+            ),
+        },
+    }
+
+
+def _normalize_venue(venue: dict[str, Any]) -> dict[str, Any] | None:
+    if not venue:
+        return None
+    field_info = venue.get("fieldInfo") or {}
+    location = venue.get("location") or {}
+    return {
+        "mlbId": venue.get("id"),
+        "name": venue.get("name"),
+        "roofType": field_info.get("roofType"),
+        "turfType": field_info.get("turfType"),
+        "capacity": field_info.get("capacity"),
+        "city": location.get("city"),
+        "state": location.get("state"),
+        "timeZone": (venue.get("timeZone") or {}).get("id"),
+    }
+
+
+def _normalize_weather(weather: dict[str, Any]) -> dict[str, Any] | None:
+    if not weather:
+        return None
+    return {
+        "condition": weather.get("condition"),
+        "temp": weather.get("temp"),
+        "wind": weather.get("wind"),
+    }
+
+
+def _normalize_boxscore_team(
+    raw_team: dict[str, Any],
+    game_players: dict[str, Any],
+) -> dict[str, Any]:
+    team = raw_team.get("team") or {}
+    batting_order = [_int_or_none(player_id) for player_id in raw_team.get("battingOrder") or []]
+    batting_order = [player_id for player_id in batting_order if player_id is not None]
+    players_by_id = {}
+    for raw_player in (raw_team.get("players") or {}).values():
+        player = _normalize_boxscore_player(raw_player, game_players, batting_order)
+        player_id = player.get("mlbId")
+        if player_id is not None:
+            players_by_id[str(player_id)] = player
+
+    lineup = [
+        players_by_id[str(player_id)]
+        for player_id in batting_order
+        if str(player_id) in players_by_id
+    ]
+    return {
+        "team": _normalize_team(team) if team else None,
+        "lineupConfirmed": bool(batting_order),
+        "battingOrder": batting_order,
+        "lineup": lineup,
+        "playersById": players_by_id,
+        "batters": [_int_or_none(player_id) for player_id in raw_team.get("batters") or []],
+        "pitchers": [_int_or_none(player_id) for player_id in raw_team.get("pitchers") or []],
+        "teamStats": raw_team.get("teamStats") or {},
+    }
+
+
+def _normalize_boxscore_player(
+    raw_player: dict[str, Any],
+    game_players: dict[str, Any],
+    batting_order: list[int],
+) -> dict[str, Any]:
+    person = raw_player.get("person") or {}
+    player_id = person.get("id")
+    game_player = game_players.get(f"ID{player_id}") or {}
+    position = raw_player.get("position") or game_player.get("primaryPosition") or {}
+    order_index = batting_order.index(player_id) + 1 if player_id in batting_order else None
+    return {
+        "mlbId": player_id,
+        "name": person.get("fullName") or game_player.get("fullName"),
+        "key": slug_key(person.get("fullName") or game_player.get("fullName")),
+        "batSide": (game_player.get("batSide") or {}).get("code"),
+        "pitchHand": (game_player.get("pitchHand") or {}).get("code"),
+        "position": position.get("abbreviation"),
+        "positionName": position.get("name"),
+        "battingOrder": order_index,
+        "confirmedStarter": order_index is not None,
+        "gameStatus": raw_player.get("gameStatus") or {},
+        "seasonStats": raw_player.get("seasonStats") or {},
+    }
+
+
+def _normalize_stat_split(split: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "split": split.get("split"),
+        "type": split.get("type"),
+        "season": split.get("season"),
+        "stat": split.get("stat") or {},
+    }
+
+
+def _game_status_risk_flags(status: dict[str, Any]) -> list[str]:
+    text = " ".join(
+        str(status.get(key) or "")
+        for key in ("abstractGameState", "detailedState", "codedGameState", "statusCode", "reason")
+    ).lower()
+    flags = []
+    if "postpon" in text:
+        flags.append("game_postponed")
+    if "suspend" in text:
+        flags.append("game_suspended")
+    if "delay" in text:
+        flags.append("game_delay_risk")
+    if "cancel" in text:
+        flags.append("game_cancelled")
+    if status.get("startTimeTBD"):
+        flags.append("start_time_tbd")
+    return flags
+
+
 def _first_split_stat(payload: dict[str, Any]) -> dict[str, Any]:
     for stat_group in payload.get("stats") or []:
         splits = stat_group.get("splits") or []
@@ -301,3 +502,10 @@ def _numeric(value: Any) -> float | None:
 
 def _clean_limit(limit: int) -> int:
     return max(1, min(limit, 100))
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

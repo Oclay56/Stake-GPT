@@ -1486,6 +1486,7 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
                                 "markets": [
                                     {
                                         "id": "market-1",
+                                        "trading": {"betFactor": 0.85},
                                         "stat": {
                                             "id": "stat-1",
                                             "type": "player",
@@ -1500,6 +1501,8 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
                                                 "line": 0.5,
                                                 "over": 1.62,
                                                 "under": 2.1,
+                                                "push": None,
+                                                "balanced": True,
                                                 "suspended": False,
                                             },
                                             {
@@ -1507,6 +1510,7 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
                                                 "line": 1.5,
                                                 "over": 3.5,
                                                 "under": 1.2,
+                                                "balanced": False,
                                                 "suspended": True,
                                             },
                                         ],
@@ -1533,8 +1537,12 @@ def test_normalize_sgm_response_marks_only_unsuspended_available_lines_playable(
     assert board["playerProps"][0]["player"] == "Ronald Acuna Jr."
     assert board["playerProps"][0]["playable"] is True
     assert board["playerProps"][0]["nonPlayableReasons"] == []
+    assert board["playerProps"][0]["betFactor"] == 0.85
+    assert board["playerProps"][0]["balanced"] is True
     assert board["playerProps"][1]["playable"] is False
     assert board["playerProps"][1]["nonPlayableReasons"] == ["suspended"]
+    assert board["marketCatalog"]["markets"][0]["market"] == "Hits"
+    assert board["marketCatalog"]["markets"][0]["playableRowCount"] == 1
 
 
 def test_normalize_sgm_response_allows_pregame_custom_bet_rows_without_live_flag():

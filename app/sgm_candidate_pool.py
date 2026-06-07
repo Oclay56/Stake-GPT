@@ -81,6 +81,7 @@ def score_sgm_candidate(
     odds_trap_penalty = 0.0
     quota_filler_penalty = 0.0
     volatility_penalty = _volatility_penalty(market_key, clean_mode)
+    stake_metadata_penalty = 0.0
     correlation_penalty = _float_or_none(candidate.get("correlationPenalty")) or 0.0
     market_exposure_penalty = 0.0
     risk_flags: list[str] = []
@@ -98,6 +99,28 @@ def score_sgm_candidate(
     elif market_exposure_count >= 2:
         market_exposure_penalty = min(18.0, market_exposure_count * 6.0)
         reason_tags.append("market_exposure_soft_penalty")
+    if candidate.get("balanced") is False:
+        stake_metadata_penalty += 4.0
+        risk_flags.append("stake_line_unbalanced")
+    bet_factor = _float_or_none(candidate.get("betFactor"))
+    if bet_factor is not None and bet_factor <= 0:
+        stake_metadata_penalty += 8.0
+        risk_flags.append("stake_bet_factor_zero_or_negative")
+    if candidate.get("push") not in (None, False):
+        reason_tags.append("push_available")
+    lineup_status = str((candidate.get("lineupContext") or {}).get("status") or "")
+    if lineup_status == "not_in_confirmed_lineup":
+        stake_metadata_penalty += 100.0
+        risk_flags.append("lineup_not_starting")
+    elif lineup_status == "lineup_unconfirmed":
+        stake_metadata_penalty += 6.0
+        risk_flags.append("lineup_unconfirmed")
+    for flag in (candidate.get("gameContext") or {}).get("statusRiskFlags") or []:
+        risk_flags.append(str(flag))
+        if flag in {"game_postponed", "game_suspended", "game_cancelled"}:
+            stake_metadata_penalty += 100.0
+        elif flag in {"game_delay_risk", "start_time_tbd"}:
+            stake_metadata_penalty += 8.0
 
     if evidence_score >= 70:
         reason_tags.append("broader_context_supports_side")
@@ -119,6 +142,7 @@ def score_sgm_candidate(
         - odds_trap_penalty
         - quota_filler_penalty
         - volatility_penalty
+        - stake_metadata_penalty
         - correlation_penalty
         - market_exposure_penalty
     )
@@ -129,6 +153,7 @@ def score_sgm_candidate(
         "oddsTrapPenalty": round(odds_trap_penalty, 2),
         "quotaFillerPenalty": round(quota_filler_penalty, 2),
         "volatilityPenalty": round(volatility_penalty, 2),
+        "stakeMetadataPenalty": round(stake_metadata_penalty, 2),
         "correlationPenalty": round(correlation_penalty, 2),
         "marketExposurePenalty": round(market_exposure_penalty, 2),
         "score": round(max(0.0, min(100.0, score)), 2),
@@ -293,6 +318,8 @@ def _flatten_board_rows(
         for source_row in source_rows:
             if not source_row.get("playable"):
                 rejected["not_playable"] += 1
+                for reason in source_row.get("nonPlayableReasons") or []:
+                    rejected[f"not_playable:{reason}"] += 1
                 continue
             normalized = normalize_sgm_market_key(
                 source_row.get("market"),
@@ -319,6 +346,9 @@ def _flatten_board_rows(
                         "normalizedMarketKey": normalized,
                         "side": row_side,
                         "odds": odds,
+                        "balanced": source_row.get("balanced"),
+                        "push": source_row.get("push"),
+                        "betFactor": source_row.get("betFactor"),
                         "rowId": make_sgm_selection_row_id(fixture_slug, source_row, row_side),
                         "selectionId": f"{source_row.get('lineId') or ''}:{row_side}",
                         "propId": f"{fixture_slug}:{source_row.get('lineId') or source_row.get('marketId')}:{row_side}",
@@ -362,6 +392,11 @@ def _prop_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "market": {"name": row.get("market"), "key": market_key},
         "line": row.get("line"),
         "odds": {row.get("side"): row.get("odds")},
+        "stakeMetadata": {
+            "balanced": row.get("balanced"),
+            "push": row.get("push"),
+            "betFactor": row.get("betFactor"),
+        },
     }
 
 
@@ -412,6 +447,9 @@ def _candidate_from_enriched_row(row: dict[str, Any], enriched_prop: dict[str, A
         "side": side,
         "line": row.get("line"),
         "odds": row.get("odds"),
+        "balanced": row.get("balanced"),
+        "push": row.get("push"),
+        "betFactor": row.get("betFactor"),
         "swishStatId": row.get("swishStatId"),
         "marketId": row.get("marketId"),
         "lineId": row.get("lineId"),
@@ -428,6 +466,11 @@ def _candidate_from_enriched_row(row: dict[str, Any], enriched_prop: dict[str, A
         "last15": context["last15"],
         "season": season,
         "context": context,
+        "gameContext": enriched_prop.get("gameContext"),
+        "lineupContext": enriched_prop.get("lineupContext"),
+        "opponentPitcherContext": enriched_prop.get("opponentPitcherContext"),
+        "opponentTeamContext": enriched_prop.get("opponentTeamContext"),
+        "playerSplits": enriched_prop.get("playerSplits"),
         "capturedAt": datetime.now(timezone.utc).isoformat(),
     }
 

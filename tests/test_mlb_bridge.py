@@ -176,6 +176,137 @@ class BridgeFakeMLBEngine:
         return {"teamId": team_id, "season": season, "playerCount": 0, "players": []}
 
 
+class ContextBridgeFakeMLBEngine(BridgeFakeMLBEngine):
+    async def get_schedule(self, game_date: str):
+        self.schedule_calls.append(game_date)
+        return {
+            "date": game_date,
+            "gameCount": 1,
+            "games": [
+                {
+                    "gamePk": 824522,
+                    "gameDate": f"{game_date}T23:05:00Z",
+                    "status": "Scheduled",
+                    "awayTeam": {
+                        "mlbId": 113,
+                        "name": "Cincinnati Reds",
+                        "key": "cincinnati-reds",
+                        "probablePitcher": {
+                            "mlbId": 1111,
+                            "name": "Reds Starter",
+                            "key": "reds-starter",
+                        },
+                    },
+                    "homeTeam": {
+                        "mlbId": 117,
+                        "name": "Houston Astros",
+                        "key": "houston-astros",
+                        "probablePitcher": {
+                            "mlbId": 2222,
+                            "name": "Astros Starter",
+                            "key": "astros-starter",
+                        },
+                    },
+                }
+            ],
+        }
+
+    async def get_game_context(self, game_pk: int):
+        return {
+            "gamePk": game_pk,
+            "gameDate": "2026-05-08T23:05:00Z",
+            "officialDate": "2026-05-08",
+            "status": {"detailedState": "Scheduled"},
+            "statusRiskFlags": [],
+            "gameInfo": {"dayNight": "night", "doubleHeader": "N", "gameNumber": 1},
+            "venue": {"name": "Test Park", "roofType": "Open"},
+            "weather": {"condition": "Clear", "temp": "78", "wind": "5 mph"},
+            "teams": {
+                "away": {
+                    "team": {"mlbId": 113, "name": "Cincinnati Reds", "key": "cincinnati-reds"},
+                    "lineupConfirmed": False,
+                    "battingOrder": [],
+                    "lineup": [],
+                    "playersById": {},
+                },
+                "home": {
+                    "team": {"mlbId": 117, "name": "Houston Astros", "key": "houston-astros"},
+                    "lineupConfirmed": True,
+                    "battingOrder": [514888],
+                    "lineup": [
+                        {
+                            "mlbId": 514888,
+                            "name": "Jose Altuve",
+                            "batSide": "R",
+                            "position": "2B",
+                            "battingOrder": 1,
+                            "confirmedStarter": True,
+                        }
+                    ],
+                    "playersById": {
+                        "514888": {
+                            "mlbId": 514888,
+                            "name": "Jose Altuve",
+                            "batSide": "R",
+                            "position": "2B",
+                            "battingOrder": 1,
+                            "confirmedStarter": True,
+                        }
+                    },
+                },
+            },
+        }
+
+    async def get_player_profile(
+        self,
+        player_id: int,
+        season=None,
+        group: str = "hitting",
+    ):
+        if player_id == 1111:
+            return {
+                "player": {
+                    "mlbId": 1111,
+                    "name": "Reds Starter",
+                    "key": "reds-starter",
+                    "pitchHand": "R",
+                    "stats": {
+                        "gamesPlayed": 12,
+                        "gamesStarted": 12,
+                        "hits": 60,
+                        "baseOnBalls": 18,
+                        "strikeOuts": 70,
+                        "homeRuns": 8,
+                    },
+                },
+                "season": season,
+                "group": group,
+            }
+        return await super().get_player_profile(player_id, season=season, group=group)
+
+    async def get_player_splits(
+        self,
+        player_id: int,
+        group: str = "hitting",
+        season=None,
+        sit_codes=None,
+    ):
+        return {
+            "playerId": player_id,
+            "group": group,
+            "season": season,
+            "sitCodes": sit_codes,
+            "splitCount": 1,
+            "splits": [
+                {
+                    "split": "Home",
+                    "type": "home/away",
+                    "stat": {"gamesPlayed": 10, "hits": 15},
+                }
+            ],
+        }
+
+
 def _props_payload():
     return {
         "league": "MLB",
@@ -424,6 +555,28 @@ def test_enrich_props_matches_by_player_and_team_then_attaches_stats():
     assert engine.profile_calls == [(514888, 2026, "hitting")]
     assert engine.history_calls == [(514888, "hitting", 2026, 3)]
     assert engine.schedule_calls == ["2026-05-08"]
+
+
+def test_enrich_props_attaches_lineup_game_and_opponent_pitcher_context():
+    clear_mlb_bridge_cache()
+
+    payload = asyncio.run(
+        enrich_props_with_mlb_data(
+            _props_payload(),
+            ContextBridgeFakeMLBEngine(),
+            season=2026,
+            group_mode="auto",
+            history_limit=3,
+        )
+    )
+
+    prop = payload["props"][0]
+    assert prop["gameContext"]["venue"]["name"] == "Test Park"
+    assert prop["lineupContext"]["status"] == "confirmed_starter"
+    assert prop["lineupContext"]["battingOrder"] == 1
+    assert prop["opponentPitcherContext"]["pitcher"]["pitchHand"] == "R"
+    assert prop["opponentPitcherContext"]["season"]["strikeOuts"] == 70
+    assert prop["playerSplits"]["seasonSplits"][0]["split"] == "Home"
 
 
 def test_enrich_props_upgrades_name_match_when_profile_confirms_team():

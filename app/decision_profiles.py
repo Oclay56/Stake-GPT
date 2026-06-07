@@ -449,7 +449,15 @@ def _data_quality(
     match_status: str,
     flags: list[str],
 ) -> str:
+    hard_block_flags = {
+        "game_postponed",
+        "game_suspended",
+        "game_cancelled",
+        "lineup_not_starting",
+    }
     if not playable or "unplayable_current_odds" in flags or "missing_line" in flags:
+        return "blocked"
+    if hard_block_flags.intersection(flags):
         return "blocked"
     if context_quality == "unsupported" or match_status == "unmatched":
         return "low"
@@ -544,10 +552,22 @@ def _final_status(
     volatility: str,
     flags: list[str],
 ) -> str:
+    hard_block_flags = {
+        "game_postponed",
+        "game_suspended",
+        "game_cancelled",
+        "lineup_not_starting",
+    }
     if not playable or data_quality == "blocked":
         return "blocked"
+    if hard_block_flags.intersection(flags):
+        return "blocked"
+    if "game_delay_risk" in flags:
+        return "borderline"
     if data_quality == "low" or evidence == "conflicting":
         return "avoid"
+    if "lineup_unconfirmed" in flags:
+        return "playable_but_volatile"
     if evidence == "weak" or "last5_overreaction_risk" in flags:
         return "borderline"
     if volatility in {"high", "extreme"}:

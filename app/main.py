@@ -2527,6 +2527,7 @@ def _compact_stake_ui_sgm_board(
         "counts": board.get("counts") or {},
         "warnings": board.get("warnings") or [],
         "marketDiagnostics": board.get("marketDiagnostics") or {},
+        "marketCatalog": board.get("marketCatalog") or {},
         "filters": {
             "side": side,
             "market": market or None,
@@ -2591,6 +2592,9 @@ def _stake_ui_selection_rows(
                     "nonPlayableReasons": row.get("nonPlayableReasons") or [],
                     "identifierWarnings": row.get("identifierWarnings") or [],
                     "suspended": bool(row.get("suspended")),
+                    "balanced": row.get("balanced"),
+                    "push": row.get("push"),
+                    "betFactor": row.get("betFactor"),
                     "customBet": bool(row.get("customBet")),
                     "liveCustomBetAvailable": bool(row.get("liveCustomBetAvailable")),
                     "playerId": row.get("playerId"),

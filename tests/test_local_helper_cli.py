@@ -315,6 +315,48 @@ def test_clean_confirmation_can_cancel(tmp_path):
     assert cli.status == "ready"
 
 
+def test_successful_cleanup_returns_prompt_to_ready(monkeypatch, tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text("SUPABASE_URL=x\n", encoding="utf-8")
+    outputs: list[str] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "AZP cache cleanup\n"
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.run", lambda *args, **kwargs: Completed())
+    cli = StakeGptCli(root_dir=tmp_path, output_func=outputs.append)
+
+    cli.run_cache_cleanup(assume_yes=True)
+
+    assert cli.status == "ready"
+    prompt = cli.rich_prompt()
+    prompt_text = prompt.plain if hasattr(prompt, "plain") else str(prompt)
+    assert prompt_text == "stake-gpt [ready] > "
+    assert "Cleanup exited with code 0." in "".join(outputs)
+
+
+def test_failed_cleanup_uses_error_prompt_not_loading_cleanup(monkeypatch, tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text("SUPABASE_URL=x\n", encoding="utf-8")
+
+    class Completed:
+        returncode = 1
+        stdout = "cleanup failed\n"
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.run", lambda *args, **kwargs: Completed())
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: None)
+
+    cli.run_cache_cleanup(assume_yes=True)
+
+    assert cli.status == "cleanup failed"
+    prompt = cli.rich_prompt()
+    prompt_text = prompt.plain if hasattr(prompt, "plain") else str(prompt)
+    assert prompt_text == "stake-gpt [error] > "
+
+
 def test_logs_command_reads_latest_and_error_lines(tmp_path):
     outputs: list[str] = []
     cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: outputs.append(text))

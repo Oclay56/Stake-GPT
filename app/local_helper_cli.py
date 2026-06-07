@@ -316,12 +316,12 @@ def _prompt_state(status: str) -> str:
         return "building"
     if "review" in cleaned or "scan" in cleaned:
         return "reviewing"
-    if "clean" in cleaned:
-        return "cleaning"
     if "setup" in cleaned or "attention" in cleaned:
         return "setup"
     if "error" in cleaned or "failed" in cleaned:
         return "error"
+    if "clean" in cleaned:
+        return "cleaning"
     if "stop" in cleaned:
         return "stopped"
     return "ready"
@@ -1137,7 +1137,7 @@ class StakeGptCli:
             f"Cleanup exited with code {completed.returncode}.\n",
             role="ok" if completed.returncode == 0 else "fail",
         )
-        self.status = "idle" if completed.returncode == 0 else "cleanup failed"
+        self.status = "ready" if completed.returncode == 0 else "cleanup failed"
 
     def stop_helper(self) -> None:
         if not self.process or self.process.poll() is not None:

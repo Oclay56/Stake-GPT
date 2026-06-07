@@ -16,6 +16,7 @@ NORMAL_SLATE_GAME_CAP = 15
 HARD_SLATE_GAME_CAP = 20
 DEFAULT_MAX_CANDIDATES_PER_GAME = 8
 DEFAULT_MAX_TOTAL_CANDIDATES = 75
+COMPACT_REASON_TAG_LIMIT = 3
 SUPPORTED_MODES = {
     "best_available",
     "safe",
@@ -24,6 +25,40 @@ SUPPORTED_MODES = {
     "per_game",
     "strict_diversity",
 }
+
+
+def compact_sgm_candidate_pool_response(pool: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(pool)
+    compact["compact"] = True
+    compact["rankedCandidates"] = [
+        _compact_candidate_pool_row(row)
+        for row in pool.get("rankedCandidates") or []
+        if isinstance(row, dict)
+    ]
+    notes = list(compact.get("notes") or [])
+    notes.append(
+        "Compact mode returns lean candidate rows only; call with compact=false or fetch the SGM board for full per-row context."
+    )
+    compact["notes"] = notes
+    return compact
+
+
+def _compact_candidate_pool_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fixtureSlug": row.get("fixtureSlug"),
+        "matchup": row.get("matchup"),
+        "rowId": row.get("rowId"),
+        "player": row.get("player"),
+        "team": row.get("team"),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "contextQuality": row.get("contextQuality"),
+        "score": row.get("score"),
+        "reasonTags": list(row.get("reasonTags") or [])[:COMPACT_REASON_TAG_LIMIT],
+        "riskFlags": list(row.get("riskFlags") or []),
+    }
 
 
 def normalize_sgm_market_key(market: Any, *, scope: str | None = None, position: str | None = None) -> str:

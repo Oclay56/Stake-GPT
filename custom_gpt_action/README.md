@@ -25,6 +25,14 @@ https://YOUR-RENDER-SERVICE.onrender.com/gpt/openapi.json
 
 Authentication can stay `None` unless `AZP_GPT_API_KEY` is set on Render. If that env var is set, configure the action to send `X-AZP-API-Key`.
 
+## Instruction Files
+
+Paste `regular-instruction-tab-8000.md` into the Custom GPT regular instruction tab. It is exactly 8,000 characters and is designed for the text box above the Knowledge files.
+
+Use `custom-gpt-instructions.md` as the primary Custom GPT instruction file. It is intentionally lean and contains the always-on operating rules.
+
+Attach or upload `custom-gpt-operational-reference.md` as the secondary reference file. It keeps the heavier glossary, probability engine, risk flags, playbooks, validation rules, lineup/opponent/game-context usage, and Stake SGM metadata guidance out of the main instruction stream while still preserving the full operating manual.
+
 ## Main Actions
 
 - `getMlbMatchups`: list Stake-backed MLB matchups for a date
@@ -36,15 +44,15 @@ Authentication can stay `None` unless `AZP_GPT_API_KEY` is set on Render. If tha
 - `getPropPage`: return a filtered/paginated page of compact Stake rows
 - `getComparisonBoard`: return compact Stake rows with MLB helper metrics, multi-window evidence, decision profiles, and market heatmap data for comparison, not final picks
 - `buildSlipCandidates`: assemble target-odds candidate slip shapes from comparison rows; GPT still owns the final recommendation
-- `getStakeUiSgmBoard`: request the local helper to read the exact Stake Same Game Multi board through the user's Chrome/VPN session; every compact row includes a stable `rowId`
+- `getStakeUiSgmBoard`: request the local helper to read the exact Stake Same Game Multi board through the user's Chrome/VPN session; every compact row includes a stable `rowId`, plus SGM metadata such as market catalog, bet factor, balance/push flags, and exact non-playable reasons when available
 - `getStakeUiMlbGames`: request the local helper to read visible MLB fixture links from the actual Stake UI
 - `readStakeUiState`: optional diagnostic action for failed/unclear UI helper states; reports page, fixture, SGM visibility, login/region/Cloudflare state, and sidebar state
 - `clearStakeUiSgmSelections`: optional recovery action for clearing pending SGM working selections before a retry; it does not clear placed sidebar slip legs
 - `clearStakeUiSidebar`: optional recovery action for clearing the entire visible right-sidebar review slip; use only when the user asks to wipe the whole slip
 - `buildStakeUiReviewSlipBatch`: build multiple exact UI-backed SGM groups into one visible Stake review slip using one shared browser page; prefer passing `rowIds`
 - `getPlayerMlbContext`: return MLB season and recent-window context for a player
-- `getSpecificPropContext`: enrich one Stake prop selection with MLB context for the exact requested side
-- `getPropContextBatch`: enrich up to 20 selected Stake props at once for finalist review
+- `getSpecificPropContext`: enrich one Stake prop selection with MLB context for the exact requested side, including lineup, opponent pitcher/team, player split, venue/weather, and game-status context when available
+- `getPropContextBatch`: enrich up to 20 selected Stake props at once for finalist review, including lineup, opponent pitcher/team, player split, venue/weather, and game-status context when available
 - `getProbablePitchers`: return probable pitchers from MLB Stats API
 - `getMarketMap`: map Stake display market names to backend stat keys
 - `validateSelections`: confirm GPT-selected props still match Stake, with strict odds/line validation options

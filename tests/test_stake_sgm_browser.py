@@ -23,7 +23,9 @@ from app.stake_sgm_browser import (
     _preflight_sgm_review_selections,
     _preflight_result_is_buildable,
     _review_add_summary,
+    _batch_resume_report,
     _sidebar_group_target,
+    _sidebar_sgm_group_already_present,
     _sidebar_remove_confirmed,
     _transactional_selection_plan,
     fixture_url,
@@ -745,6 +747,71 @@ def test_sidebar_clear_confirmed_requires_empty_or_selection_drop_to_zero():
     )
 
 
+def test_sidebar_sgm_group_detects_existing_requested_legs():
+    result = _sidebar_sgm_group_already_present(
+        {
+            "rightPanelEmpty": False,
+            "rightPanelText": (
+                "bet slip same game multi new york yankees toronto blue jays "
+                "austin wells hits under 0.5 george springer total bases under 1.5"
+            ),
+        },
+        fixture_slug="46575351-new-york-yankees-toronto-blue-jays",
+        matchup="New York Yankees vs Toronto Blue Jays",
+        selected_rows=[
+            {
+                "rowId": "sgm_a",
+                "player": "Austin Wells",
+                "market": "Hits",
+                "side": "under",
+                "line": 0.5,
+            },
+            {
+                "rowId": "sgm_b",
+                "player": "George Springer",
+                "market": "Total Bases",
+                "side": "under",
+                "line": 1.5,
+            },
+        ],
+        required_legs=2,
+    )
+
+    assert result["status"] == "present"
+    assert result["matchedLegs"] == 2
+
+
+def test_sidebar_sgm_group_does_not_skip_ambiguous_sidebar_text():
+    result = _sidebar_sgm_group_already_present(
+        {
+            "rightPanelEmpty": False,
+            "rightPanelText": "bet slip same game multi new york yankees toronto blue jays hits under 0.5",
+        },
+        fixture_slug="46575351-new-york-yankees-toronto-blue-jays",
+        matchup="New York Yankees vs Toronto Blue Jays",
+        selected_rows=[
+            {
+                "rowId": "sgm_a",
+                "player": "Austin Wells",
+                "market": "Hits",
+                "side": "under",
+                "line": 0.5,
+            },
+            {
+                "rowId": "sgm_b",
+                "player": "George Springer",
+                "market": "Total Bases",
+                "side": "under",
+                "line": 1.5,
+            },
+        ],
+        required_legs=2,
+    )
+
+    assert result["status"] == "not_present"
+    assert result["matchedLegs"] == 0
+
+
 def test_transactional_selection_plan_replaces_failed_primary_before_clicking():
     primary_rows = [
         {"rowId": "sgm_a", "player": "Player A", "market": "Outs"},
@@ -821,6 +888,20 @@ def test_transactional_selection_plan_blocks_when_replacement_cannot_fill_group(
     assert plan["missingLegs"] == 1
 
 
+def test_transactional_selection_plan_enforces_two_leg_sgm_minimum():
+    plan = _transactional_selection_plan(
+        primary_rows=[{"rowId": "sgm_a", "player": "Player A", "market": "Hits"}],
+        primary_preflight=[{"status": "buildable"}],
+        fallback_rows=[],
+        fallback_preflight=[],
+        required_legs=1,
+    )
+
+    assert plan["status"] == "blocked_preflight_failed"
+    assert plan["requiredLegs"] == 2
+    assert plan["missingLegs"] == 1
+
+
 def test_preflight_returns_structured_timeout_when_local_budget_is_exhausted():
     rows = [{"rowId": "sgm_a", "player": "Player A", "market": "Hits"}]
 
@@ -845,6 +926,61 @@ def test_preflight_returns_structured_timeout_when_local_budget_is_exhausted():
     )
     assert plan["status"] == "timeout"
     assert plan["preflightFailures"][0]["phase"] == "primary_preflight"
+
+
+def test_batch_resume_report_lists_completed_skipped_and_remaining_groups():
+    report = _batch_resume_report(
+        requested_groups=[
+            {
+                "fixtureSlug": "fixture-a",
+                "matchup": "A vs B",
+                "rowIds": ["sgm_a1", "sgm_a2"],
+            },
+            {
+                "fixtureSlug": "fixture-b",
+                "matchup": "C vs D",
+                "rowIds": ["sgm_b1", "sgm_b2"],
+            },
+            {
+                "fixtureSlug": "fixture-c",
+                "matchup": "E vs F",
+                "rowIds": ["sgm_c1", "sgm_c2"],
+            },
+        ],
+        results=[
+            {
+                "fixtureSlug": "fixture-a",
+                "matchup": "A vs B",
+                "status": "built_for_review",
+                "clickedLegs": 2,
+                "selectedRows": [{"rowId": "sgm_a1"}, {"rowId": "sgm_a2"}],
+            },
+            {
+                "fixtureSlug": "fixture-b",
+                "matchup": "C vs D",
+                "status": "skipped_existing",
+                "existingLegs": 2,
+                "selectedRows": [{"rowId": "sgm_b1"}, {"rowId": "sgm_b2"}],
+            },
+            {
+                "fixtureSlug": "fixture-c",
+                "matchup": "E vs F",
+                "status": "timeout",
+                "clickedLegs": 1,
+                "selectedRows": [{"rowId": "sgm_c1"}, {"rowId": "sgm_c2"}],
+            },
+        ],
+        stop_reason="local_helper_execution_timeout",
+    )
+
+    assert [group["fixtureSlug"] for group in report["completedGroups"]] == [
+        "fixture-a",
+        "fixture-b",
+    ]
+    assert report["skippedExistingGroupDetails"][0]["fixtureSlug"] == "fixture-b"
+    assert report["remainingGroups"][0]["fixtureSlug"] == "fixture-c"
+    assert report["lastAttemptedGroup"]["fixtureSlug"] == "fixture-c"
+    assert report["resumeSafe"] is False
 
 
 def test_preflight_blocks_visible_button_with_wrong_odds():

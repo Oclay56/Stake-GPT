@@ -55,7 +55,10 @@ from .mlb_data import MLBAPIError, MLBDataEngine, MLBStatsClient, build_mlb_http
 from .mlb_schedule import build_mlb_schedule_stake_map, build_mlb_schedule_view
 from .mlb_moneylines import enrich_stake_ui_moneylines
 from .mlb_props import slug_key
-from .sgm_candidate_pool import build_sgm_candidate_pool_from_boards
+from .sgm_candidate_pool import (
+    build_sgm_candidate_pool_from_boards,
+    compact_sgm_candidate_pool_response,
+)
 from .slate import DEFAULT_TIMEZONE
 from .stake_client import StakeAPIError, StakeClient, build_http_client
 from .stake_sgm_browser import make_sgm_selection_row_id, sgm_market_filter_matches
@@ -620,6 +623,7 @@ async def mlb_stake_ui_moneyline_review_slip(
         minimum=1,
         maximum=180,
     )
+    compact = _bool_from_body(payload, "compact", "compact", False)
     request = {
         "requestedBy": "custom_gpt",
         "purpose": "stake_ui_mlb_moneyline_review_slip",
@@ -1228,6 +1232,7 @@ async def mlb_stake_ui_sgm_candidate_pool(
         minimum=1,
         maximum=180,
     )
+    compact = _bool_from_body(payload, "compact", "compact", False)
     max_games = _clean_int_from_body(payload, "maxGames", 15, minimum=1, maximum=20)
     fixture_slugs = _string_list_from_body(payload, "fixtureSlugs", "fixture_slugs")[:max_games]
     matchups = _string_list_from_body(payload, "matchups", "matchup")
@@ -1268,6 +1273,7 @@ async def mlb_stake_ui_sgm_candidate_pool(
             "rejectedSummary": {"no_fixture_slugs": 1},
             "marketExposure": {},
             "contextCoverage": {},
+            "compact": compact,
             "notes": ["No Stake UI fixture slugs were available for candidate scanning."],
         }
 
@@ -1373,7 +1379,7 @@ async def mlb_stake_ui_sgm_candidate_pool(
         "failed": board_batch.get("failed"),
         "errors": board_batch.get("errors") or [],
     }
-    return pool
+    return compact_sgm_candidate_pool_response(pool) if compact else pool
 
 
 @app.post("/mlb/stake-ui/review-slip")
@@ -1456,7 +1462,7 @@ async def mlb_stake_ui_review_slip(
         "targetLegs",
         "target_legs",
         default=len(selections),
-        minimum=1,
+        minimum=2,
         maximum=20,
     )
     request = {
@@ -2138,6 +2144,7 @@ def _review_slip_selections_from_body(
     payload: dict[str, Any],
     *,
     required: bool = True,
+    min_items: int = 2,
 ) -> list[dict[str, Any]]:
     raw_selection_value = payload.get("selections")
     if raw_selection_value is None:
@@ -2160,6 +2167,14 @@ def _review_slip_selections_from_body(
         raise HTTPException(
             status_code=422,
             detail="selections or rowIds must be a non-empty list of exact Stake UI-backed legs",
+        )
+    if required and len(raw_selections) < min_items:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"SGM review-slip builds require at least {min_items} exact UI-backed legs "
+                "per game group. Stake will not add a one-leg SGM group to the review slip."
+            ),
         )
     if len(raw_selections) > 20:
         raise HTTPException(status_code=422, detail="selections cannot contain more than 20 legs")
@@ -2312,7 +2327,7 @@ async def _review_slip_groups_from_body(
             "targetLegs",
             "target_legs",
             default=len(selections),
-            minimum=1,
+            minimum=2,
             maximum=20,
         )
         groups.append(
@@ -2433,6 +2448,8 @@ def _compact_batch_review_slip_result(result: dict[str, Any]) -> dict[str, Any]:
                 "status": group.get("status"),
                 "reviewOnly": bool(group.get("reviewOnly", True)),
                 "clickedLegs": int(group.get("clickedLegs") or 0),
+                "existingLegs": group.get("existingLegs"),
+                "reason": group.get("reason"),
                 "selectedRows": group.get("selectedRows") or [],
                 "missingSelections": group.get("missingSelections") or [],
                 "clickResults": group.get("clickResults") or [],
@@ -2450,8 +2467,15 @@ def _compact_batch_review_slip_result(result: dict[str, Any]) -> dict[str, Any]:
         "fixtureCount": int(result.get("fixtureCount") or 0),
         "processedGroups": int(result.get("processedGroups") or 0),
         "clickedGroups": int(result.get("clickedGroups") or 0),
+        "skippedExistingGroups": int(result.get("skippedExistingGroups") or 0),
+        "completedGroupCount": int(result.get("completedGroupCount") or 0),
         "clickedLegs": int(result.get("clickedLegs") or 0),
         "stopReason": result.get("stopReason"),
+        "completedGroups": result.get("completedGroups") or [],
+        "skippedExistingGroupDetails": result.get("skippedExistingGroupDetails") or [],
+        "remainingGroups": result.get("remainingGroups") or [],
+        "lastAttemptedGroup": result.get("lastAttemptedGroup"),
+        "resumeSafe": result.get("resumeSafe"),
         "groups": groups,
         "safety": {
             "enteredStakeAmount": False,

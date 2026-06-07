@@ -14,6 +14,7 @@ STAKE_MLB_URL = "https://stake.com/sports/baseball/usa/mlb"
 CLICK_ODDS_TOLERANCE = 0.006
 MONEYLINE_MARKET_LABEL = "Winner (incl. Extra Innings)"
 MONEYLINE_MARKET_KEY = "winner_including_extra_innings"
+MIN_SGM_REVIEW_LEGS = 2
 _SGM_ROW_ID_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 SGM_PLAYER_MARKET_DIAGNOSTIC_TARGETS: dict[str, dict[str, Any]] = {
     "singles": {
@@ -703,6 +704,28 @@ def build_stake_sgm_review_slip_batch(
                     click_results=[],
                 )
             else:
+                existing_match = match_sgm_review_selections(board, selections)
+                existing_rows = existing_match["matchedRows"][:required_legs]
+                existing_sidebar = _sidebar_sgm_group_already_present(
+                    _read_bet_slip_state(page),
+                    fixture_slug=fixture_slug,
+                    matchup=group.get("matchup"),
+                    selected_rows=existing_rows,
+                    required_legs=required_legs,
+                )
+                if (
+                    len(existing_rows) >= required_legs
+                    and existing_sidebar.get("status") == "present"
+                ):
+                    result = _review_existing_sgm_group_result(
+                        fixture_slug=fixture_slug,
+                        matchup=group.get("matchup"),
+                        selected_rows=existing_rows,
+                        sidebar_match=existing_sidebar,
+                    )
+                    result["matchup"] = group.get("matchup")
+                    results.append(result)
+                    continue
                 transaction = _prepare_transactional_review_rows(
                     page,
                     board,
@@ -805,15 +828,28 @@ def build_stake_sgm_review_slip_batch(
                 break
 
         clicked_groups = sum(1 for result in results if result.get("status") == "built_for_review")
+        skipped_existing_groups = sum(
+            1 for result in results if result.get("status") == "skipped_existing"
+        )
+        completed_group_count = clicked_groups + skipped_existing_groups
         clicked_legs = sum(int(result.get("clickedLegs") or 0) for result in results)
         status = (
             "built_for_review"
             if clicked_groups == len(groups) and not stop_reason
+            else "already_built_for_review"
+            if skipped_existing_groups == len(groups) and not stop_reason
+            else "built_or_skipped_for_review"
+            if completed_group_count == len(groups) and not stop_reason
             else "partial_review_slip"
-            if clicked_groups and clicked_groups >= required_groups
+            if completed_group_count and completed_group_count >= required_groups
             else "timeout"
             if stop_reason == "local_helper_execution_timeout"
             else "blocked"
+        )
+        resume = _batch_resume_report(
+            requested_groups=groups,
+            results=results,
+            stop_reason=stop_reason,
         )
         return {
             "source": "stake_ui_sgm_review_slip_batch",
@@ -823,10 +859,13 @@ def build_stake_sgm_review_slip_batch(
             "fixtureCount": len(groups),
             "processedGroups": len(results),
             "clickedGroups": clicked_groups,
+            "skippedExistingGroups": skipped_existing_groups,
+            "completedGroupCount": completed_group_count,
             "clickedLegs": clicked_legs,
             "stopReason": stop_reason,
             "continueOnGroupFailure": continue_on_group_failure,
             "minGroupsRequired": required_groups,
+            **resume,
             "groups": results,
             "safety": {
                 "enteredStakeAmount": False,
@@ -841,9 +880,84 @@ def _batch_should_stop_after_group_result(
     *,
     continue_on_group_failure: bool,
 ) -> bool:
-    if result.get("status") == "built_for_review":
+    if result.get("status") in {"built_for_review", "skipped_existing"}:
         return False
     return not continue_on_group_failure
+
+
+def _batch_resume_report(
+    *,
+    requested_groups: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    stop_reason: str | None,
+) -> dict[str, Any]:
+    completed_statuses = {"built_for_review", "skipped_existing"}
+    completed_groups = [
+        _compact_batch_resume_group(result)
+        for result in results
+        if result.get("status") in completed_statuses
+    ]
+    skipped_existing = [
+        group for group in completed_groups if group.get("status") == "skipped_existing"
+    ]
+    processed_count = len(results)
+    remaining_start = processed_count
+    if results and results[-1].get("status") not in completed_statuses:
+        remaining_start = max(0, processed_count - 1)
+    remaining_groups = [
+        _compact_batch_request_group(index + 1, group)
+        for index, group in enumerate(requested_groups[remaining_start:], start=remaining_start)
+    ]
+    last_attempted = (
+        _compact_batch_resume_group(results[-1])
+        if results
+        else None
+    )
+    resume_safe = not any(
+        result.get("status") == "timeout" and int(result.get("clickedLegs") or 0) > 0
+        for result in results
+    )
+    if stop_reason == "local_helper_execution_timeout" and results and results[-1].get("status") == "timeout":
+        resume_safe = False
+    return {
+        "completedGroups": completed_groups,
+        "skippedExistingGroupDetails": skipped_existing,
+        "remainingGroups": remaining_groups,
+        "lastAttemptedGroup": last_attempted,
+        "resumeSafe": resume_safe,
+    }
+
+
+def _compact_batch_resume_group(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fixtureSlug": group.get("fixtureSlug"),
+        "matchup": group.get("matchup"),
+        "status": group.get("status"),
+        "clickedLegs": int(group.get("clickedLegs") or 0),
+        "existingLegs": group.get("existingLegs"),
+        "selectedRowIds": [
+            str(row.get("rowId") or "")
+            for row in group.get("selectedRows") or []
+            if row.get("rowId")
+        ],
+        "reason": group.get("reason") or group.get("reasonCode") or group.get("stopReason"),
+    }
+
+
+def _compact_batch_request_group(index: int, group: dict[str, Any]) -> dict[str, Any]:
+    selections = _group_review_selections(group)
+    return {
+        "index": index,
+        "fixtureSlug": group.get("fixtureSlug"),
+        "matchup": group.get("matchup"),
+        "requiredLegs": _group_required_legs(group, len(selections)),
+        "rowIds": [
+            str(selection.get("rowId") or "")
+            for selection in selections
+            if selection.get("rowId")
+        ],
+        "selectionCount": len(selections),
+    }
 
 
 def _build_execution_deadline(execution_timeout_seconds: int | float | None) -> float | None:
@@ -1005,10 +1119,10 @@ def _group_required_legs(group: dict[str, Any], default_count: int) -> int:
         if raw_value is None:
             continue
         try:
-            return max(1, min(20, int(raw_value)))
+            return max(MIN_SGM_REVIEW_LEGS, min(20, int(raw_value)))
         except (TypeError, ValueError):
             continue
-    return max(1, min(20, default_count))
+    return max(MIN_SGM_REVIEW_LEGS, min(20, default_count))
 
 
 def _snake_case_key(value: str) -> str:
@@ -1029,7 +1143,34 @@ def _prepare_transactional_review_rows(
     required_legs: int | None = None,
     deadline: float | None = None,
 ) -> dict[str, Any]:
-    requested_required_legs = max(1, min(20, int(required_legs or len(selections) or 1)))
+    requested_required_legs = max(
+        MIN_SGM_REVIEW_LEGS,
+        min(20, int(required_legs or len(selections) or MIN_SGM_REVIEW_LEGS)),
+    )
+    if len(selections or []) < MIN_SGM_REVIEW_LEGS:
+        return {
+            "status": "blocked_min_legs_required",
+            "selectedRows": [],
+            "missingSelections": [
+                {
+                    "selection": selection,
+                    "reason": "sgm_group_requires_at_least_two_primary_legs",
+                }
+                for selection in selections or []
+            ],
+            "plan": {
+                "status": "blocked_min_legs_required",
+                "requiredLegs": requested_required_legs,
+                "selectedRows": [],
+                "buildableRows": [],
+                "missingLegs": max(0, requested_required_legs - len(selections or [])),
+                "preflightFailures": [],
+                "fallbackFailures": [],
+                "replacements": [],
+                "transactionalBuild": True,
+                "minimumPrimaryLegs": MIN_SGM_REVIEW_LEGS,
+            },
+        }
     primary_match = match_sgm_review_selections(board, selections)
     fallback_match = match_sgm_review_selections(board, fallback_selections or [])
     primary_rows = primary_match["matchedRows"]
@@ -1084,7 +1225,10 @@ def _transactional_selection_plan(
     primary_missing: list[dict[str, Any]] | None = None,
     fallback_missing: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    required = max(1, min(20, int(required_legs or len(primary_rows) or 1)))
+    required = max(
+        MIN_SGM_REVIEW_LEGS,
+        min(20, int(required_legs or len(primary_rows) or MIN_SGM_REVIEW_LEGS)),
+    )
     selected_rows: list[dict[str, Any]] = []
     buildable_rows: list[dict[str, Any]] = []
     preflight_failures: list[dict[str, Any]] = []
@@ -1958,6 +2102,135 @@ def _classify_moneyline_sidebar_state(
     }
 
 
+def _sidebar_sgm_group_already_present(
+    slip: dict[str, Any],
+    *,
+    fixture_slug: str,
+    matchup: Any = None,
+    selected_rows: list[dict[str, Any]],
+    required_legs: int,
+) -> dict[str, Any]:
+    text = str(
+        (slip or {}).get("rightPanelText")
+        or (slip or {}).get("rightPanelTextSample")
+        or ""
+    ).strip()
+    if bool((slip or {}).get("rightPanelEmpty")) or not text:
+        return {
+            "status": "not_present",
+            "reason": "sidebar_empty",
+            "matchedLegs": 0,
+            "requiredLegs": required_legs,
+        }
+
+    normalized_text = _text_key(text)
+    fixture_match = _sidebar_text_matches_fixture(
+        normalized_text,
+        fixture_slug=fixture_slug,
+        matchup=matchup,
+    )
+    if not fixture_match["matched"]:
+        return {
+            "status": "not_present",
+            "reason": "fixture_not_found_in_sidebar",
+            "matchedLegs": 0,
+            "requiredLegs": required_legs,
+            "fixtureMatch": fixture_match,
+        }
+
+    checked_rows = selected_rows[: max(MIN_SGM_REVIEW_LEGS, required_legs)]
+    leg_matches = [
+        _sidebar_text_matches_sgm_leg(normalized_text, row)
+        for row in checked_rows
+    ]
+    matched_legs = sum(1 for match in leg_matches if match.get("matched"))
+    already_present = matched_legs >= max(MIN_SGM_REVIEW_LEGS, required_legs)
+    return {
+        "status": "present" if already_present else "not_present",
+        "reason": "required_legs_already_present" if already_present else "missing_required_leg_text",
+        "matchedLegs": matched_legs,
+        "requiredLegs": max(MIN_SGM_REVIEW_LEGS, required_legs),
+        "fixtureMatch": fixture_match,
+        "legMatches": leg_matches,
+    }
+
+
+def _sidebar_text_matches_fixture(
+    text_key: str,
+    *,
+    fixture_slug: str,
+    matchup: Any = None,
+) -> dict[str, Any]:
+    fixture = _fixture_matchup_from_slug(fixture_slug)
+    teams = list(fixture.get("teams") or [])
+    matchup_text = str(matchup or fixture.get("matchup") or "").strip()
+    if matchup_text and len(teams) < 2:
+        teams.extend(_teams_from_matchup_text(matchup_text))
+    team_keys = [_text_key(team) for team in teams if _text_key(team)]
+    matched_teams = [team for team in team_keys if team and team in text_key]
+    matchup_key = _text_key(matchup_text)
+    matched = (
+        len(matched_teams) >= min(2, len(team_keys))
+        if team_keys
+        else bool(matchup_key and matchup_key in text_key)
+    )
+    return {
+        "matched": matched,
+        "matchedTeams": matched_teams,
+        "teamKeys": team_keys,
+        "matchupKey": matchup_key,
+    }
+
+
+def _teams_from_matchup_text(matchup: str) -> list[str]:
+    return [
+        part.strip()
+        for part in re.split(
+            r"\s+(?:vs\.?|v\.?|versus|at|@)\s+|\s+-\s+",
+            str(matchup),
+            flags=re.IGNORECASE,
+        )
+        if part.strip()
+    ][:2]
+
+
+def _sidebar_text_matches_sgm_leg(text_key: str, row: dict[str, Any]) -> dict[str, Any]:
+    identity_value = row.get("player") or row.get("team")
+    identity_key = _text_key(identity_value)
+    market_key = _text_key(row.get("market"))
+    side_key = _text_key(row.get("side"))
+    line_keys = _line_text_keys(row.get("line"))
+    identity_match = not identity_key or identity_key in text_key
+    market_match = not market_key or market_key in text_key
+    side_match = not side_key or side_key in text_key
+    line_match = not line_keys or any(line in text_key for line in line_keys)
+    matched = identity_match and market_match and side_match and line_match
+    return {
+        "matched": matched,
+        "rowId": row.get("rowId"),
+        "player": row.get("player"),
+        "team": row.get("team"),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "checks": {
+            "identity": identity_match,
+            "market": market_match,
+            "side": side_match,
+            "line": line_match,
+        },
+    }
+
+
+def _line_text_keys(value: Any) -> list[str]:
+    numeric = _float_or_none(value)
+    if numeric is None:
+        text = _text_key(value)
+        return [text] if text else []
+    values = {f"{numeric:g}", f"{numeric:.1f}", str(value)}
+    return _unique_nonempty(_text_key(value) for value in values)
+
+
 def _read_bet_slip_state(page: Any) -> dict[str, Any]:
     try:
         return dict(
@@ -2012,6 +2285,7 @@ def _read_bet_slip_state(page: Any) -> dict[str, Any]:
                     rightPanelSelectionCount: selectionWords.length,
                     rightPanelTextDigest: textDigest(panelText),
                     rightPanelTextLength: panelText.length,
+                    rightPanelText: panelText.slice(0, 4000),
                     rightPanelTextSample: panelText.slice(0, 260),
                   };
                 }
@@ -3218,6 +3492,44 @@ def _review_slip_result(
         "safety": {
             "enteredStakeAmount": False,
             "clickedAddBet": bool((add_bet_result or {}).get("status") == "clicked"),
+            "clickedPlaceBet": False,
+        },
+    }
+
+
+def _review_existing_sgm_group_result(
+    *,
+    fixture_slug: str,
+    matchup: Any = None,
+    selected_rows: list[dict[str, Any]],
+    sidebar_match: dict[str, Any],
+) -> dict[str, Any]:
+    resolved_matchup = str(matchup or _fixture_matchup_from_slug(fixture_slug).get("matchup") or "").strip() or None
+    return {
+        "source": "stake_ui_sgm_build_slip",
+        "fixtureSlug": fixture_slug,
+        "matchup": resolved_matchup,
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "status": "skipped_existing",
+        "reason": "sgm_group_already_present_in_sidebar",
+        "reviewOnly": True,
+        "clickedLegs": 0,
+        "existingLegs": int(sidebar_match.get("matchedLegs") or len(selected_rows)),
+        "selectedRows": [_compact_click_row(row) for row in selected_rows],
+        "missingSelections": [],
+        "clickResults": [],
+        "addBetResult": {"status": "not_attempted", "reason": "sgm_group_already_present"},
+        "transactionPlan": {
+            "status": "skipped_existing",
+            "requiredLegs": sidebar_match.get("requiredLegs"),
+            "selectedRows": [_compact_click_row(row) for row in selected_rows],
+            "transactionalBuild": True,
+            "sidebarExisting": sidebar_match,
+        },
+        "warnings": ["sgm_group_already_present_in_sidebar"],
+        "safety": {
+            "enteredStakeAmount": False,
+            "clickedAddBet": False,
             "clickedPlaceBet": False,
         },
     }

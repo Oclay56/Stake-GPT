@@ -2740,6 +2740,13 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                         "maxSgmGroupOdds": {"type": "number", "minimum": 1, "maximum": 501},
                         "maxGames": {"type": "integer", "minimum": 1, "maximum": 20},
                         "maxCacheAgeSeconds": {"type": "integer", "minimum": 0, "maximum": 600},
+                        "compact": {
+                            "type": "boolean",
+                            "description": (
+                                "When true, returns lean candidate rows only: fixture/matchup, rowId, "
+                                "player/team, market/side/line/odds, contextQuality, score, top reasonTags, and riskFlags."
+                            ),
+                        },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 180},
                     },
                     "additionalProperties": True,
@@ -3037,7 +3044,7 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                         },
                         "selections": {
                             "type": "array",
-                            "minItems": 1,
+                            "minItems": 2,
                             "maxItems": 20,
                             "items": exact_selection_schema,
                             "description": "Exact UI-backed legs returned from getStakeUiSgmBoard. Prefer rowId-only objects.",
@@ -3053,7 +3060,7 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                         },
                         "rowIds": {
                             "type": "array",
-                            "minItems": 1,
+                            "minItems": 2,
                             "maxItems": 20,
                             "items": {"type": "string"},
                             "description": (
@@ -3068,11 +3075,11 @@ def _stake_ui_review_slip_request_body() -> dict[str, Any]:
                         },
                         "requiredLegs": {
                             "type": "integer",
-                            "minimum": 1,
+                            "minimum": 2,
                             "maximum": 20,
                             "description": (
                                 "How many legs must be buildable before clicking. Defaults to the "
-                                "number of primary selections."
+                                "number of primary selections. SGM review builds require at least two legs."
                             ),
                         },
                         "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
@@ -3123,7 +3130,7 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                     },
                                     "selections": {
                                         "type": "array",
-                                        "minItems": 1,
+                                        "minItems": 2,
                                         "maxItems": 20,
                                         "items": exact_selection_schema,
                                         "description": "Exact UI-backed legs. Prefer rowId-only objects.",
@@ -3139,7 +3146,7 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                     },
                                     "rowIds": {
                                         "type": "array",
-                                        "minItems": 1,
+                                        "minItems": 2,
                                         "maxItems": 20,
                                         "items": {"type": "string"},
                                         "description": (
@@ -3154,11 +3161,12 @@ def _stake_ui_review_slip_batch_request_body() -> dict[str, Any]:
                                     },
                                     "requiredLegs": {
                                         "type": "integer",
-                                        "minimum": 1,
+                                        "minimum": 2,
                                         "maximum": 20,
                                         "description": (
                                             "How many legs from primary plus fallback rows must be "
-                                            "confirmed buildable before the helper clicks anything."
+                                            "confirmed buildable before the helper clicks anything. "
+                                            "Each SGM game group requires at least two legs."
                                         ),
                                     },
                                 },

@@ -1,2 +1,3 @@
 -r requirements.txt
 playwright
+rich>=13.7

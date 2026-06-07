@@ -665,6 +665,8 @@ def test_gpt_schema_exposes_review_slip_build_action():
     properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert properties["reviewOnly"]["const"] is True
     assert "rowIds" in properties
+    assert properties["rowIds"]["minItems"] == 2
+    assert properties["requiredLegs"]["minimum"] == 2
     selection_schema = properties["selections"]["items"]
     assert "rowId" in selection_schema["properties"]
 
@@ -711,6 +713,7 @@ def test_gpt_schema_exposes_stake_ui_sgm_candidate_pool_action():
     assert operation["operationId"] == "buildStakeUiSgmCandidatePool"
     properties = operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert "fixtureSlugs" in properties
+    assert "compact" in properties
     assert "maxSgmGroupOdds" in properties
     assert properties["mode"]["enum"] == [
         "best_available",
@@ -734,6 +737,8 @@ def test_gpt_schema_exposes_batch_review_slip_action():
     assert "groups" in properties
     group_schema = properties["groups"]["items"]
     assert "rowIds" in group_schema["properties"]
+    assert group_schema["properties"]["rowIds"]["minItems"] == 2
+    assert group_schema["properties"]["requiredLegs"]["minimum"] == 2
     assert "rowId" in group_schema["properties"]["selections"]["items"]["properties"]
     assert "continueOnGroupFailure" in properties
     assert "minGroupsRequired" in properties
@@ -1009,6 +1014,50 @@ def test_stake_ui_sgm_candidate_pool_returns_ranked_support_rows():
     assert fake_store.created_jobs[0]["jobType"] == "stake_ui_sgm_board_batch"
 
 
+def test_stake_ui_sgm_candidate_pool_compact_mode_trims_nested_context():
+    fake_store = FakeCompletedCandidatePoolJobStore()
+    app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
+    app.dependency_overrides[get_mlb_engine] = lambda: FakeCandidatePoolMLBEngine()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/sgm-candidate-pool",
+            json={
+                "date": "2026-05-25",
+                "fixtureSlugs": ["46575351-new-york-yankees-toronto-blue-jays"],
+                "side": "under",
+                "markets": "singles",
+                "qualityFloor": 50,
+                "compact": True,
+                "timeoutSeconds": 45,
+            },
+        )
+
+    result = response.json()
+    row = result["rankedCandidates"][0]
+
+    assert response.status_code == 200
+    assert result["compact"] is True
+    assert set(row) == {
+        "fixtureSlug",
+        "matchup",
+        "rowId",
+        "player",
+        "team",
+        "market",
+        "side",
+        "line",
+        "odds",
+        "contextQuality",
+        "score",
+        "reasonTags",
+        "riskFlags",
+    }
+    assert len(row["reasonTags"]) <= 3
+    assert "context" not in row
+    assert "last15" not in row
+
+
 def test_stake_ui_review_slip_batch_route_creates_one_batch_job_with_guardrails():
     fake_store = FakeCompletedBatchBuildJobStore()
     app.dependency_overrides[get_local_ui_job_store] = lambda: fake_store
@@ -1105,6 +1154,26 @@ def test_stake_ui_review_slip_batch_route_accepts_row_ids_without_reconstructed_
         {"rowId": "sgm_abc123"},
         {"rowId": "sgm_def456"},
     ]
+
+
+def test_stake_ui_review_slip_batch_route_rejects_one_leg_group():
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip-batch",
+            json={
+                "reviewOnly": True,
+                "groups": [
+                    {
+                        "matchup": "Yankees vs Blue Jays",
+                        "fixtureSlug": "46575351-new-york-yankees-toronto-blue-jays",
+                        "rowIds": ["sgm_abc123"],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "at least 2" in response.json()["detail"]
 
 
 def test_stake_ui_state_route_creates_diagnostic_job():
@@ -1385,7 +1454,7 @@ def test_stake_ui_review_slip_timeout_returns_structured_terminal_state():
                 "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
                 "timeoutSeconds": 2,
                 "reviewOnly": True,
-                "rowIds": ["sgm_row_1"],
+                "rowIds": ["sgm_row_1", "sgm_row_2"],
             },
         )
 
@@ -1396,6 +1465,22 @@ def test_stake_ui_review_slip_timeout_returns_structured_terminal_state():
     assert body["detail"]["phase"] == "local_helper_wait"
     assert body["detail"]["clickedLegs"] == 0
     assert body["detail"]["lastKnownFixtureSlug"] == "46450286-miami-marlins-atlanta-braves"
+
+
+def test_stake_ui_review_slip_route_rejects_one_leg_sgm_group():
+    with TestClient(app) as client:
+        response = client.post(
+            "/mlb/stake-ui/review-slip",
+            json={
+                "matchup": "Braves vs Marlins",
+                "fixtureSlug": "46450286-miami-marlins-atlanta-braves",
+                "reviewOnly": True,
+                "rowIds": ["sgm_row_1"],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "at least 2" in response.json()["detail"]
 
 
 def test_stake_ui_review_slip_route_rejects_missing_exact_selection_fields():
@@ -1412,6 +1497,13 @@ def test_stake_ui_review_slip_route_rejects_missing_exact_selection_fields():
                         "market": "Hits",
                         "side": "under",
                         "line": 0.5,
+                    },
+                    {
+                        "player": "Ozzie Albies",
+                        "market": "Total Bases",
+                        "side": "under",
+                        "line": 1.5,
+                        "odds": 1.8,
                     }
                 ],
             },

@@ -6,12 +6,17 @@ import pytest
 
 from app.local_helper_cli import (
     DEFAULT_CLI_COLOR_SETTINGS,
+    RICH_AVAILABLE,
     ROOT_DIR,
+    SEMANTIC_COLORS,
     StakeGptCli,
+    _colored_prompt_line,
     clean_cli_color_settings,
     cli_color_presets_dir,
     cli_color_settings_path,
+    cli_log_path,
     color_preset_path,
+    format_doctor_screen,
     format_main_menu,
     format_setup_screen,
     is_exit_command,
@@ -19,10 +24,38 @@ from app.local_helper_cli import (
     load_cli_color_preset,
     load_cli_color_settings,
     normalize_color_choice,
+    rgb_escape,
     safe_color_preset_name,
     save_cli_color_preset,
     save_cli_color_settings,
+    strip_ansi,
 )
+
+
+def _passing_setup_report() -> dict:
+    return {
+        "ok": True,
+        "checks": [
+            {
+                "name": "Python venv",
+                "ok": True,
+                "detail": str(ROOT_DIR / ".venv" / "Scripts" / "python.exe"),
+            },
+            {"name": ".env file", "ok": True, "detail": str(ROOT_DIR / ".env")},
+            {"name": "SUPABASE_URL configured", "ok": True, "detail": "SUPABASE_URL"},
+            {
+                "name": "SUPABASE_SERVICE_ROLE_KEY configured",
+                "ok": True,
+                "detail": "SUPABASE_SERVICE_ROLE_KEY",
+            },
+            {
+                "name": "Chrome executable",
+                "ok": True,
+                "detail": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            },
+        ],
+        "warnings": [],
+    }
 
 
 def test_cli_color_settings_path_uses_workflow_folder(tmp_path):
@@ -35,6 +68,10 @@ def test_cli_color_presets_dir_uses_workflow_folder(tmp_path):
     path = cli_color_presets_dir(root_dir=tmp_path)
 
     assert path == tmp_path / "data" / "workflow" / "color-presets"
+
+
+def test_cli_log_path_uses_logs_folder(tmp_path):
+    assert cli_log_path(root_dir=tmp_path) == tmp_path / "logs" / "latest.log"
 
 
 def test_normalize_color_choice_accepts_rgb_tuple_and_hex():
@@ -99,58 +136,53 @@ def test_cli_color_presets_are_listed_without_json_extension(tmp_path):
     assert list_cli_color_presets(tmp_path) == ["Green", "White"]
 
 
-def test_main_menu_uses_clean_commands_and_status_lines():
-    setup_report = {
-        "ok": True,
-        "checks": [
-            {
-                "name": "Python venv",
-                "ok": True,
-                "detail": str(ROOT_DIR / ".venv" / "Scripts" / "python.exe"),
-            },
-            {"name": ".env file", "ok": True, "detail": str(ROOT_DIR / ".env")},
-            {"name": "SUPABASE_URL configured", "ok": True, "detail": "SUPABASE_URL"},
-            {
-                "name": "SUPABASE_SERVICE_ROLE_KEY configured",
-                "ok": True,
-                "detail": "SUPABASE_SERVICE_ROLE_KEY",
-            },
-            {
-                "name": "Chrome executable",
-                "ok": True,
-                "detail": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            },
-        ],
-        "warnings": [],
-    }
-
+def test_main_menu_uses_polished_status_and_commands():
     menu = format_main_menu(
-        status="idle",
+        status="ready",
         mode="review-safe",
-        browser="ready",
-        supabase="connected",
-        setup_report=setup_report,
+        browser="checking",
+        supabase="checking",
+        setup_report=_passing_setup_report(),
     )
 
-    assert "Stake-GPT\n" in menu
-    assert "────────────────────────────────────────" in menu
-    assert "Status: idle" in menu
-    assert "  review      start board scan" in menu
-    assert "  build       build validated slip" in menu
-    assert "  setup       run setup check" in menu
-    assert "  clean       clean cache" in menu
-    assert "  stop        stop current task" in menu
-    assert "  exit        close app" in menu
+    assert "Stake-GPT [ready] CLI v" in menu
+    assert "Environment: local" in menu
+    assert "Workspace:" in menu
+    assert "━" * 10 in menu
+    assert "System:" in menu
+    assert "[OK] Browser      Chrome connected" in menu
+    assert "[OK] Supabase     Connected" in menu
+    assert "[OK] Python       .venv active" in menu
+    assert "Status:" in menu
+    assert "  State: Ready" in menu
+    assert "Commands:" in menu
+    assert "review, r" in menu and "Scan board" in menu
+    assert "build, b" in menu and "Build validated slip" in menu
+    assert "status, s" in menu and "Show status" in menu
+    assert "logs" in menu and "View logs" in menu
+    assert "doctor" in menu and "Run full system check" in menu
+    assert "clean" in menu and "Clear cache" in menu
+    assert "exit, q" in menu and "Close app" in menu
     assert "[1]" not in menu
     assert "[0]" not in menu
-    assert "System Check" in menu
-    assert "[OK] Python venv:        " in menu
-    assert "[OK] SUPABASE_URL:       configured" in menu
-    assert "[OK] SERVICE_ROLE_KEY:   configured" in menu
-    assert menu.rstrip().endswith("stake-gpt >")
+    assert menu.rstrip().endswith("stake-gpt [ready] >")
 
 
-def test_setup_screen_formats_command_style_check():
+def test_main_menu_shows_fixed_loading_tail_for_active_states():
+    menu = format_main_menu(
+        status="building",
+        mode="build-enabled",
+        browser="checking",
+        supabase="checking",
+        setup_report=_passing_setup_report(),
+    )
+
+    assert "Stake-GPT [building] ... CLI v" in menu
+    assert "  State: Building" in menu
+    assert menu.rstrip().endswith("stake-gpt [building] ... >")
+
+
+def test_setup_screen_formats_actionable_warnings():
     screen = format_setup_screen(
         {
             "ok": True,
@@ -167,34 +199,163 @@ def test_setup_screen_formats_command_style_check():
     )
 
     assert screen.startswith("System Check")
-    assert "──────────────────────────────────────────────────────────────────────────────" in screen
+    assert "-" * 78 in screen
     assert "[OK] Python venv:        " in screen
     assert "Warnings:" in screen
-    assert "[!] AZP_SUPABASE_AUTO_CLEANUP_MINUTES is not set; defaulting to 60." in screen
+    assert "[WARN] AZP_SUPABASE_AUTO_CLEANUP_MINUTES is not set." in screen
+    assert "Using default: 60 minutes." in screen
+    assert "AZP_SUPABASE_AUTO_CLEANUP_MINUTES=60" in screen
     assert screen.endswith("Ready.")
 
 
-def test_numeric_command_aliases_follow_visible_menu_order(monkeypatch):
+def test_doctor_screen_summarizes_health():
+    screen = format_doctor_screen(_passing_setup_report())
+
+    assert screen.startswith("Doctor")
+    assert "System health: READY" in screen
+    assert "System Check" in screen
+    assert "Doctor checks local prerequisites and write access." in screen
+
+
+def test_command_aliases_route_to_expected_actions(monkeypatch):
     cli = StakeGptCli(root_dir=Path("C:/fake/AZP"))
     calls: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(cli, "start_helper", lambda mode: calls.append(("start", mode)))
+    monkeypatch.setattr(cli, "run_status", lambda: calls.append(("status", None)))
+    monkeypatch.setattr(cli, "run_logs", lambda args: calls.append(("logs", ",".join(sorted(args)))))
+    monkeypatch.setattr(cli, "run_doctor", lambda: calls.append(("doctor", None)))
     monkeypatch.setattr(cli, "run_setup_check", lambda: calls.append(("setup", None)))
-    monkeypatch.setattr(cli, "run_cache_cleanup", lambda: calls.append(("clean", None)))
+    monkeypatch.setattr(cli, "run_cache_cleanup", lambda assume_yes=False: calls.append(("clean", "yes" if assume_yes else "ask")))
     monkeypatch.setattr(cli, "run_color_menu", lambda: calls.append(("color", None)))
     monkeypatch.setattr(cli, "stop_helper", lambda: calls.append(("stop", None)))
 
-    for command in ("1", "2", "3", "4", "5", "color"):
+    for command in (
+        "review",
+        "r",
+        "build",
+        "b",
+        "status",
+        "s",
+        "logs",
+        "l --errors",
+        "doctor",
+        "d",
+        "setup",
+        "clean",
+        "clean --yes",
+        "stop",
+        "color",
+    ):
         cli.handle_command(command)
 
     assert calls == [
         ("start", "review"),
+        ("start", "review"),
         ("start", "build"),
+        ("start", "build"),
+        ("status", None),
+        ("status", None),
+        ("logs", ""),
+        ("logs", "--errors"),
+        ("doctor", None),
+        ("doctor", None),
         ("setup", None),
-        ("clean", None),
+        ("clean", "ask"),
+        ("clean", "yes"),
         ("stop", None),
         ("color", None),
     ]
+
+
+def test_clean_confirmation_can_cancel(tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text("SUPABASE_URL=x\n", encoding="utf-8")
+    outputs: list[str] = []
+    cli = StakeGptCli(
+        root_dir=tmp_path,
+        input_func=lambda prompt: "n",
+        output_func=lambda text: outputs.append(text),
+    )
+
+    cli.run_cache_cleanup()
+
+    assert "Cleanup cancelled." in "".join(outputs)
+    assert cli.status == "ready"
+
+
+def test_logs_command_reads_latest_and_error_lines(tmp_path):
+    outputs: list[str] = []
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: outputs.append(text))
+    cli.write_log("[OK] one\n")
+    cli.write_log("[WARN] two\n")
+    cli.write_log("Helper error: three\n")
+
+    cli.run_logs(set())
+    cli.run_logs({"--errors"})
+
+    joined = "".join(outputs)
+    assert "Logs: latest" in joined
+    assert "Logs: warnings/errors" in joined
+    assert "[WARN] two" in joined
+    assert "Helper error: three" in joined
+
+
+def test_rich_prompt_keeps_status_spacing_and_simple_dashboard(tmp_path):
+    cli = StakeGptCli(root_dir=tmp_path)
+
+    prompt = cli.rich_prompt()
+    prompt_text = prompt.plain if hasattr(prompt, "plain") else str(prompt)
+    assert prompt_text == "stake-gpt [ready] > "
+    if RICH_AVAILABLE:
+        rendered = cli.rich_main_menu(_passing_setup_report())
+        assert type(rendered).__name__ == "Text"
+        assert "Stake-GPT [ready] CLI v" in rendered.plain
+
+
+def test_rich_prompt_adds_non_jitter_loading_tail_for_active_state(tmp_path):
+    cli = StakeGptCli(root_dir=tmp_path)
+    cli.status = "building"
+
+    prompt = cli.rich_prompt()
+    prompt_text = prompt.plain if hasattr(prompt, "plain") else str(prompt)
+    assert prompt_text == "stake-gpt [building] ... > "
+    frames = []
+    for frame in range(3):
+        framed_prompt = cli.rich_prompt(frame=frame)
+        frames.append(framed_prompt.plain if hasattr(framed_prompt, "plain") else str(framed_prompt))
+    assert frames == [
+        "stake-gpt [building] .   > ",
+        "stake-gpt [building] ..  > ",
+        "stake-gpt [building] ... > ",
+    ]
+    assert len({len(frame) for frame in frames}) == 1
+    if RICH_AVAILABLE:
+        rendered = cli.rich_main_menu(_passing_setup_report())
+        assert "Stake-GPT [building] ... CLI v" in rendered.plain
+
+
+def test_animated_prompt_colors_active_state_blue_without_moving_marker():
+    frames = [
+        _colored_prompt_line("building", trailing_space=True, frame=frame)
+        for frame in range(3)
+    ]
+
+    assert rgb_escape(SEMANTIC_COLORS["info"]) in frames[0]
+    assert strip_ansi(frames[0]) == "stake-gpt [building] .   > "
+    assert strip_ansi(frames[1]) == "stake-gpt [building] ..  > "
+    assert strip_ansi(frames[2]) == "stake-gpt [building] ... > "
+    assert len({len(strip_ansi(frame)) for frame in frames}) == 1
+
+
+def test_stop_helper_returns_prompt_to_ready(tmp_path):
+    cli = StakeGptCli(root_dir=tmp_path)
+    cli.status = "building"
+
+    cli.stop_helper()
+
+    assert cli.status == "ready"
 
 
 def test_exit_command_accepts_visible_menu_number():
@@ -218,7 +379,8 @@ def test_cli_run_starts_directly_on_main_screen(monkeypatch):
 
     assert cli.run() == 0
     assert "Stake-GPT CLI ready." not in "".join(outputs)
-    assert "Stake-GPT" in outputs[0]
+    assert "Stake-GPT [ready] CLI v" in outputs[0]
+    assert "stake-gpt [ready] >" in outputs[0]
 
 
 def test_cli_color_menu_has_back_option():

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 
 from app.sgm_candidate_pool import (
+    _apply_within_player_market_contest,
+    _select_ranked_candidates,
     build_sgm_candidate_pool_from_boards,
     normalize_sgm_market_key,
     score_sgm_candidate,
@@ -107,6 +109,30 @@ def _row(player: str, team: str, market: str, under: float, *, line: float = 0.5
     }
 
 
+def _scored_candidate(
+    row_id: str,
+    player: str,
+    market: str,
+    score: float,
+    *,
+    fixture_slug: str = "fixture-a",
+):
+    return {
+        "fixtureSlug": fixture_slug,
+        "team": "Test A",
+        "player": player,
+        "market": market,
+        "normalizedMarketKey": normalize_sgm_market_key(market),
+        "side": "under",
+        "line": 0.5,
+        "odds": 2.0,
+        "rowId": row_id,
+        "score": score,
+        "reasonTags": [],
+        "riskFlags": [],
+    }
+
+
 def test_normalizes_sgm_only_market_aliases():
     assert normalize_sgm_market_key("Steals") == "stolen_bases"
     assert normalize_sgm_market_key("BB") == "batter_walks"
@@ -138,6 +164,41 @@ def test_scoring_penalizes_short_filler_and_high_odds_without_support():
     )
     assert unsupported_longshot["riskFlags"] == ["high_odds_no_stat_support"]
     assert unsupported_longshot["score"] < 50
+
+
+def test_within_player_market_contest_prioritizes_player_winners_before_alternatives():
+    rows = [
+        _scored_candidate("row-same-singles", "Same Player", "Singles", 94),
+        _scored_candidate("row-same-rbi", "Same Player", "RBI", 88),
+        _scored_candidate("row-other-walks", "Other Player", "Batter Walks", 72),
+    ]
+
+    summary = _apply_within_player_market_contest(rows)
+    selected = _select_ranked_candidates(
+        rows,
+        mode="best_available",
+        legs_per_game=None,
+        max_total_legs=2,
+        max_candidates_per_game=8,
+        max_total_candidates=10,
+    )
+
+    same_winner = rows[0]
+    same_alternative = rows[1]
+
+    assert summary["policy"] == "within_player_winner_first"
+    assert summary["playerGroups"] == 2
+    assert summary["contestedPlayerGroups"] == 1
+    assert same_winner["marketContestRank"] == 1
+    assert same_winner["marketContestWinner"] is True
+    assert same_winner["marketContest"]["topAlternatives"][0]["rowId"] == "row-same-rbi"
+    assert "player_market_fit_winner" in same_winner["reasonTags"]
+    assert same_alternative["marketContestRank"] == 2
+    assert "player_market_fit_alternative" in same_alternative["reasonTags"]
+    assert [row["rowId"] for row in selected] == [
+        "row-same-singles",
+        "row-other-walks",
+    ]
 
 
 def test_candidate_pool_ranks_context_backed_rows_and_skips_weak_per_game():

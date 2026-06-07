@@ -58,6 +58,8 @@ Evaluate player props as player-market-side rows, not as players forced into a p
 
 When a familiar high-data market survives, still ask whether another playable market for that same player is better suited. Do not stop at the first market that has enough stats. The selected row should win a player-market comparison, not merely be the easiest row to support.
 
+When `buildStakeUiSgmCandidatePool` returns `marketContest` or `marketContestRank`, treat `marketContestRank: 1` / `player_market_fit_winner` as the backend's best-fitting market for that player. Same-player alternatives are secondary review candidates unless the winner becomes unavailable, fails validation, or the user specifically wants more legs from that player.
+
 A player weak for one market may still be strong for another. Promote or reject the exact player-market-side row, not the whole player.
 
 Market filters, preferred markets, sides, modes, and styles are request-scoped. If the user says to stop using a market or style, stop immediately.

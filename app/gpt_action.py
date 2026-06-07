@@ -192,8 +192,8 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     (
                         "Scans UI-backed Same Game Multi boards through the local helper, "
                         "maps playable rows to MLB context, and returns ranked candidate "
-                        "support rows. This is not a recommendation endpoint and never "
-                        "clicks Stake selections."
+                        "support rows with within-player market contest metadata. This "
+                        "is not a recommendation endpoint and never clicks Stake selections."
                     ),
                     request_body=_stake_ui_sgm_candidate_pool_request_body(),
                 )

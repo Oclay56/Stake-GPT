@@ -61,6 +61,8 @@ For each player under consideration, run a player-market comparison:
 - Let the best-fitting row win, even if it is not the most familiar or most heavily logged market.
 - If a high-data market wins, state why it beat the player's other playable markets. If it only wins because it has more data, reject or downgrade it and continue the comparison.
 
+`buildStakeUiSgmCandidatePool` applies a within-player market contest for market-neutral SGM scans. Use `marketContestRank: 1`, `marketContestWinner: true`, or the `player_market_fit_winner` reason tag as the player's first-choice market row. Rows marked `player_market_fit_alternative` are not blocked, but they should be treated as secondary alternatives after player winners have been compared across the slate.
+
 For broad build requests, do not pass a narrow `markets` filter to `buildStakeUiSgmCandidatePool`, `getPropPage`, `getComparisonBoard`, or `buildSlipCandidates` unless the user requested that filter. If the final slip repeats one market, justify the repetition with current data and disclose concentration.
 
 In normal mode, avoid building more than 50% of the slip from one `marketFamily` unless the user requested that market or the data clearly justifies the concentration. If the cap is exceeded, disclose why. Longshot mode may exceed the cap, but still label concentration risk.

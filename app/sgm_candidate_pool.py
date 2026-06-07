@@ -17,6 +17,7 @@ HARD_SLATE_GAME_CAP = 20
 DEFAULT_MAX_CANDIDATES_PER_GAME = 8
 DEFAULT_MAX_TOTAL_CANDIDATES = 75
 COMPACT_REASON_TAG_LIMIT = 3
+MARKET_CONTEST_ALTERNATIVE_LIMIT = 3
 SUPPORTED_MODES = {
     "best_available",
     "safe",
@@ -277,6 +278,7 @@ async def build_sgm_candidate_pool_from_boards(
             scored_rows.append(candidate)
             exposure_counter[candidate["normalizedMarketKey"]] += 1
 
+    market_contest = _apply_within_player_market_contest(scored_rows)
     ranked = _select_ranked_candidates(
         scored_rows,
         mode=clean_mode,
@@ -317,21 +319,27 @@ async def build_sgm_candidate_pool_from_boards(
             "noStaleRowIds": True,
             "noUnsupportedMarketPretendingResearched": True,
             "noForcedWeakPicks": True,
+            "withinPlayerMarketContest": True,
+            "playerMarketWinnerFirst": True,
         },
         "candidateCounts": {
             "scannedRows": len(flat_rows),
             "acceptedRows": len(scored_rows),
             "returnedRows": len(ranked),
             "rejectedRows": sum(rejected.values()),
+            "marketContestGroups": market_contest["playerGroups"],
+            "contestedPlayerGroups": market_contest["contestedPlayerGroups"],
         },
         "rankedCandidates": ranked,
         "perGame": per_game,
         "rejectedSummary": dict(sorted(rejected.items())),
         "marketExposure": dict(Counter(row["normalizedMarketKey"] for row in ranked)),
+        "marketContest": market_contest,
         "contextCoverage": _context_coverage(ranked),
         "notes": [
             "Candidate pool is support data only; the Custom GPT owns final selections.",
             "This endpoint never clicks Stake UI selections or builds a review slip.",
+            "Within-player market contest ranks each player's available markets first; rank-1 rows are winner-first in the slate ranking.",
         ],
     }
 
@@ -519,7 +527,7 @@ def _select_ranked_candidates(
     max_candidates_per_game: int,
     max_total_candidates: int,
 ) -> list[dict[str, Any]]:
-    rows = sorted(rows, key=lambda row: row.get("score") or 0, reverse=True)
+    rows = sorted(rows, key=_ranked_candidate_sort_key)
     if mode == "per_game":
         per_game_limit = max(1, min(int(legs_per_game or 2), max_candidates_per_game))
     else:
@@ -544,6 +552,111 @@ def _select_ranked_candidates(
         if len(selected) >= total_limit:
             break
     return selected
+
+
+def _ranked_candidate_sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
+    contest_rank = _clean_contest_rank(row.get("marketContestRank"))
+    score = _float_or_none(row.get("score")) or 0.0
+    row_id = str(row.get("rowId") or "")
+    return (0 if contest_rank <= 1 else 1, -score, row_id)
+
+
+def _apply_within_player_market_contest(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = _player_market_contest_key(row)
+        if key:
+            groups[key].append(row)
+
+    contested_groups = 0
+    winner_rows = 0
+    alternative_rows = 0
+    max_contenders = 0
+    for key, group in groups.items():
+        ranked = sorted(
+            group,
+            key=lambda row: (-(row.get("score") or 0), str(row.get("rowId") or "")),
+        )
+        winner = ranked[0]
+        winner_score = _float_or_none(winner.get("score")) or 0.0
+        winner_rows += 1
+        alternative_rows += max(0, len(ranked) - 1)
+        max_contenders = max(max_contenders, len(ranked))
+        if len(ranked) > 1:
+            contested_groups += 1
+        alternatives = [
+            _compact_market_contest_alternative(row, winner_score)
+            for row in ranked[1 : MARKET_CONTEST_ALTERNATIVE_LIMIT + 1]
+        ]
+        market_count = len({str(row.get("normalizedMarketKey") or row.get("market") or "") for row in ranked})
+        for rank, row in enumerate(ranked, start=1):
+            score = _float_or_none(row.get("score")) or 0.0
+            is_winner = rank == 1
+            row["marketContestRank"] = rank
+            row["marketContestWinner"] = is_winner
+            row["marketContestScoreGap"] = round(max(0.0, winner_score - score), 2)
+            row["marketContest"] = {
+                "scope": "player",
+                "entity": row.get("player"),
+                "entityKey": key,
+                "rank": rank,
+                "winner": is_winner,
+                "contenderCount": len(ranked),
+                "marketCount": market_count,
+                "winnerRowId": winner.get("rowId"),
+                "winnerMarket": winner.get("market"),
+                "winnerSide": winner.get("side"),
+                "scoreGapToWinner": round(max(0.0, winner_score - score), 2),
+            }
+            if is_winner and alternatives:
+                row["marketContest"]["topAlternatives"] = alternatives
+            reason_tags = set(row.get("reasonTags") or [])
+            reason_tags.add(
+                "player_market_fit_winner"
+                if is_winner
+                else "player_market_fit_alternative"
+            )
+            row["reasonTags"] = sorted(reason_tags)
+
+    return {
+        "enabled": True,
+        "policy": "within_player_winner_first",
+        "playerGroups": len(groups),
+        "contestedPlayerGroups": contested_groups,
+        "winnerRows": winner_rows,
+        "alternativeRows": alternative_rows,
+        "maxContendersForOnePlayer": max_contenders,
+        "alternativeLimitPerWinner": MARKET_CONTEST_ALTERNATIVE_LIMIT,
+    }
+
+
+def _player_market_contest_key(row: dict[str, Any]) -> str | None:
+    player_key = slug_key(row.get("player"))
+    if not player_key:
+        return None
+    fixture = slug_key(row.get("fixtureSlug") or row.get("matchup") or "unknown")
+    team = slug_key(row.get("team") or "unknown")
+    return f"{fixture}:player:{team}:{player_key}"
+
+
+def _compact_market_contest_alternative(row: dict[str, Any], winner_score: float) -> dict[str, Any]:
+    score = _float_or_none(row.get("score")) or 0.0
+    return {
+        "rowId": row.get("rowId"),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "score": row.get("score"),
+        "scoreGapToWinner": round(max(0.0, winner_score - score), 2),
+    }
+
+
+def _clean_contest_rank(value: Any) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _per_game_summary(

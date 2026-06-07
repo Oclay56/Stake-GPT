@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: stake-gpt
+    name: Stake-GPT
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

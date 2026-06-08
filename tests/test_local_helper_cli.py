@@ -29,6 +29,7 @@ from app.local_helper_cli import (
     safe_color_preset_name,
     save_cli_color_preset,
     save_cli_color_settings,
+    split_cli_command,
     stake_site_profile,
     strip_ansi,
 )
@@ -179,6 +180,9 @@ def test_main_menu_uses_polished_status_and_commands():
     assert "build, b" in menu and "Build validated slip" in menu
     assert "status, s" in menu and "Show status" in menu
     assert "domain, q" in menu and "Toggle Stake site" in menu
+    assert "historic, i" in menu and "Import bet historic" in menu
+    assert "history, i" not in menu
+    assert "analysis, z" in menu and "Analyze historic" in menu
     assert "logs, l" in menu and "View logs" in menu
     assert "doctor, d" in menu and "Run full system check" in menu
     assert "clean, c" in menu and "Clear cache" in menu
@@ -245,6 +249,8 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
     monkeypatch.setattr(cli, "start_helper", lambda mode: calls.append(("start", mode)))
     monkeypatch.setattr(cli, "run_status", lambda: calls.append(("status", None)))
     monkeypatch.setattr(cli, "run_logs", lambda args: calls.append(("logs", ",".join(sorted(args)))))
+    monkeypatch.setattr(cli, "run_bet_history", lambda args: calls.append(("history", ",".join(args))))
+    monkeypatch.setattr(cli, "run_backtest", lambda args: calls.append(("backtest", ",".join(args))))
     monkeypatch.setattr(cli, "run_doctor", lambda: calls.append(("doctor", None)))
     monkeypatch.setattr(cli, "run_setup_check", lambda: calls.append(("setup", None)))
     monkeypatch.setattr(cli, "run_cache_cleanup", lambda assume_yes=False: calls.append(("clean", "yes" if assume_yes else "ask")))
@@ -263,6 +269,10 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         "s",
         "domain bet",
         "q",
+        "historic C:\\bets.csv --dry-run",
+        "I report",
+        "analysis tickets --market singles",
+        "Z calibration",
         "logs",
         "L --errors",
         "doctor",
@@ -285,6 +295,10 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("status", None),
         ("domain", "bet"),
         ("toggle", None),
+        ("history", "C:\\bets.csv,--dry-run"),
+        ("history", "report"),
+        ("backtest", "tickets,--market,singles"),
+        ("backtest", "calibration"),
         ("logs", ""),
         ("logs", "--errors"),
         ("doctor", None),
@@ -296,6 +310,86 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("stop", None),
         ("color", None),
     ]
+
+
+def test_split_cli_command_preserves_quoted_paths():
+    assert split_cli_command('historic "C:\\Users\\Administrator\\My Bets\\bets.csv" --dry-run') == [
+        "historic",
+        "C:\\Users\\Administrator\\My Bets\\bets.csv",
+        "--dry-run",
+    ]
+
+
+def test_bet_history_command_runs_import_and_report(monkeypatch, tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "Bet historic parse report\n"
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        assert kwargs["cwd"] == tmp_path
+        return Completed()
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.run", fake_run)
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: None)
+
+    cli.run_bet_history([])
+    cli.run_bet_history(["C:\\bets.csv", "--dry-run"])
+    cli.run_bet_history(["sync"])
+    cli.run_bet_history(["report"])
+    cli.run_bet_history(["review", "--limit", "10"])
+    cli.run_bet_history(["enrich", "--missing-only"])
+    cli.run_bet_history(["analysis", "--market", "hits"])
+    cli.run_bet_history(["imports"])
+    cli.run_bet_history(["delete-import", "abc", "--yes"])
+
+    python_exe = str(tmp_path / ".venv" / "Scripts" / "python.exe")
+    assert calls == [
+        [python_exe, "-m", "app.bet_history", "sync"],
+        [python_exe, "-m", "app.bet_history", "import", "C:\\bets.csv", "--dry-run"],
+        [python_exe, "-m", "app.bet_history", "sync"],
+        [python_exe, "-m", "app.bet_history", "report"],
+        [python_exe, "-m", "app.bet_history", "review", "--limit", "10"],
+        [python_exe, "-m", "app.bet_history", "enrich", "--missing-only"],
+        [python_exe, "-m", "app.bet_history", "analysis", "--market", "hits"],
+        [python_exe, "-m", "app.bet_history", "imports"],
+        [python_exe, "-m", "app.bet_history", "delete-import", "abc", "--yes"],
+    ]
+    assert cli.status == "ready"
+
+
+def test_backtest_command_runs_dedicated_history_backtest(monkeypatch, tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "Bet Historic Analysis\n"
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        assert kwargs["cwd"] == tmp_path
+        return Completed()
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.run", fake_run)
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: None)
+
+    cli.run_backtest([])
+    cli.run_backtest(["tickets", "--market", "singles"])
+    cli.run_backtest(["calibration", "--player", "Max Muncy"])
+
+    python_exe = str(tmp_path / ".venv" / "Scripts" / "python.exe")
+    assert calls == [
+        [python_exe, "-m", "app.bet_history", "analysis"],
+        [python_exe, "-m", "app.bet_history", "analysis", "tickets", "--market", "singles"],
+        [python_exe, "-m", "app.bet_history", "analysis", "calibration", "--player", "Max Muncy"],
+    ]
+    assert cli.status == "ready"
 
 
 def test_clean_confirmation_can_cancel(tmp_path):

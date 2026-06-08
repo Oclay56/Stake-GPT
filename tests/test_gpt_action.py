@@ -256,6 +256,8 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     }
 
     assert schema["servers"] == [{"url": "https://azp-test.example"}]
+    assert schema["info"]["title"] == "Stake-GPT Data API"
+    assert "/gpt/health" not in schema["paths"]
     assert "/mlb/matchup/{matchup}/props" in schema["paths"]
     assert path_ids["/mlb/matchup/{matchup}/props"] == "getMatchupPropBoard"
     assert path_ids["/mlb/matchup/{matchup}/board-summary"] == "getBoardSummary"
@@ -268,6 +270,10 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert path_ids["/mlb/validate-selections"] == "validateSelections"
     assert path_ids["/mlb/save-gpt-decision"] == "saveGptDecision"
     assert "/gpt/mlb/matchup-picks" not in schema["paths"]
+    sgm_pool_props = schema["paths"]["/mlb/stake-ui/sgm-candidate-pool"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]["properties"]
+    assert "useBetHistorySignals" in sgm_pool_props
 
 
 def test_openapi_stays_under_custom_gpt_operation_cap():
@@ -278,7 +284,7 @@ def test_openapi_stays_under_custom_gpt_operation_cap():
         for operation in methods.values()
     ]
 
-    assert len(operations) == 30
+    assert len(operations) == 29
     assert len(operations) <= 30
 
 

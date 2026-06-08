@@ -9,6 +9,7 @@ from app.sgm_candidate_pool import (
     _market_concentration_diagnostics,
     _select_ranked_candidates,
     build_sgm_candidate_pool_from_boards,
+    compact_sgm_candidate_pool_response,
     normalize_sgm_market_key,
     score_sgm_candidate,
 )
@@ -190,6 +191,86 @@ def test_probability_assessment_uses_formula_inputs_and_labels_edge():
     assert probability["inputs"]["matchupFactor"] > 0.5
     assert probability["edgeStatus"] == "clear_possible_edge"
     assert scored["probabilityScoreAdjustment"] > 0
+
+
+def test_candidate_score_uses_sample_gated_historical_signal():
+    base_candidate = {
+        "odds": 1.9,
+        "side": "under",
+        "line": 0.5,
+        "contextQuality": "full",
+        "seasonSample": {"status": "robust"},
+        "context": {
+            "last10": {"sideHitRate": 0.65, "gamesUsed": 10},
+            "last15": {"sideHitRate": 0.65, "gamesUsed": 15},
+            "season": {"sideMargin": 0.2, "gamesUsed": 60},
+        },
+        "normalizedMarketKey": "singles",
+    }
+    without_history = score_sgm_candidate(base_candidate)
+    with_history = score_sgm_candidate(
+        {
+            **base_candidate,
+            "historicalSignal": {
+                "status": "positive_history_signal",
+                "applied": {
+                    "status": "positive_history_signal",
+                    "bucket": "player_market_line",
+                    "gradedLegs": 15,
+                    "hitRate": 0.7,
+                    "averageBreakEvenRate": 0.52,
+                    "historicalEdge": 0.18,
+                    "probabilityAdjustment": 0.08,
+                    "scoreAdjustment": 2.8,
+                    "reason": "usable historical sample",
+                },
+                "notes": ["historical_signal_score_adjusted"],
+            },
+        }
+    )
+
+    assert with_history["historicalScoreAdjustment"] == 2.8
+    assert with_history["score"] > without_history["score"]
+    assert with_history["probabilityAssessment"]["historicalCalibration"]["bucket"] == "player_market_line"
+    assert "historical_positive_signal" in with_history["reasonTags"]
+    assert "historical_sample_gated_score_adjustment" in with_history["reasonTags"]
+
+
+def test_compact_response_preserves_historical_enrichment_status():
+    compact = compact_sgm_candidate_pool_response(
+        {
+            "rankedCandidates": [
+                {
+                    "fixtureSlug": "toronto-blue-jays-new-york-yankees",
+                    "matchup": "New York Yankees - Toronto Blue Jays",
+                    "rowId": "row-1",
+                    "player": "George Springer",
+                    "market": "Hits",
+                    "side": "under",
+                    "line": 0.5,
+                    "odds": 1.91,
+                    "score": 72.0,
+                    "historicalSignal": {
+                        "status": "low_sample",
+                        "enrichment": {
+                            "status": "available",
+                            "coverageRate": 1.0,
+                            "enrichedLegs": 1,
+                        },
+                        "applied": {},
+                    },
+                    "reasonTags": [],
+                    "riskFlags": [],
+                }
+            ],
+            "notes": [],
+        }
+    )
+
+    row = compact["rankedCandidates"][0]
+    assert row["historicalEnrichmentStatus"] == "available"
+    assert row["historicalEnrichmentCoverage"] == 1.0
+    assert row["historicalEnrichedLegs"] == 1
 
 
 def test_stale_board_requires_refetch_and_blocks_candidate_score():
@@ -472,6 +553,7 @@ def test_candidate_pool_ranks_context_backed_rows_and_skips_weak_per_game():
             quality_floor=55,
             max_total_candidates=10,
             history_limit=15,
+            use_bet_history_signals=False,
         )
     )
 

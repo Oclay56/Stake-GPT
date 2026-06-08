@@ -6,7 +6,9 @@ from typing import Any
 
 from .decision_profiles import evidence_check, evidence_windows, season_evidence, trend_labels
 from .mlb_bridge import enrich_props_with_mlb_data, stat_mapping_for_market
+from .market_normalization import normalize_mlb_prop_market_key
 from .mlb_props import slug_key
+from .storage import GptActionStore
 from .stake_sgm_browser import (
     SGM_BOARD_FRESH_SECONDS,
     make_sgm_selection_row_id,
@@ -87,6 +89,26 @@ def _compact_candidate_pool_row(row: dict[str, Any]) -> dict[str, Any]:
         "adjustedEstimatedProbability": (row.get("probabilityAssessment") or {}).get(
             "adjustedEstimatedProbability"
         ),
+        "historicalSignalStatus": (row.get("historicalSignal") or {}).get("status"),
+        "historicalScoreAdjustment": row.get("historicalScoreAdjustment"),
+        "historicalAppliedBucket": ((row.get("historicalSignal") or {}).get("applied") or {}).get(
+            "bucket"
+        ),
+        "historicalHitRate": ((row.get("historicalSignal") or {}).get("applied") or {}).get(
+            "hitRate"
+        ),
+        "historicalSampleSize": ((row.get("historicalSignal") or {}).get("applied") or {}).get(
+            "gradedLegs"
+        ),
+        "historicalEnrichmentStatus": ((row.get("historicalSignal") or {}).get("enrichment") or {}).get(
+            "status"
+        ),
+        "historicalEnrichmentCoverage": ((row.get("historicalSignal") or {}).get("enrichment") or {}).get(
+            "coverageRate"
+        ),
+        "historicalEnrichedLegs": ((row.get("historicalSignal") or {}).get("enrichment") or {}).get(
+            "enrichedLegs"
+        ),
         "matchupFactor": ((row.get("probabilityAssessment") or {}).get("inputs") or {}).get(
             "matchupFactor"
         ),
@@ -96,46 +118,12 @@ def _compact_candidate_pool_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_sgm_market_key(market: Any, *, scope: str | None = None, position: str | None = None) -> str:
-    key = slug_key(market)
-    aliases = {
-        "single": "singles",
-        "player-singles": "singles",
-        "one-base-hits": "singles",
-        "one-baggers": "singles",
-        "stolen-base": "stolen_bases",
-        "stolen-bases": "stolen_bases",
-        "player-stolen-bases": "stolen_bases",
-        "steal": "stolen_bases",
-        "steals": "stolen_bases",
-        "sb": "stolen_bases",
-        "bases-stolen": "stolen_bases",
-        "bb": "batter_walks",
-        "base-on-balls": "batter_walks",
-        "bases-on-balls": "batter_walks",
-        "walks-drawn": "batter_walks",
-        "batter-walk": "batter_walks",
-        "batter-walks": "batter_walks",
-        "hitter-walks": "batter_walks",
-        "batter-k": "batter_strikeouts",
-        "batter-ks": "batter_strikeouts",
-        "batter-strikeout": "batter_strikeouts",
-        "batter-strikeouts": "batter_strikeouts",
-        "hitter-strikeouts": "batter_strikeouts",
-        "failed-attempts": "batter_strikeouts",
-        "hits-runs-rbi": "hits_runs_rbis",
-        "hits-runs-rbis": "hits_runs_rbis",
-        "hit-runs-rbis": "hits_runs_rbis",
-        "hits-runs-rbis-hrr": "hits_runs_rbis",
-        "h-r-r": "hits_runs_rbis",
-        "hrr": "hits_runs_rbis",
-    }
-    if key in aliases:
-        return aliases[key]
-    if key == "walks" and slug_key(scope) == "player" and slug_key(position) != "p":
-        return "batter_walks"
-    if key == "strikeouts" and slug_key(position) != "p":
-        return "batter_strikeouts"
-    return key.replace("-", "_")
+    return normalize_mlb_prop_market_key(
+        market,
+        scope=scope,
+        position=position,
+        default_strikeouts_to_batter=True,
+    )
 
 
 def score_sgm_candidate(
@@ -209,9 +197,17 @@ def score_sgm_candidate(
         risk_flags.append("safe_mode_evidence_below_strict_floor")
 
     probability_assessment = _probability_assessment(candidate, risk_flags)
+    historical_signal = candidate.get("historicalSignal") or {}
+    probability_assessment = _probability_assessment_with_history(
+        probability_assessment,
+        historical_signal,
+    )
     probability_adjustment = _probability_score_adjustment(probability_assessment)
+    historical_adjustment = _historical_score_adjustment(historical_signal)
     risk_flags.extend(probability_assessment.get("riskFlags") or [])
     reason_tags.extend(probability_assessment.get("reasonTags") or [])
+    risk_flags.extend(_historical_risk_flags(historical_signal))
+    reason_tags.extend(_historical_reason_tags(historical_signal))
 
     score = (
         evidence_score * 0.48
@@ -219,6 +215,7 @@ def score_sgm_candidate(
         + mode_fit_score * 0.20
         + 10.0
         + probability_adjustment
+        + historical_adjustment
         - odds_trap_penalty
         - quota_filler_penalty
         - volatility_penalty
@@ -237,7 +234,9 @@ def score_sgm_candidate(
         "stakeMetadataPenalty": round(stake_metadata_penalty, 2),
         "correlationPenalty": round(correlation_penalty, 2),
         "probabilityScoreAdjustment": round(probability_adjustment, 2),
+        "historicalScoreAdjustment": round(historical_adjustment, 2),
         "probabilityAssessment": probability_assessment,
+        "historicalSignal": historical_signal,
         "marketExposurePenalty": 0.0,
         "score": round(max(0.0, min(100.0, score)), 2),
         "reasonTags": sorted(set(reason_tags)),
@@ -268,6 +267,8 @@ async def build_sgm_candidate_pool_from_boards(
     max_sgm_group_odds: float = DEFAULT_MAX_SGM_GROUP_ODDS,
     max_games: int = NORMAL_SLATE_GAME_CAP,
     max_board_age_seconds: int = SGM_BOARD_FRESH_SECONDS,
+    use_bet_history_signals: bool = True,
+    bet_history_db_path: str | None = None,
 ) -> dict[str, Any]:
     clean_mode = _clean_mode(mode)
     clean_side = _clean_side(side)
@@ -303,12 +304,17 @@ async def build_sgm_candidate_pool_from_boards(
     )
 
     enriched_by_id = {str(prop.get("propId") or ""): prop for prop in enriched.get("props") or []}
+    history_store = _candidate_history_store(
+        enabled=use_bet_history_signals,
+        db_path=bet_history_db_path,
+    )
     scored_rows = []
     rejected = Counter(initial_rejections)
 
     for row in flat_rows:
         enriched_prop = enriched_by_id.get(str(row.get("propId") or "")) or {}
         candidate = _candidate_from_enriched_row(row, enriched_prop)
+        candidate["historicalSignal"] = _candidate_history_signal(candidate, history_store)
         score = score_sgm_candidate(
             candidate,
             mode=clean_mode,
@@ -381,6 +387,8 @@ async def build_sgm_candidate_pool_from_boards(
             "maxBoardAgeSeconds": max_board_age_seconds,
             "refetchOnStaleBoard": True,
             "refetchAfterLineupOrPitcherChange": True,
+            "betHistorySignals": bool(use_bet_history_signals),
+            "betHistorySignalRole": "sample_gated_soft_adjustment",
         },
         "candidateCounts": {
             "scannedRows": len(flat_rows),
@@ -403,6 +411,7 @@ async def build_sgm_candidate_pool_from_boards(
             "This endpoint never clicks Stake UI selections or builds a review slip.",
             "Within-player market contest ranks each player's available markets first; rank-1 rows are winner-first in the slate ranking.",
             "Market concentration is diagnostic only and does not replace higher-merit rows.",
+            "Imported bet historic is used as a sample-gated soft signal; low-sample historic data is shown but cannot move scores.",
         ],
     }
 
@@ -592,6 +601,52 @@ def _candidate_from_enriched_row(row: dict[str, Any], enriched_prop: dict[str, A
     }
 
 
+def _candidate_history_store(*, enabled: bool, db_path: str | None) -> GptActionStore | None:
+    if not enabled:
+        return None
+    try:
+        return GptActionStore(db_path)
+    except Exception:
+        return None
+
+
+def _candidate_history_signal(
+    candidate: dict[str, Any],
+    store: GptActionStore | None,
+) -> dict[str, Any]:
+    if store is None:
+        return {
+            "source": "local_sqlite_bet_history",
+            "status": "disabled_or_unavailable",
+            "applied": {
+                "status": "disabled_or_unavailable",
+                "scoreAdjustment": 0.0,
+                "probabilityAdjustment": 0.0,
+                "reason": "Bet historic signals are disabled or the local database is unavailable.",
+            },
+            "notes": ["historical_signal_unavailable"],
+        }
+    try:
+        return store.bet_history_candidate_signal(
+            player_name=candidate.get("player"),
+            market_key=candidate.get("normalizedMarketKey") or candidate.get("market"),
+            side=candidate.get("side"),
+            line=candidate.get("line"),
+        )
+    except Exception:
+        return {
+            "source": "local_sqlite_bet_history",
+            "status": "lookup_failed",
+            "applied": {
+                "status": "lookup_failed",
+                "scoreAdjustment": 0.0,
+                "probabilityAdjustment": 0.0,
+                "reason": "Historical signal lookup failed; candidate scoring continued without it.",
+            },
+            "notes": ["historical_signal_lookup_failed"],
+        }
+
+
 def _season_sample_summary(profile: dict[str, Any], stat_context: dict[str, Any]) -> dict[str, Any]:
     stats = (((profile or {}).get("player") or {}).get("stats") or {})
     group = str((stat_context or {}).get("group") or "hitting")
@@ -701,6 +756,70 @@ def _probability_assessment(
         "riskFlags": [],
         "reasonTags": reason_tags,
     }
+
+
+def _probability_assessment_with_history(
+    probability: dict[str, Any],
+    historical_signal: dict[str, Any],
+) -> dict[str, Any]:
+    applied = (historical_signal or {}).get("applied") or {}
+    probability_adjustment = _float_or_none(applied.get("probabilityAdjustment")) or 0.0
+    if not probability_adjustment:
+        if applied:
+            probability["historicalCalibration"] = applied
+        return probability
+
+    adjusted = _float_or_none(probability.get("adjustedEstimatedProbability"))
+    implied = _float_or_none(probability.get("impliedProbability"))
+    if adjusted is not None:
+        probability["preHistoricalAdjustedEstimatedProbability"] = adjusted
+        updated = round(max(0.0, min(1.0, adjusted + probability_adjustment)), 4)
+        probability["adjustedEstimatedProbability"] = updated
+        if implied is not None:
+            probability["edge"] = round(updated - implied, 4)
+            probability["edgeStatus"] = _edge_status(
+                probability["edge"],
+                str(probability.get("dataQuality") or "low"),
+            )
+    probability["historicalCalibration"] = applied
+    return probability
+
+
+def _historical_score_adjustment(historical_signal: dict[str, Any]) -> float:
+    applied = (historical_signal or {}).get("applied") or {}
+    adjustment = _float_or_none(applied.get("scoreAdjustment")) or 0.0
+    return max(-6.0, min(3.0, adjustment))
+
+
+def _historical_risk_flags(historical_signal: dict[str, Any]) -> list[str]:
+    applied = (historical_signal or {}).get("applied") or {}
+    status = str(applied.get("status") or "")
+    notes = set(historical_signal.get("notes") or [])
+    flags: list[str] = []
+    if status in {"negative_history_signal", "negative_with_ticket_failure_risk"}:
+        flags.append("historical_negative_signal")
+    if "historical_per_leg_odds_missing" in notes:
+        flags.append("historical_per_leg_odds_missing")
+    if status == "sample_building":
+        flags.append("historical_sample_below_adjustment_gate")
+    if applied.get("ticketFailureStatus") == "elevated_ticket_failure":
+        flags.append("historical_ticket_failure_risk")
+    return flags
+
+
+def _historical_reason_tags(historical_signal: dict[str, Any]) -> list[str]:
+    applied = (historical_signal or {}).get("applied") or {}
+    status = str(applied.get("status") or "")
+    tags: list[str] = []
+    if status == "positive_history_signal":
+        tags.append("historical_positive_signal")
+    elif status == "neutral_history_signal":
+        tags.append("historical_neutral_signal")
+    elif status == "sample_building":
+        tags.append("historical_sample_visible_not_scored")
+    if applied.get("scoreAdjustment"):
+        tags.append("historical_sample_gated_score_adjustment")
+    return tags
 
 
 def _season_probability_rate(

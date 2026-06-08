@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -57,6 +58,8 @@ COMMAND_ROWS = [
     ("build, b", "Build validated slip"),
     ("status, s", "Show status"),
     ("domain, q", "Toggle Stake site"),
+    ("historic, i", "Import bet historic"),
+    ("analysis, z", "Analyze historic"),
     ("logs, l", "View logs"),
     ("doctor, d", "Run full system check"),
     ("clean, c", "Clear cache"),
@@ -66,6 +69,20 @@ COMMAND_ROWS = [
 HELP_EXTRA_ROWS = [
     ("logs --tail", "Tail the latest helper log"),
     ("logs --errors", "Show warnings and errors"),
+    ("historic --dry-run <file>", "Preview a historic import"),
+    ("historic", "Auto-import new historic files and show status"),
+    ("historic report", "Show imported historic summary without syncing"),
+    ("historic sync", "Import new files from the historic import folder"),
+    ("historic review", "Show rows needing review"),
+    ("historic enrich", "Store frozen historical MLB snapshots"),
+    ("historic enrich --missing-only", "Enrich only historic legs not yet linked"),
+    ("analysis", "Open historic analysis dashboard"),
+    ("analysis tickets", "Show ticket-level SGM performance"),
+    ("analysis signals", "Show market/player/line signals"),
+    ("analysis calibration", "Show historical calibration buckets"),
+    ("analysis --ticket <id>", "Analyze only one ticket"),
+    ("historic analysis --import-id <id>", "Analyze only one import/session"),
+    ("historic imports", "List saved historic imports"),
     ("clean --yes", "Clear cache without confirmation"),
     ("setup", "Run quick setup checks"),
     ("stop", "Stop the running helper"),
@@ -244,6 +261,14 @@ def colorize(text: str, hex_color: str) -> str:
 
 def is_exit_command(command: str) -> bool:
     return command.strip().lower() in {"0", "6", "e", "exit", "quit"}
+
+
+def split_cli_command(command: str) -> list[str]:
+    try:
+        parts = shlex.split(command, posix=False)
+    except ValueError:
+        parts = command.split()
+    return [part.strip().strip('"').strip("'") for part in parts if part.strip()]
 
 
 def strip_ansi(text: str) -> str:
@@ -570,6 +595,12 @@ def format_help_screen(*, use_color: bool = False) -> str:
         "  review",
         "  build",
         "  status",
+        "  historic C:\\path\\bets.csv --dry-run",
+        "  historic sync",
+        "  historic report",
+        "  historic review",
+        "  historic analysis",
+        "  historic imports",
         "  logs --errors",
         "  clean --yes",
     ]
@@ -891,7 +922,7 @@ class StakeGptCli:
         return text
 
     def handle_command(self, command: str) -> None:
-        parts = command.split()
+        parts = split_cli_command(command)
         base = parts[0].lower() if parts else ""
         args = {part.lower() for part in parts[1:]}
         if base in {"1", "review", "r"}:
@@ -906,6 +937,10 @@ class StakeGptCli:
             self.toggle_stake_site()
         elif base in {"domain", "site"}:
             self.run_stake_site_command(args)
+        elif base in {"history", "historic", "hist", "import", "i"}:
+            self.run_bet_history(parts[1:])
+        elif base in {"analysis", "analyze", "backtest", "bt", "z"}:
+            self.run_backtest(parts[1:])
         elif base in {"logs", "l"}:
             self.run_logs(args)
         elif base in {"doctor", "d"}:
@@ -1096,6 +1131,90 @@ class StakeGptCli:
         limit = 120 if "--tail" in args else 40
         lines = self._read_log_lines(limit=limit)
         self.emit(format_log_screen(self.log_path, lines, heading="Logs: latest") + "\n", role="info", log=False)
+
+    def run_bet_history(self, args: list[str]) -> None:
+        python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"
+        if not python_exe.exists():
+            self.emit(f"Could not find {python_exe}. Run setup first.\n", role="fail")
+            self.status = "setup needs attention"
+            return
+
+        clean_args = [arg for arg in args if arg]
+        if not clean_args:
+            history_args = ["sync"]
+            self.status = "historic sync"
+        else:
+            subcommand = clean_args[0].lower()
+            if subcommand == "report":
+                history_args = ["report", *clean_args[1:]]
+                self.status = "historic report"
+            elif subcommand == "sync":
+                history_args = ["sync", *clean_args[1:]]
+                self.status = "historic sync"
+            elif subcommand == "review":
+                history_args = ["review", *clean_args[1:]]
+                self.status = "historic review"
+            elif subcommand == "enrich":
+                history_args = ["enrich", *clean_args[1:]]
+                self.status = "historic enrich"
+            elif subcommand in {"analysis", "backtest"}:
+                history_args = ["analysis", *clean_args[1:]]
+                self.status = "historic analysis"
+            elif subcommand == "imports":
+                history_args = ["imports", *clean_args[1:]]
+                self.status = "historic imports"
+            elif subcommand == "delete-import":
+                history_args = ["delete-import", *clean_args[1:]]
+                self.status = "historic delete"
+            elif subcommand == "import":
+                history_args = ["import", *clean_args[1:]]
+                self.status = "importing historic"
+            else:
+                history_args = ["import", *clean_args]
+                self.status = "importing historic"
+
+        self.emit("Running bet historic command...\n", role="info")
+        completed = subprocess.run(
+            [str(python_exe), "-m", "app.bet_history", *history_args],
+            cwd=self.root_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = (completed.stdout or "").rstrip()
+        if output:
+            self.emit(output + "\n", role="info" if completed.returncode == 0 else "fail")
+        self.emit(
+            f"Bet historic exited with code {completed.returncode}.\n",
+            role="ok" if completed.returncode == 0 else "fail",
+        )
+        self.status = "ready" if completed.returncode == 0 else "historic import failed"
+
+    def run_backtest(self, args: list[str]) -> None:
+        python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"
+        if not python_exe.exists():
+            self.emit(f"Could not find {python_exe}. Run setup first.\n", role="fail")
+            self.status = "setup needs attention"
+            return
+
+        clean_args = [arg for arg in args if arg]
+        self.status = "analyzing"
+        self.emit("Running historic analysis command...\n", role="info")
+        completed = subprocess.run(
+            [str(python_exe), "-m", "app.bet_history", "analysis", *clean_args],
+            cwd=self.root_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = (completed.stdout or "").rstrip()
+        if output:
+            self.emit(output + "\n", role="info" if completed.returncode == 0 else "fail")
+        self.emit(
+            f"Historic analysis exited with code {completed.returncode}.\n",
+            role="ok" if completed.returncode == 0 else "fail",
+        )
+        self.status = "ready" if completed.returncode == 0 else "historic analysis failed"
 
     def run_cache_cleanup(self, *, assume_yes: bool = False) -> None:
         python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"

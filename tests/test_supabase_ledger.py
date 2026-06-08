@@ -66,3 +66,13 @@ def test_supabase_schema_can_upgrade_existing_decision_tables():
     assert "add column if not exists validation_json" in sql
     assert "add column if not exists decision_profile_json" in sql
     assert "add column if not exists settlement_status" in sql
+    assert "create table if not exists public.bet_history_imports" in sql
+    assert "create table if not exists public.bet_history_raw" in sql
+    assert "create table if not exists public.bet_history_legs" in sql
+    assert "source_fingerprint" in sql
+    assert "fingerprint_version" in sql
+    assert "parser_version" in sql
+    assert "eligibility_version" in sql
+    assert "bet_history_imports_fingerprint_idx" in sql
+    assert "bet_history_legs_ticket_idx" in sql
+    assert "bet_history_legs_player_idx" in sql

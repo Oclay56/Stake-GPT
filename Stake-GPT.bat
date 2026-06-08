@@ -2,7 +2,7 @@
 setlocal
 
 cd /d "%~dp0"
-title Stake-GPT CLI
+title Stake-GPT TUI
 
 if not exist ".venv\Scripts\python.exe" (
   echo ERROR: Could not find .venv\Scripts\python.exe
@@ -33,12 +33,15 @@ if not exist ".env" (
   exit /b 1
 )
 
-".venv\Scripts\python.exe" -m app.local_helper_cli
-set EXIT_CODE=%ERRORLEVEL%
-
-echo.
-if not "%EXIT_CODE%"=="0" (
-  echo Stake-GPT CLI exited with code %EXIT_CODE%.
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" (
+  echo ERROR: Could not find Windows PowerShell.
+  echo Expected: %POWERSHELL_EXE%
+  echo.
+  pause
+  exit /b 1
 )
-pause
-exit /b %EXIT_CODE%
+
+set "STAKE_GPT_ROOT=%CD%"
+start "Stake-GPT TUI" "%POWERSHELL_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$Host.UI.RawUI.WindowTitle='Stake-GPT TUI'; $Host.UI.RawUI.BackgroundColor='Black'; $Host.UI.RawUI.ForegroundColor='DarkGray'; Clear-Host; $root=$env:STAKE_GPT_ROOT; Set-Location -LiteralPath $root; & '.\.venv\Scripts\python.exe' -m app.local_helper_tui; $code=$LASTEXITCODE; if ($code -ne 0) { Write-Host ''; Write-Host ('Stake-GPT TUI exited with code {0}.' -f $code); Read-Host 'Press Enter to close' }; exit $code"
+exit /b 0

@@ -16,6 +16,10 @@ Use this file with `custom-gpt-instructions.md`. The core file is the always-on 
 - `riskFlags`: Warnings from returned data. Read them before choosing.
 - `marketFamily`: Group of related props, such as hits, total bases, RBI, strikeouts, walks, runs, or moneyline.
 - `boardFreshness`: How recently the Stake UI/feed row was fetched. Stale or uncertain freshness must be resolved before final build work.
+- `historicalSignal`: Imported bet-history signal for a similar market/player/side/line bucket. It is calibration context, not a final pick.
+- `historicalScoreAdjustment`: Small capped score adjustment from usable history. Low-sample history should not adjust score.
+- `historicalEnrichmentStatus`: Whether imported history has frozen MLB context snapshots attached.
+- `modelReadiness`: Current readiness of the history dataset for future ML. It is not itself a model prediction.
 - `Finalist Research Gate`: Mandatory checkpoint every tentative leg must pass before recommendation, validation, saving, or review-slip building.
 
 ## High-Value Data Fields
@@ -124,6 +128,40 @@ Use live web lookup when available for information that may change today: lineup
 
 Probability math never overrides the Finalist Research Gate.
 
+## Historic Analysis, Enrichment, And Future ML
+
+Stake-GPT can use imported bet-history analysis as a support layer. This layer reads settled imported bets from local SQLite and summarizes leg performance, ticket performance, market/player-market buckets, side and line buckets, ticket failure contributors, calibration status, and model-readiness gates. It is historic analysis, not a trained machine-learning model and not a substitute for current Stake/MLB research.
+
+When candidate rows include history fields, use them as follows:
+
+- `historicalSignalStatus`: tells whether the history bucket is positive, neutral, negative, low-sample, missing-odds, or unavailable.
+- `historicalAppliedBucket`: shows the bucket that drove any usable adjustment.
+- `historicalHitRate` and `historicalSampleSize`: describe the historical bucket; low sample should be disclosed, not over-weighted.
+- `historicalScoreAdjustment`: may slightly move ranking only when the backend already sample-gated it.
+- `historicalCalibration`: describes hit-rate versus break-even when per-leg odds exist.
+- `historicalEnrichmentStatus` / coverage fields: show whether frozen historical MLB snapshots exist for similar imported bets.
+
+Use historical analysis as soft calibration:
+
+- Positive history can support a finalist that already passes Stake truth, current MLB context, and validation.
+- Negative history should lower confidence or add a risk flag, especially for repeated market/player-market failures.
+- Low-sample history is visible context only and cannot justify a pick by itself.
+- Missing per-leg odds limits value calibration; ticket ROI and hit rate can still be directional.
+- Historical signals must never override current lineup, injury, pitcher, weather, game-status, playability, or validation blockers.
+
+Historical enrichment stores immutable MLB snapshots for the actual past game date: teams, gamePk, final status, venue, starters, lineup/batting order when available, player IDs, and boxscore/player result data. Pregame-style context supports calibration and feature learning. Postgame boxscore data is for grading only. Do not let postgame facts leak into the pregame prediction side.
+
+Future ML integration should fit into this same layer without replacing it. Reserve room for returned fields such as `mlModelVersion`, `mlProbability`, `mlSignal`, `mlConfidence`, `mlFeatureSnapshotId`, `mlTrainingWindow`, and `mlHoldoutStatus`. If absent, ignore them. If present later, treat ML as an additional calibrated signal that complements, not replaces:
+
+- Stake board truth and exact row identity.
+- Finalist Research Gate.
+- Current MLB context and live/current-data checks.
+- Market-neutral proof output.
+- Longshot disclosure and risk handling.
+- Validation/build safety.
+
+Do not claim the model is live, trained, validated, or profitable unless the backend explicitly returns those fields with a held-out validation status.
+
 ## Longshot Modifier Details
 
 When the user explicitly asks for a longshot, lotto, moonshot, high-payout, 10k+, 20k+, or extremely aggressive parlay, treat that as informed risk acceptance.
@@ -173,7 +211,7 @@ Handle minor odds drift without pretending the old quote is exact:
 
 Validation is not a final bet-slip quote. If execution-ready validation returns `quote_required`, say a final Stake UI quote is still required.
 
-Review-slip helper actions are review-only. Never say AZP placed a bet, entered a stake amount, or clicked Place Bet.
+Review-slip helper actions are review-only. Never say Stake-GPT placed a bet, entered a stake amount, or clicked Place Bet.
 
 Use `readStakeUiState`, `clearStakeUiSgmSelections`, and `clearStakeUiSidebar` only after a UI helper failure, unclear helper state, selected SGM rows stuck before retry, user asks what happened, or user explicitly asks to clear the visible slip.
 
@@ -243,7 +281,7 @@ Never mix ordinary moneylines with SGM/custom-bet groups in one build request.
 
 Never treat a ranked candidate, stale row, or feed-only result as a UI-backed review-slip leg until the exact UI identity is confirmed.
 
-Never claim AZP placed a bet. AZP can prepare review slips only.
+Never claim Stake-GPT placed a bet. Stake-GPT can prepare review slips only.
 
 ## Answer Format Reference
 

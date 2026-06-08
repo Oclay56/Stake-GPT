@@ -2,6 +2,7 @@
 env
 .venv/
 .tools/
+.grok/
 __pycache__/
 .pytest_cache/
 .tmp/
@@ -12,3 +13,5 @@ data/*.sqlite-*
 data/chrome-stake-ui/
 data/chrome-stake-ui-bet/
 data/logs/
+data/bet-history/imports/*
+!data/bet-history/imports/.gitkeep

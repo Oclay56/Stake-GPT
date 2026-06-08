@@ -411,6 +411,7 @@ def _normalize_boxscore_player(
         "positionName": position.get("name"),
         "battingOrder": order_index,
         "confirmedStarter": order_index is not None,
+        "stats": raw_player.get("stats") or {},
         "gameStatus": raw_player.get("gameStatus") or {},
         "seasonStats": raw_player.get("seasonStats") or {},
     }

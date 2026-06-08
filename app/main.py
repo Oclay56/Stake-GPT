@@ -71,7 +71,7 @@ from .supabase_ledger import (
 
 
 app = FastAPI(
-    title="AZP GPT Data API",
+    title="Stake-GPT Data API",
     version="0.2.0",
     description=(
         "Thin data layer for Custom GPT Actions. GPT decides; this backend "
@@ -101,7 +101,7 @@ def get_local_ui_job_store() -> SupabaseLocalUiJobStore:
 
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
-    return {"service": "azp-gpt-data-api", "status": "ok"}
+    return {"service": "stake-gpt-data-api", "status": "ok"}
 
 
 @app.get("/health")
@@ -111,7 +111,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/gpt/health")
 async def gpt_health(_: None = Depends(require_gpt_api_key)) -> dict[str, str]:
-    return {"status": "ok", "service": "azp-gpt-data-api"}
+    return {"status": "ok", "service": "stake-gpt-data-api"}
 
 
 @app.get("/archive/status")
@@ -124,7 +124,7 @@ async def local_archive_status(
 @app.get("/gpt/privacy", include_in_schema=False)
 async def gpt_privacy_policy() -> dict[str, Any]:
     return {
-        "name": "AZP Suite GPT Action Privacy Policy",
+            "name": "Stake-GPT Action Privacy Policy",
         "summary": (
             "The action retrieves Stake odds data and MLB Stats API data for your "
             "private Custom GPT. It does not log in to Stake, place bets, or handle "
@@ -1376,6 +1376,12 @@ async def mlb_stake_ui_sgm_candidate_pool(
             180,
             minimum=0,
             maximum=600,
+        ),
+        use_bet_history_signals=_bool_from_body(
+            payload,
+            "useBetHistorySignals",
+            "use_bet_history_signals",
+            True,
         ),
     )
     pool["bridge"] = _local_ui_bridge_summary(completed)

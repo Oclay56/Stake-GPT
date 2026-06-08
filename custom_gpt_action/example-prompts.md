@@ -179,4 +179,5 @@ Scan [today's slate / these games] and build one batch review slip with [N] rese
 - Keep market restrictions request-scoped. A prompt asking for hits or unders should not carry that restriction into later broad requests.
 - For current-day slates, ask the GPT to use live lookup when lineups, injuries, pitcher changes, weather, roof status, or park factors may matter.
 - Use "evidence strength", "risk tier", or "edge status" instead of overconfident lock-style language.
+- Target final answers of 30-400 words (casual ~30 words; content/explanatory 350-400 words) to match typical ChatGPT response lengths.
 - Update these examples when Stake adds new markets, cross-game features, or helper actions.

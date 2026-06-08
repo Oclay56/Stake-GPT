@@ -38,7 +38,7 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
     schema: dict[str, Any] = {
         "openapi": "3.1.0",
         "info": {
-            "title": "AZP Suite GPT Data API",
+            "title": "Stake-GPT Data API",
             "version": "0.2.0",
             "description": (
                 "Structured data API for a Custom GPT. The GPT owns final betting "
@@ -48,13 +48,6 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
         },
         "servers": [{"url": clean_server}],
         "paths": {
-            "/gpt/health": {
-                "get": _operation(
-                    "getAzpHealth",
-                    "Check backend health",
-                    "Returns whether the GPT data backend is available.",
-                )
-            },
             "/mlb/matchups": {
                 "get": _operation(
                     "getMlbMatchups",
@@ -433,7 +426,7 @@ def require_gpt_api_key_value(provided_key: str | None) -> None:
         return None
     if provided_key and hmac.compare_digest(provided_key, configured_key):
         return None
-    raise HTTPException(status_code=401, detail="Invalid AZP GPT API key.")
+    raise HTTPException(status_code=401, detail="Invalid Stake-GPT API key.")
 
 
 def require_gpt_api_key(
@@ -2739,6 +2732,14 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                         "maxSgmGroupOdds": {"type": "number", "minimum": 1, "maximum": 501},
                         "maxGames": {"type": "integer", "minimum": 1, "maximum": 20},
                         "maxCacheAgeSeconds": {"type": "integer", "minimum": 0, "maximum": 600},
+                        "useBetHistorySignals": {
+                            "type": "boolean",
+                            "description": (
+                                "Defaults true. When enabled, dynamically reads imported local bet historic "
+                                "and stored historical MLB enrichment snapshots, then applies sample-gated "
+                                "historical signals as soft candidate scoring context."
+                            ),
+                        },
                         "compact": {
                             "type": "boolean",
                             "description": (

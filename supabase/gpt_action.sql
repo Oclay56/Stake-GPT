@@ -153,4 +153,155 @@ create index if not exists local_ui_jobs_pending_idx
 create index if not exists local_ui_jobs_expires_idx
     on public.local_ui_jobs (expires_at);
 
+create table if not exists public.bet_history_imports (
+    import_id text primary key,
+    imported_at timestamptz not null,
+    source_path text,
+    source_format text not null,
+    source_fingerprint text,
+    fingerprint_version text,
+    parser_version text,
+    eligibility_version text,
+    raw_row_count integer not null default 0,
+    parsed_leg_count integer not null default 0,
+    needs_review_count integer not null default 0,
+    report_json jsonb not null default '{}'::jsonb
+);
+
+alter table public.bet_history_imports
+    add column if not exists source_fingerprint text;
+
+alter table public.bet_history_imports
+    add column if not exists fingerprint_version text;
+
+alter table public.bet_history_imports
+    add column if not exists parser_version text;
+
+alter table public.bet_history_imports
+    add column if not exists eligibility_version text;
+
+create table if not exists public.bet_history_raw (
+    raw_id text primary key,
+    import_id text not null references public.bet_history_imports(import_id) on delete cascade,
+    source_row_number integer not null,
+    source_format text not null,
+    raw_text text,
+    raw_json jsonb not null,
+    parse_status text not null default 'parsed',
+    parse_notes_json jsonb not null default '[]'::jsonb
+);
+
+create table if not exists public.bet_history_legs (
+    history_leg_id text primary key,
+    import_id text not null references public.bet_history_imports(import_id) on delete cascade,
+    raw_id text references public.bet_history_raw(raw_id) on delete set null,
+    ticket_id text,
+    leg_index integer not null,
+    bet_date date,
+    settled_date date,
+    sport text not null default 'mlb',
+    league text,
+    player_name text,
+    team_name text,
+    opponent_name text,
+    fixture_slug text,
+    matchup text,
+    market_key text,
+    market_name text,
+    side text,
+    line numeric,
+    odds numeric,
+    stake_amount numeric,
+    payout_amount numeric,
+    result_status text,
+    actual_stat numeric,
+    parse_confidence numeric not null default 0,
+    parse_confidence_label text not null default 'low',
+    needs_review boolean not null default true,
+    training_eligible boolean not null default false,
+    parser_version text,
+    eligibility_version text,
+    parse_notes_json jsonb not null default '[]'::jsonb,
+    ignored_fields_json jsonb not null default '[]'::jsonb,
+    normalized_json jsonb not null,
+    raw_json jsonb not null,
+    created_at timestamptz not null
+);
+
+alter table public.bet_history_legs
+    add column if not exists training_eligible boolean not null default false;
+
+alter table public.bet_history_legs
+    add column if not exists parser_version text;
+
+alter table public.bet_history_legs
+    add column if not exists eligibility_version text;
+
+alter table public.bet_history_legs
+    add column if not exists ignored_fields_json jsonb not null default '[]'::jsonb;
+
+create index if not exists bet_history_legs_market_idx
+    on public.bet_history_legs (market_key, side);
+
+create index if not exists bet_history_legs_date_idx
+    on public.bet_history_legs (bet_date);
+
+create index if not exists bet_history_legs_review_idx
+    on public.bet_history_legs (needs_review, parse_confidence_label);
+
+create index if not exists bet_history_legs_ticket_idx
+    on public.bet_history_legs (ticket_id);
+
+create index if not exists bet_history_legs_player_idx
+    on public.bet_history_legs (player_name);
+
+create index if not exists bet_history_imports_fingerprint_idx
+    on public.bet_history_imports (source_fingerprint);
+
+create table if not exists public.bet_history_game_snapshots (
+    game_pk bigint primary key,
+    official_date date,
+    game_date timestamptz,
+    matchup_key text,
+    away_team_name text,
+    home_team_name text,
+    final_status text,
+    venue_json jsonb not null default '{}'::jsonb,
+    probable_pitchers_json jsonb not null default '{}'::jsonb,
+    pregame_context_json jsonb not null default '{}'::jsonb,
+    grading_context_json jsonb not null default '{}'::jsonb,
+    raw_context_json jsonb not null default '{}'::jsonb,
+    source text not null default 'mlb_stats_api',
+    fetched_at timestamptz not null
+);
+
+create index if not exists bet_history_game_snapshots_date_idx
+    on public.bet_history_game_snapshots (official_date);
+
+create table if not exists public.bet_history_leg_enrichments (
+    history_leg_id text primary key references public.bet_history_legs(history_leg_id) on delete cascade,
+    game_pk bigint not null references public.bet_history_game_snapshots(game_pk),
+    player_mlb_id bigint,
+    player_team_side text,
+    player_team_name text,
+    lineup_confirmed boolean not null default false,
+    confirmed_starter boolean not null default false,
+    batting_order integer,
+    bat_side text,
+    pitch_hand text,
+    position text,
+    stat_key text,
+    stat_value numeric,
+    enriched_result_status text,
+    context_quality text not null default 'unknown',
+    pregame_context_json jsonb not null default '{}'::jsonb,
+    grading_context_json jsonb not null default '{}'::jsonb,
+    notes_json jsonb not null default '[]'::jsonb,
+    source text not null default 'mlb_stats_api_snapshot',
+    enriched_at timestamptz not null
+);
+
+create index if not exists bet_history_leg_enrichments_game_idx
+    on public.bet_history_leg_enrichments (game_pk);
+
 notify pgrst, 'reload schema';

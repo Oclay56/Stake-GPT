@@ -1,6 +1,6 @@
-# AZP Custom GPT Action
+# Stake-GPT Custom GPT Action
 
-AZP is now a thin GPT data backend.
+Stake-GPT is a thin GPT data backend.
 
 The Custom GPT makes the final decision. The Render backend only:
 
@@ -11,9 +11,10 @@ The Custom GPT makes the final decision. The Render backend only:
 - validates GPT-selected props against the current Stake board
 - creates local-helper jobs for UI-verified Stake Same Game Multi boards
 - returns decision profiles, market heatmaps, and constrained slip candidates for GPT review
+- returns historic-analysis signals from imported settled bet history when available
 - saves GPT-authored decisions and market mappings when storage is configured
 
-It does not place bets, log in to Stake, scrape account pages, or run the old AZP analyzer as the final pick engine.
+It does not place bets, log in to Stake, scrape account pages, or run an old analyzer as the final pick engine.
 
 ## Import URL
 
@@ -25,13 +26,17 @@ https://YOUR-RENDER-SERVICE.onrender.com/gpt/openapi.json
 
 Authentication can stay `None` unless `AZP_GPT_API_KEY` is set on Render. If that env var is set, configure the action to send `X-AZP-API-Key`.
 
+The Custom GPT action schema intentionally does not expose a health-check operation. Render can still use the service health endpoint separately; GPT action slots should stay focused on useful data/build actions.
+
 ## Instruction Files
 
-Paste `regular-instruction-tab-8000.md` into the Custom GPT regular instruction tab. It is exactly 8,000 characters and is designed for the text box above the Knowledge files.
+Paste `regular-instruction-tab-8000.md` into the Custom GPT regular instruction tab (compact ~8k chars). It is the primary instructions box. The knowledge files contain the full rules including target response length (30-400 words to match typical ChatGPT output).
 
 Use `custom-gpt-instructions.md` as the primary Custom GPT instruction file. It is intentionally lean and contains the always-on operating rules.
 
 Attach or upload `custom-gpt-operational-reference.md` as the secondary reference file. It keeps the heavier glossary, probability engine, risk flags, playbooks, validation rules, lineup/opponent/game-context usage, and Stake SGM metadata guidance out of the main instruction stream while still preserving the full operating manual.
+
+Historic-analysis and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from imported SQLite bet history, not a trained model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
 
 ## Main Actions
 

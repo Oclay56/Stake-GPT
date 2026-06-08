@@ -1,0 +1,17 @@
+{
+  "background": "#111111",
+  "panel": "#111111",
+  "panelBorder": "#5A5A5A",
+  "shellBorder": "#6A6A6A",
+  "mutedText": "#7F7F7F",
+  "highlightText": "#B8B19C",
+  "titleText": "#F1EED0",
+  "accentText": "#A46214",
+  "readyText": "#00E701",
+  "activeText": "#74B9FF",
+  "errorText": "#FF6B8A",
+  "rowHover": "#3A3A3A",
+  "rowText": "#B8B19C",
+  "shortcutText": "#7F7F7F",
+  "outputPanel": "#111111"
+}

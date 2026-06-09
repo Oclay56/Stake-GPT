@@ -96,6 +96,7 @@ class TuiAction:
 TUI_ACTIONS: tuple[TuiAction, ...] = (
     TuiAction("review", "Review", "ctrl+r", "Review the visible Stake board.", "review", "Reviewing"),
     TuiAction("build", "Build", "ctrl+b", "Open builder mode for validated slips.", "build", "Building"),
+    TuiAction("ai", "AI", "ctrl+a", "Run Historic, Analysis, and M/L with local AI summary.", "ai", "Running AI"),
     TuiAction("history", "Historic", "ctrl+i", "Auto-import new historic files and show status.", "historic", "Loading historic"),
     TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),
     TuiAction("model", "M/L", "ctrl+m", "Reserved ML model workspace.", "model", "Loading M/L"),
@@ -620,6 +621,7 @@ if TEXTUAL_AVAILABLE:
         BINDINGS = [
             ("ctrl+r", "run_action('review')", "Review"),
             ("ctrl+b", "run_action('build')", "Build"),
+            ("ctrl+a", "run_action('ai')", "AI"),
             ("ctrl+i", "run_action('history')", "Historic"),
             ("ctrl+t", "run_action('backtest')", "Analysis"),
             ("ctrl+m", "run_action('model')", "M/L"),
@@ -631,6 +633,7 @@ if TEXTUAL_AVAILABLE:
             ("ctrl+e", "run_action('exit')", "Exit"),
             ("r", "run_action('review')", "Review"),
             ("b", "run_action('build')", "Build"),
+            ("a", "run_action('ai')", "AI"),
             ("i", "run_action('history')", "Historic"),
             ("t", "run_action('backtest')", "Analysis"),
             ("m", "run_action('model')", "M/L"),
@@ -1063,6 +1066,10 @@ if TEXTUAL_AVAILABLE:
                 self.cli.start_helper("review")
             elif action.action_id == "build":
                 self.cli.start_helper("build")
+            elif action.action_id == "ai":
+                self.cli.status = "ai flow"
+                code = self._run_module_command(["-m", "app.local_ai_operator"])
+                self.cli.status = "ready" if code == 0 else "ai flow failed"
             elif action.action_id == "backtest":
                 self.cli.status = "analyzing"
                 launch_backtest_console(self.root_dir)

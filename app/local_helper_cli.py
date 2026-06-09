@@ -56,6 +56,7 @@ ERROR_LOG_PATTERNS = ("error", "fail", "missing", "traceback", "warn")
 COMMAND_ROWS = [
     ("review, r", "Scan board"),
     ("build, b", "Build validated slip"),
+    ("ai, a", "Run local AI flow"),
     ("status, s", "Show status"),
     ("domain, q", "Toggle Stake site"),
     ("historic, i", "Import bet historic"),
@@ -87,6 +88,8 @@ HELP_EXTRA_ROWS = [
     ("analysis --ticket <id>", "Analyze only one ticket"),
     ("historic analysis --import-id <id>", "Analyze only one import/session"),
     ("historic imports", "List saved historic imports"),
+    ("ai", "Run Historic, Analysis, M/L, then summarize with local AI"),
+    ("ai --skip-ai", "Run the same flow with deterministic summary only"),
     ("clean --yes", "Clear cache without confirmation"),
     ("setup", "Run quick setup checks"),
     ("stop", "Stop the running helper"),
@@ -946,6 +949,8 @@ class StakeGptCli:
             self.run_bet_history(parts[1:])
         elif base in {"analysis", "analyze", "backtest", "bt", "z"}:
             self.run_backtest(parts[1:])
+        elif base in {"ai", "auto", "a"}:
+            self.run_ai_flow(parts[1:])
         elif base in {"logs", "l"}:
             self.run_logs(args)
         elif base in {"doctor", "d"}:
@@ -1229,6 +1234,32 @@ class StakeGptCli:
             role="ok" if completed.returncode == 0 else "fail",
         )
         self.status = "ready" if completed.returncode == 0 else "historic analysis failed"
+
+    def run_ai_flow(self, args: list[str]) -> None:
+        python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"
+        if not python_exe.exists():
+            self.emit(f"Could not find {python_exe}. Run setup first.\n", role="fail")
+            self.status = "setup needs attention"
+            return
+
+        clean_args = [arg for arg in args if arg]
+        self.status = "ai flow"
+        self.emit("Running local AI flow...\n", role="info")
+        completed = subprocess.run(
+            [str(python_exe), "-m", "app.local_ai_operator", *clean_args],
+            cwd=self.root_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = (completed.stdout or "").rstrip()
+        if output:
+            self.emit(output + "\n", role="info" if completed.returncode == 0 else "fail")
+        self.emit(
+            f"Local AI flow exited with code {completed.returncode}.\n",
+            role="ok" if completed.returncode == 0 else "fail",
+        )
+        self.status = "ready" if completed.returncode == 0 else "ai flow failed"
 
     def run_cache_cleanup(self, *, assume_yes: bool = False) -> None:
         python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"

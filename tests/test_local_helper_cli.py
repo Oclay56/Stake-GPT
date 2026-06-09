@@ -178,6 +178,7 @@ def test_main_menu_uses_polished_status_and_commands():
     assert "Commands:" in menu
     assert "review, r" in menu and "Scan board" in menu
     assert "build, b" in menu and "Build validated slip" in menu
+    assert "ai, a" in menu and "Run local AI flow" in menu
     assert "status, s" in menu and "Show status" in menu
     assert "domain, q" in menu and "Toggle Stake site" in menu
     assert "historic, i" in menu and "Import bet historic" in menu
@@ -251,6 +252,7 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
     monkeypatch.setattr(cli, "run_logs", lambda args: calls.append(("logs", ",".join(sorted(args)))))
     monkeypatch.setattr(cli, "run_bet_history", lambda args: calls.append(("history", ",".join(args))))
     monkeypatch.setattr(cli, "run_backtest", lambda args: calls.append(("backtest", ",".join(args))))
+    monkeypatch.setattr(cli, "run_ai_flow", lambda args: calls.append(("ai", ",".join(args))))
     monkeypatch.setattr(cli, "run_doctor", lambda: calls.append(("doctor", None)))
     monkeypatch.setattr(cli, "run_setup_check", lambda: calls.append(("setup", None)))
     monkeypatch.setattr(cli, "run_cache_cleanup", lambda assume_yes=False: calls.append(("clean", "yes" if assume_yes else "ask")))
@@ -273,6 +275,8 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         "I report",
         "analysis tickets --market singles",
         "Z calibration",
+        "ai --skip-ai",
+        "A",
         "logs",
         "L --errors",
         "doctor",
@@ -299,6 +303,8 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("history", "report"),
         ("backtest", "tickets,--market,singles"),
         ("backtest", "calibration"),
+        ("ai", "--skip-ai"),
+        ("ai", ""),
         ("logs", ""),
         ("logs", "--errors"),
         ("doctor", None),
@@ -394,6 +400,34 @@ def test_backtest_command_runs_dedicated_history_backtest(monkeypatch, tmp_path)
         [python_exe, "-m", "app.bet_history", "analysis"],
         [python_exe, "-m", "app.bet_history", "analysis", "tickets", "--market", "singles"],
         [python_exe, "-m", "app.bet_history", "analysis", "calibration", "--player", "Max Muncy"],
+    ]
+    assert cli.status == "ready"
+
+
+def test_ai_flow_command_runs_local_ai_operator(monkeypatch, tmp_path):
+    (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
+    (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "Stake-GPT Local AI Flow\n"
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        assert kwargs["cwd"] == tmp_path
+        return Completed()
+
+    monkeypatch.setattr("app.local_helper_cli.subprocess.run", fake_run)
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: None)
+
+    cli.run_ai_flow([])
+    cli.run_ai_flow(["--skip-ai"])
+
+    python_exe = str(tmp_path / ".venv" / "Scripts" / "python.exe")
+    assert calls == [
+        [python_exe, "-m", "app.local_ai_operator"],
+        [python_exe, "-m", "app.local_ai_operator", "--skip-ai"],
     ]
     assert cli.status == "ready"
 

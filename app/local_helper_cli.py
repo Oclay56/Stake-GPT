@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .local_ai_chat import launch_ai_chat_console
 from .local_helper_setup import check_local_helper_setup
 
 try:
@@ -56,7 +57,8 @@ ERROR_LOG_PATTERNS = ("error", "fail", "missing", "traceback", "warn")
 COMMAND_ROWS = [
     ("review, r", "Scan board"),
     ("build, b", "Build validated slip"),
-    ("ai, a", "Run local AI flow"),
+    ("flow, f", "Run local AI flow"),
+    ("ai, a", "Open local AI chat"),
     ("status, s", "Show status"),
     ("domain, q", "Toggle Stake site"),
     ("historic, i", "Import bet historic"),
@@ -88,8 +90,10 @@ HELP_EXTRA_ROWS = [
     ("analysis --ticket <id>", "Analyze only one ticket"),
     ("historic analysis --import-id <id>", "Analyze only one import/session"),
     ("historic imports", "List saved historic imports"),
-    ("ai", "Run Historic, Analysis, M/L, then summarize with local AI"),
-    ("ai --skip-ai", "Run the same flow with deterministic summary only"),
+    ("flow", "Run Historic, Analysis, M/L, then summarize with local AI"),
+    ("flow --skip-ai", "Run the same flow with deterministic summary only"),
+    ("ai", "Open a normal Ollama chat window"),
+    ("ai <model>", "Open chat with a specific local model"),
     ("clean --yes", "Clear cache without confirmation"),
     ("setup", "Run quick setup checks"),
     ("stop", "Stop the running helper"),
@@ -949,8 +953,10 @@ class StakeGptCli:
             self.run_bet_history(parts[1:])
         elif base in {"analysis", "analyze", "backtest", "bt", "z"}:
             self.run_backtest(parts[1:])
-        elif base in {"ai", "auto", "a"}:
+        elif base in {"flow", "auto", "f"}:
             self.run_ai_flow(parts[1:])
+        elif base in {"ai", "chat", "a"}:
+            self.run_ai_chat(parts[1:])
         elif base in {"logs", "l"}:
             self.run_logs(args)
         elif base in {"doctor", "d"}:
@@ -1260,6 +1266,19 @@ class StakeGptCli:
             role="ok" if completed.returncode == 0 else "fail",
         )
         self.status = "ready" if completed.returncode == 0 else "ai flow failed"
+
+    def run_ai_chat(self, args: list[str]) -> None:
+        clean_args = [arg for arg in args if arg]
+        model = clean_args[0] if clean_args else None
+        self.status = "ai chat"
+        process = launch_ai_chat_console(self.root_dir, model=model)
+        self.emit(
+            f"Opened local AI chat"
+            f"{f' with {model}' if model else ''} in a separate PowerShell window.\n",
+            role="ok",
+        )
+        self.write_log(f"Local AI chat process started: pid={process.pid}")
+        self.status = "ready"
 
     def run_cache_cleanup(self, *, assume_yes: bool = False) -> None:
         python_exe = self.root_dir / ".venv" / "Scripts" / "python.exe"

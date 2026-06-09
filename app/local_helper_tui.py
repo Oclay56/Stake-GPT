@@ -12,6 +12,7 @@ from typing import Any
 
 from rich.text import Text
 
+from .local_ai_chat import launch_ai_chat_console
 from .local_helper_cli import (
     APP_DISPLAY_NAME,
     CLI_VERSION,
@@ -96,7 +97,8 @@ class TuiAction:
 TUI_ACTIONS: tuple[TuiAction, ...] = (
     TuiAction("review", "Review", "ctrl+r", "Review the visible Stake board.", "review", "Reviewing"),
     TuiAction("build", "Build", "ctrl+b", "Open builder mode for validated slips.", "build", "Building"),
-    TuiAction("ai", "AI", "ctrl+a", "Run Historic, Analysis, and M/L with local AI summary.", "ai", "Running AI"),
+    TuiAction("flow", "Flow", "ctrl+f", "Run Historic, Analysis, and M/L with local AI summary.", "flow", "Running flow"),
+    TuiAction("ai", "AI", "ctrl+a", "Open local Ollama chat.", "ai", "Opening AI"),
     TuiAction("history", "Historic", "ctrl+i", "Auto-import new historic files and show status.", "historic", "Loading historic"),
     TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),
     TuiAction("model", "M/L", "ctrl+m", "Reserved ML model workspace.", "model", "Loading M/L"),
@@ -621,6 +623,7 @@ if TEXTUAL_AVAILABLE:
         BINDINGS = [
             ("ctrl+r", "run_action('review')", "Review"),
             ("ctrl+b", "run_action('build')", "Build"),
+            ("ctrl+f", "run_action('flow')", "Flow"),
             ("ctrl+a", "run_action('ai')", "AI"),
             ("ctrl+i", "run_action('history')", "Historic"),
             ("ctrl+t", "run_action('backtest')", "Analysis"),
@@ -633,6 +636,7 @@ if TEXTUAL_AVAILABLE:
             ("ctrl+e", "run_action('exit')", "Exit"),
             ("r", "run_action('review')", "Review"),
             ("b", "run_action('build')", "Build"),
+            ("f", "run_action('flow')", "Flow"),
             ("a", "run_action('ai')", "AI"),
             ("i", "run_action('history')", "Historic"),
             ("t", "run_action('backtest')", "Analysis"),
@@ -949,6 +953,9 @@ if TEXTUAL_AVAILABLE:
             if action.action_id in {"review", "build"}:
                 self._start_helper_inline(action)
                 return
+            if action.action_id == "ai":
+                self._launch_ai_chat_inline()
+                return
             if action.action_id == "clean":
                 self._start_clean_inline(action)
                 return
@@ -1011,6 +1018,16 @@ if TEXTUAL_AVAILABLE:
                 except RuntimeError:
                     pass
 
+        def _launch_ai_chat_inline(self) -> None:
+            try:
+                process = launch_ai_chat_console(self.root_dir)
+            except Exception as exc:
+                self._inline_message = f"AI chat failed to open: {exc}"
+            else:
+                self._inline_message = f"AI chat opened in PowerShell. pid={process.pid}"
+            self.cli.status = "ready"
+            self._refresh_layout(force=True)
+
         def _run_action_thread(self, action: TuiAction) -> None:
             failed = False
             try:
@@ -1066,10 +1083,10 @@ if TEXTUAL_AVAILABLE:
                 self.cli.start_helper("review")
             elif action.action_id == "build":
                 self.cli.start_helper("build")
-            elif action.action_id == "ai":
-                self.cli.status = "ai flow"
+            elif action.action_id == "flow":
+                self.cli.status = "flow"
                 code = self._run_module_command(["-m", "app.local_ai_operator"])
-                self.cli.status = "ready" if code == 0 else "ai flow failed"
+                self.cli.status = "ready" if code == 0 else "flow failed"
             elif action.action_id == "backtest":
                 self.cli.status = "analyzing"
                 launch_backtest_console(self.root_dir)

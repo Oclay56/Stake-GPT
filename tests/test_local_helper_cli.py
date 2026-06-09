@@ -178,7 +178,8 @@ def test_main_menu_uses_polished_status_and_commands():
     assert "Commands:" in menu
     assert "review, r" in menu and "Scan board" in menu
     assert "build, b" in menu and "Build validated slip" in menu
-    assert "ai, a" in menu and "Run local AI flow" in menu
+    assert "flow, f" in menu and "Run local AI flow" in menu
+    assert "ai, a" in menu and "Open local AI chat" in menu
     assert "status, s" in menu and "Show status" in menu
     assert "domain, q" in menu and "Toggle Stake site" in menu
     assert "historic, i" in menu and "Import bet historic" in menu
@@ -252,7 +253,8 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
     monkeypatch.setattr(cli, "run_logs", lambda args: calls.append(("logs", ",".join(sorted(args)))))
     monkeypatch.setattr(cli, "run_bet_history", lambda args: calls.append(("history", ",".join(args))))
     monkeypatch.setattr(cli, "run_backtest", lambda args: calls.append(("backtest", ",".join(args))))
-    monkeypatch.setattr(cli, "run_ai_flow", lambda args: calls.append(("ai", ",".join(args))))
+    monkeypatch.setattr(cli, "run_ai_flow", lambda args: calls.append(("flow", ",".join(args))))
+    monkeypatch.setattr(cli, "run_ai_chat", lambda args: calls.append(("ai", ",".join(args))))
     monkeypatch.setattr(cli, "run_doctor", lambda: calls.append(("doctor", None)))
     monkeypatch.setattr(cli, "run_setup_check", lambda: calls.append(("setup", None)))
     monkeypatch.setattr(cli, "run_cache_cleanup", lambda assume_yes=False: calls.append(("clean", "yes" if assume_yes else "ask")))
@@ -275,7 +277,9 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         "I report",
         "analysis tickets --market singles",
         "Z calibration",
-        "ai --skip-ai",
+        "flow --skip-ai",
+        "F",
+        "ai qwen3:8b",
         "A",
         "logs",
         "L --errors",
@@ -303,7 +307,9 @@ def test_command_aliases_route_to_expected_actions(monkeypatch):
         ("history", "report"),
         ("backtest", "tickets,--market,singles"),
         ("backtest", "calibration"),
-        ("ai", "--skip-ai"),
+        ("flow", "--skip-ai"),
+        ("flow", ""),
+        ("ai", "qwen3:8b"),
         ("ai", ""),
         ("logs", ""),
         ("logs", "--errors"),
@@ -404,7 +410,7 @@ def test_backtest_command_runs_dedicated_history_backtest(monkeypatch, tmp_path)
     assert cli.status == "ready"
 
 
-def test_ai_flow_command_runs_local_ai_operator(monkeypatch, tmp_path):
+def test_flow_command_runs_local_ai_operator(monkeypatch, tmp_path):
     (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
     (tmp_path / ".venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
     calls: list[list[str]] = []
@@ -429,6 +435,28 @@ def test_ai_flow_command_runs_local_ai_operator(monkeypatch, tmp_path):
         [python_exe, "-m", "app.local_ai_operator"],
         [python_exe, "-m", "app.local_ai_operator", "--skip-ai"],
     ]
+    assert cli.status == "ready"
+
+
+def test_ai_command_opens_local_chat_console(monkeypatch, tmp_path):
+    calls: list[tuple[Path, str | None]] = []
+
+    class Process:
+        pid = 1234
+
+    def fake_launch(root_dir, *, model=None):
+        calls.append((root_dir, model))
+        return Process()
+
+    monkeypatch.setattr("app.local_helper_cli.launch_ai_chat_console", fake_launch)
+    outputs: list[str] = []
+    cli = StakeGptCli(root_dir=tmp_path, output_func=lambda text: outputs.append(text))
+
+    cli.run_ai_chat([])
+    cli.run_ai_chat(["qwen3:8b"])
+
+    assert calls == [(tmp_path, None), (tmp_path, "qwen3:8b")]
+    assert "Opened local AI chat" in "".join(outputs)
     assert cli.status == "ready"
 
 

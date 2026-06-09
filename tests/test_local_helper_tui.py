@@ -36,6 +36,7 @@ def test_tui_actions_cover_existing_helper_shortcuts():
     assert shortcuts == {
         "ctrl+r": "review",
         "ctrl+b": "build",
+        "ctrl+f": "flow",
         "ctrl+a": "ai",
         "ctrl+i": "historic",
         "ctrl+t": "backtest",
@@ -72,16 +73,18 @@ def test_tui_action_rows_use_single_bracket_pair_and_include_shortcuts():
     assert "Build" in rows[1]
     assert "Build slip" not in rows[1]
     assert "ctrl+b" in rows[1]
-    assert "AI" in rows[2]
-    assert "ctrl+a" in rows[2]
-    assert "Historic" in rows[3]
-    assert "History" not in rows[3]
-    assert "ctrl+i" in rows[3]
-    assert "Analysis" in rows[4]
-    assert "Backtest" not in rows[4]
-    assert "ctrl+t" in rows[4]
-    assert "M/L" in rows[5]
-    assert "ctrl+m" in rows[5]
+    assert "Flow" in rows[2]
+    assert "ctrl+f" in rows[2]
+    assert "AI" in rows[3]
+    assert "ctrl+a" in rows[3]
+    assert "Historic" in rows[4]
+    assert "History" not in rows[4]
+    assert "ctrl+i" in rows[4]
+    assert "Analysis" in rows[5]
+    assert "Backtest" not in rows[5]
+    assert "ctrl+t" in rows[5]
+    assert "M/L" in rows[6]
+    assert "ctrl+m" in rows[6]
     assert all("Palette" not in row for row in rows)
     assert all("ctrl+p" not in row for row in rows)
 

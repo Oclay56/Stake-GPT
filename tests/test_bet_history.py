@@ -8,6 +8,7 @@ from app.bet_history import (
     format_backtest_report,
     format_backtest_rich_report,
     format_dataset_report,
+    format_model_report,
     format_report,
     format_review_report,
     format_sync_report,
@@ -1456,6 +1457,54 @@ def test_bet_history_enrichment_missing_only_skips_existing_rows(tmp_path):
     assert second["targets"] == 0
     assert second["legsEnriched"] == 0
     assert len(engine.context_calls) == 1
+
+
+def test_bet_history_model_trains_and_stores_offline_baseline(tmp_path):
+    rows = []
+    for index in range(160):
+        market = "Hits" if index % 2 else "RBI"
+        won = index % 5 != 0 if market == "Hits" else index % 4 != 0
+        rows.append(
+            {
+                "date": f"2026-06-{(index % 28) + 1:02d}",
+                "ticket_id": f"ticket-{index // 4}",
+                "player": f"Player {index % 12}",
+                "team": "Toronto Blue Jays",
+                "opponent": "New York Yankees",
+                "market": market,
+                "side": "under",
+                "line": 0.5,
+                "ticket_odds": 25.0 if index % 8 else 15000.0,
+                "result": "won" if won else "lost",
+                "actual_stat": 0 if won else 1,
+            }
+        )
+
+    parsed = parse_history_rows(rows, source_format="json")
+    store = GptActionStore(tmp_path / "gpt.sqlite")
+    store.save_bet_history_import(parsed)
+
+    report = store.build_bet_history_model()
+
+    assert report["modelVersion"] == "historic_bucket_baseline_v1"
+    assert report["strategyProfile"] == "under_longshot_sgm_leg_baseline"
+    assert report["target"] == "leg_win_probability"
+    assert report["sideFilter"] == "under"
+    assert report["trainingRows"] >= 80
+    assert report["holdoutRows"] >= 30
+    assert report["validation"]["canInfluenceBuilds"] is False
+    assert report["metrics"]["holdout"]["rows"] == report["holdoutRows"]
+    assert "marketKey" in report["featureNames"]
+    assert "Bet Historic Model" in format_model_report(report)
+
+    latest = store.latest_bet_history_model()
+    assert latest is not None
+    assert latest["modelRunId"] == report["modelRunId"]
+    assert latest["validation"]["canInfluenceBuilds"] is False
+
+    rebuilt_dataset = store.build_bet_history_dataset()
+    assert rebuilt_dataset["rows"] == 160
+    assert store.latest_bet_history_model() is None
 
 
 def test_bet_history_empty_report_points_to_import_folder(tmp_path):

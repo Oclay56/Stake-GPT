@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -796,11 +797,75 @@ class GptActionStore:
             "readiness": readiness,
         }
 
+    def build_bet_history_model(
+        self,
+        *,
+        side: str = "under",
+        holdout_ratio: float = 0.25,
+        min_bucket: int = 5,
+        limit: int = 50000,
+    ) -> dict[str, Any]:
+        dataset = self.build_bet_history_dataset(limit=limit)
+        clean_side = _clean_model_side(side)
+        with self._connect() as conn:
+            rows = [
+                _dataset_storage_row(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM bet_history_dataset_rows
+                    WHERE label IN (0, 1)
+                    ORDER BY COALESCE(bet_date, ''), created_at, history_leg_id
+                    """
+                ).fetchall()
+            ]
+        if clean_side != "all":
+            rows = [row for row in rows if str(row.get("side") or "").lower() == clean_side]
+        report = _bet_history_model_report(
+            rows,
+            dataset=dataset,
+            side_filter=clean_side,
+            holdout_ratio=holdout_ratio,
+            min_bucket=min_bucket,
+        )
+        self._replace_bet_history_model(report)
+        return report
+
+    def latest_bet_history_model(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            run = conn.execute(
+                """
+                SELECT *
+                FROM bet_history_model_runs
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not run:
+            return None
+        summary = _json_loads(run["summary_json"]) or {}
+        return {
+            **summary,
+            "modelRunId": run["model_run_id"],
+            "modelVersion": run["model_version"],
+            "generatedAt": run["generated_at"],
+            "datasetRunId": run["dataset_run_id"],
+            "strategyProfile": run["strategy_profile"],
+            "target": run["target"],
+            "sideFilter": run["side_filter"],
+            "trainingRows": int(run["training_rows"] or 0),
+            "holdoutRows": int(run["holdout_rows"] or 0),
+            "metrics": _json_loads(run["metrics_json"]) or {},
+            "validation": _json_loads(run["validation_json"]) or {},
+        }
+
     def _replace_bet_history_dataset(self, dataset: dict[str, Any]) -> None:
         run_id = dataset["datasetRunId"]
         generated_at = dataset["generatedAt"]
         rows = list(dataset.pop("_rowsForStorage", []))
         with self._connect() as conn:
+            conn.execute("DELETE FROM bet_history_model_scores")
+            conn.execute("DELETE FROM bet_history_model_runs")
             conn.execute("DELETE FROM bet_history_dataset_rows")
             conn.execute("DELETE FROM bet_history_dataset_runs")
             conn.execute(
@@ -878,6 +943,79 @@ class GptActionStore:
                 [
                     _dataset_row_insert_values(row, dataset_run_id=run_id, created_at=generated_at)
                     for row in rows
+                ],
+            )
+            conn.commit()
+
+    def _replace_bet_history_model(self, report: dict[str, Any]) -> None:
+        run_id = report["modelRunId"]
+        generated_at = report["generatedAt"]
+        scores = list(report.pop("_scoresForStorage", []))
+        model = report.pop("_modelForStorage", {})
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bet_history_model_scores")
+            conn.execute("DELETE FROM bet_history_model_runs")
+            conn.execute(
+                """
+                INSERT INTO bet_history_model_runs (
+                    model_run_id,
+                    model_version,
+                    generated_at,
+                    dataset_run_id,
+                    strategy_profile,
+                    target,
+                    side_filter,
+                    training_rows,
+                    holdout_rows,
+                    metrics_json,
+                    validation_json,
+                    model_json,
+                    summary_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    report["modelVersion"],
+                    generated_at,
+                    report.get("datasetRunId"),
+                    report["strategyProfile"],
+                    report["target"],
+                    report["sideFilter"],
+                    int(report.get("trainingRows") or 0),
+                    int(report.get("holdoutRows") or 0),
+                    _json_dumps(report.get("metrics") or {}),
+                    _json_dumps(report.get("validation") or {}),
+                    _json_dumps(model),
+                    _json_dumps(report),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO bet_history_model_scores (
+                    model_score_id,
+                    model_run_id,
+                    history_leg_id,
+                    split,
+                    label,
+                    probability,
+                    probability_bucket,
+                    feature_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(uuid.uuid4()),
+                        run_id,
+                        score.get("historyLegId"),
+                        score.get("split"),
+                        score.get("label"),
+                        _float_or_none(score.get("probability")),
+                        score.get("probabilityBucket"),
+                        _json_dumps(score.get("features") or {}),
+                        generated_at,
+                    )
+                    for score in scores
                 ],
             )
             conn.commit()
@@ -1275,6 +1413,40 @@ class GptActionStore:
 
                 CREATE INDEX IF NOT EXISTS bet_history_dataset_rows_market_idx
                     ON bet_history_dataset_rows (market_key, side);
+
+                CREATE TABLE IF NOT EXISTS bet_history_model_runs (
+                    model_run_id TEXT PRIMARY KEY,
+                    model_version TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    dataset_run_id TEXT,
+                    strategy_profile TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    side_filter TEXT NOT NULL,
+                    training_rows INTEGER NOT NULL DEFAULT 0,
+                    holdout_rows INTEGER NOT NULL DEFAULT 0,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    validation_json TEXT NOT NULL DEFAULT '{}',
+                    model_json TEXT NOT NULL DEFAULT '{}',
+                    summary_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(dataset_run_id) REFERENCES bet_history_dataset_runs(dataset_run_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS bet_history_model_scores (
+                    model_score_id TEXT PRIMARY KEY,
+                    model_run_id TEXT NOT NULL,
+                    history_leg_id TEXT NOT NULL,
+                    split TEXT NOT NULL,
+                    label INTEGER,
+                    probability REAL,
+                    probability_bucket TEXT,
+                    feature_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(model_run_id) REFERENCES bet_history_model_runs(model_run_id) ON DELETE CASCADE,
+                    FOREIGN KEY(history_leg_id) REFERENCES bet_history_legs(history_leg_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS bet_history_model_scores_run_idx
+                    ON bet_history_model_scores (model_run_id);
 
                 """
             )
@@ -2074,6 +2246,435 @@ def _dataset_top_counts(values) -> list[dict[str, Any]]:
         {"label": label, "count": count}
         for label, count in counter.most_common(12)
     ]
+
+
+MODEL_FEATURES = (
+    "marketKey",
+    "marketLineBucket",
+    "lineupSpotBucket",
+    "starterBucket",
+    "pitcherHand",
+    "venue",
+    "longshotOddsBucket",
+    "legCountBucket",
+    "contextQuality",
+)
+
+MODEL_FEATURE_WEIGHTS = {
+    "marketKey": 1.1,
+    "marketLineBucket": 1.25,
+    "lineupSpotBucket": 0.95,
+    "starterBucket": 0.75,
+    "pitcherHand": 0.75,
+    "venue": 0.65,
+    "longshotOddsBucket": 0.9,
+    "legCountBucket": 1.0,
+    "contextQuality": 0.6,
+}
+
+
+def _bet_history_model_report(
+    rows: list[dict[str, Any]],
+    *,
+    dataset: dict[str, Any],
+    side_filter: str,
+    holdout_ratio: float,
+    min_bucket: int,
+) -> dict[str, Any]:
+    generated_at = _utc_now()
+    holdout_ratio = _clean_holdout_ratio(holdout_ratio)
+    min_bucket = _clean_min_model_bucket(min_bucket)
+    if len(rows) < 120:
+        return _empty_model_report(
+            dataset=dataset,
+            generated_at=generated_at,
+            side_filter=side_filter,
+            holdout_ratio=holdout_ratio,
+            min_bucket=min_bucket,
+            rows=len(rows),
+            reason="At least 120 won/lost dataset rows are needed for a basic train/holdout split.",
+        )
+
+    holdout_count = max(30, int(round(len(rows) * holdout_ratio)))
+    holdout_count = min(holdout_count, max(1, len(rows) - 80))
+    train_rows = rows[:-holdout_count]
+    holdout_rows = rows[-holdout_count:]
+    if len(train_rows) < 80 or len(holdout_rows) < 30:
+        return _empty_model_report(
+            dataset=dataset,
+            generated_at=generated_at,
+            side_filter=side_filter,
+            holdout_ratio=holdout_ratio,
+            min_bucket=min_bucket,
+            rows=len(rows),
+            reason="Train/holdout split is too thin after filtering.",
+        )
+
+    model = _train_bucket_model(train_rows, min_bucket=min_bucket)
+    train_scores = [_score_model_row(row, model, split="train") for row in train_rows]
+    holdout_scores = [_score_model_row(row, model, split="holdout") for row in holdout_rows]
+    train_metrics = _model_metrics(train_scores, baseline_probability=model["globalPrior"])
+    holdout_metrics = _model_metrics(holdout_scores, baseline_probability=model["globalPrior"])
+    validation = _model_validation(
+        train_rows=len(train_rows),
+        holdout_rows=len(holdout_rows),
+        holdout_metrics=holdout_metrics,
+    )
+    return {
+        "modelRunId": str(uuid.uuid4()),
+        "modelVersion": "historic_bucket_baseline_v1",
+        "generatedAt": generated_at,
+        "datasetRunId": dataset.get("datasetRunId"),
+        "datasetVersion": dataset.get("datasetVersion"),
+        "strategyProfile": "under_longshot_sgm_leg_baseline",
+        "target": "leg_win_probability",
+        "sideFilter": side_filter,
+        "rows": len(rows),
+        "trainingRows": len(train_rows),
+        "holdoutRows": len(holdout_rows),
+        "holdoutRatio": holdout_ratio,
+        "minBucketSample": min_bucket,
+        "globalPrior": model["globalPrior"],
+        "metrics": {
+            "train": train_metrics,
+            "holdout": holdout_metrics,
+        },
+        "validation": validation,
+        "featureNames": list(MODEL_FEATURES),
+        "topPositiveBuckets": _top_model_buckets(model, positive=True),
+        "topNegativeBuckets": _top_model_buckets(model, positive=False),
+        "holdoutPreview": [
+            {
+                "historyLegId": score.get("historyLegId"),
+                "label": score.get("label"),
+                "probability": score.get("probability"),
+                "probabilityBucket": score.get("probabilityBucket"),
+                "marketKey": score.get("features", {}).get("marketKey"),
+                "marketLineBucket": score.get("features", {}).get("marketLineBucket"),
+                "legCountBucket": score.get("features", {}).get("legCountBucket"),
+            }
+            for score in holdout_scores[:8]
+        ],
+        "notes": [
+            "This is a pure-Python smoothed feature-bucket baseline, not a production betting model.",
+            "It predicts leg win probability for historical won/lost rows; ticket ROI remains the strategy truth for high-odds SGMs.",
+            "The model is informational only until holdout validation gates are explicitly promoted into builder scoring.",
+        ],
+        "_modelForStorage": model,
+        "_scoresForStorage": [*train_scores, *holdout_scores],
+    }
+
+
+def _empty_model_report(
+    *,
+    dataset: dict[str, Any],
+    generated_at: str,
+    side_filter: str,
+    holdout_ratio: float,
+    min_bucket: int,
+    rows: int,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "modelRunId": str(uuid.uuid4()),
+        "modelVersion": "historic_bucket_baseline_v1",
+        "generatedAt": generated_at,
+        "datasetRunId": dataset.get("datasetRunId"),
+        "datasetVersion": dataset.get("datasetVersion"),
+        "strategyProfile": "under_longshot_sgm_leg_baseline",
+        "target": "leg_win_probability",
+        "sideFilter": side_filter,
+        "rows": rows,
+        "trainingRows": 0,
+        "holdoutRows": 0,
+        "holdoutRatio": holdout_ratio,
+        "minBucketSample": min_bucket,
+        "globalPrior": None,
+        "metrics": {"train": {}, "holdout": {}},
+        "validation": {
+            "status": "insufficient_sample",
+            "label": "Model sample insufficient",
+            "reason": reason,
+            "canInfluenceBuilds": False,
+        },
+        "featureNames": list(MODEL_FEATURES),
+        "topPositiveBuckets": [],
+        "topNegativeBuckets": [],
+        "holdoutPreview": [],
+        "notes": [
+            "Import and enrich more settled tickets before training the offline baseline.",
+        ],
+        "_modelForStorage": {},
+        "_scoresForStorage": [],
+    }
+
+
+def _train_bucket_model(rows: list[dict[str, Any]], *, min_bucket: int) -> dict[str, Any]:
+    labels = [int(row.get("label") or 0) for row in rows]
+    global_prior = _smooth_rate(sum(labels), len(labels), prior=0.5, strength=20.0)
+    feature_buckets: dict[str, dict[str, dict[str, Any]]] = {}
+    for feature in MODEL_FEATURES:
+        grouped: dict[str, list[int]] = {}
+        for row in rows:
+            value = _model_feature_value(row, feature)
+            grouped.setdefault(value, []).append(int(row.get("label") or 0))
+        feature_buckets[feature] = {}
+        for value, bucket_labels in grouped.items():
+            count = len(bucket_labels)
+            wins = sum(bucket_labels)
+            rate = _smooth_rate(wins, count, prior=global_prior, strength=12.0)
+            usable = count >= min_bucket
+            impact = round(rate - global_prior, 4)
+            weight = _model_feature_weight(feature, count=count, usable=usable)
+            feature_buckets[feature][value] = {
+                "count": count,
+                "wins": wins,
+                "rate": rate,
+                "impact": impact,
+                "weight": weight,
+                "usable": usable,
+            }
+    return {
+        "globalPrior": global_prior,
+        "minBucketSample": min_bucket,
+        "features": feature_buckets,
+    }
+
+
+def _score_model_row(row: dict[str, Any], model: dict[str, Any], *, split: str) -> dict[str, Any]:
+    global_prior = _float_or_none(model.get("globalPrior")) or 0.5
+    numerator = global_prior * 2.0
+    denominator = 2.0
+    used: list[dict[str, Any]] = []
+    feature_model = model.get("features") or {}
+    for feature in MODEL_FEATURES:
+        value = _model_feature_value(row, feature)
+        bucket = (feature_model.get(feature) or {}).get(value)
+        if not bucket or not bucket.get("usable"):
+            continue
+        weight = _float_or_none(bucket.get("weight")) or 0.0
+        rate = _float_or_none(bucket.get("rate"))
+        if weight <= 0 or rate is None:
+            continue
+        numerator += rate * weight
+        denominator += weight
+        used.append(
+            {
+                "feature": feature,
+                "value": value,
+                "count": bucket.get("count"),
+                "rate": rate,
+                "impact": bucket.get("impact"),
+            }
+        )
+    probability = max(0.05, min(0.95, numerator / denominator if denominator else global_prior))
+    features = row.get("features") or {}
+    return {
+        "historyLegId": row.get("historyLegId"),
+        "split": split,
+        "label": row.get("label"),
+        "probability": round(probability, 4),
+        "probabilityBucket": _probability_bucket(probability),
+        "features": {
+            key: features.get(key)
+            for key in (
+                "marketKey",
+                "marketLineBucket",
+                "lineupSpotBucket",
+                "starterBucket",
+                "pitcherHand",
+                "venue",
+                "longshotOddsBucket",
+                "legCountBucket",
+                "contextQuality",
+            )
+        },
+        "usedFeatures": used,
+    }
+
+
+def _model_metrics(scores: list[dict[str, Any]], *, baseline_probability: float) -> dict[str, Any]:
+    labels = [int(score.get("label") or 0) for score in scores]
+    probabilities = [_float_or_none(score.get("probability")) or baseline_probability for score in scores]
+    if not labels:
+        return {
+            "rows": 0,
+            "hitRate": None,
+            "brier": None,
+            "baselineBrier": None,
+            "brierImprovement": None,
+            "logLoss": None,
+            "topQuartileHitRate": None,
+            "bottomQuartileHitRate": None,
+            "rankSpread": None,
+        }
+    brier = sum((prob - label) ** 2 for prob, label in zip(probabilities, labels)) / len(labels)
+    baseline_brier = sum((baseline_probability - label) ** 2 for label in labels) / len(labels)
+    log_loss = sum(_log_loss(prob, label) for prob, label in zip(probabilities, labels)) / len(labels)
+    sorted_scores = sorted(zip(probabilities, labels), key=lambda item: item[0])
+    quartile = max(1, len(sorted_scores) // 4)
+    bottom = [label for _, label in sorted_scores[:quartile]]
+    top = [label for _, label in sorted_scores[-quartile:]]
+    top_rate = _round_rate(sum(top), len(top))
+    bottom_rate = _round_rate(sum(bottom), len(bottom))
+    return {
+        "rows": len(labels),
+        "hitRate": _round_rate(sum(labels), len(labels)),
+        "averageProbability": round(sum(probabilities) / len(probabilities), 4),
+        "brier": round(brier, 4),
+        "baselineBrier": round(baseline_brier, 4),
+        "brierImprovement": round(baseline_brier - brier, 4),
+        "logLoss": round(log_loss, 4),
+        "topQuartileHitRate": top_rate,
+        "bottomQuartileHitRate": bottom_rate,
+        "rankSpread": round((top_rate or 0.0) - (bottom_rate or 0.0), 4),
+    }
+
+
+def _model_validation(
+    *,
+    train_rows: int,
+    holdout_rows: int,
+    holdout_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    brier_improvement = _float_or_none(holdout_metrics.get("brierImprovement")) or 0.0
+    rank_spread = _float_or_none(holdout_metrics.get("rankSpread")) or 0.0
+    gates = {
+        "trainRows": train_rows,
+        "holdoutRows": holdout_rows,
+        "brierImprovement": brier_improvement,
+        "rankSpread": rank_spread,
+    }
+    if train_rows < 250 or holdout_rows < 80:
+        return {
+            "status": "formed_low_sample",
+            "label": "Model formed, sample thin",
+            "reason": "Baseline trained, but train/holdout sample is still too small to influence builds.",
+            "canInfluenceBuilds": False,
+            "gates": gates,
+        }
+    if brier_improvement >= 0.005 and rank_spread >= 0.05:
+        return {
+            "status": "offline_baseline_promising",
+            "label": "Offline baseline promising",
+            "reason": "Holdout ranking and Brier score improved versus the global prior. Keep it informational until repeated validation passes.",
+            "canInfluenceBuilds": False,
+            "gates": gates,
+        }
+    return {
+        "status": "baseline_not_better_than_prior",
+        "label": "Baseline not validated",
+        "reason": "Holdout results did not clearly beat the simple prior baseline, so it should not influence builds.",
+        "canInfluenceBuilds": False,
+        "gates": gates,
+    }
+
+
+def _top_model_buckets(model: dict[str, Any], *, positive: bool, limit: int = 12) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    global_prior = _float_or_none(model.get("globalPrior")) or 0.5
+    for feature, buckets in (model.get("features") or {}).items():
+        for value, bucket in (buckets or {}).items():
+            if not bucket.get("usable"):
+                continue
+            impact = _float_or_none(bucket.get("impact")) or 0.0
+            if positive and impact <= 0:
+                continue
+            if not positive and impact >= 0:
+                continue
+            rows.append(
+                {
+                    "feature": feature,
+                    "value": value,
+                    "count": bucket.get("count"),
+                    "rate": bucket.get("rate"),
+                    "prior": global_prior,
+                    "impact": impact,
+                }
+            )
+    rows.sort(key=lambda item: abs(_float_or_none(item.get("impact")) or 0.0), reverse=True)
+    return rows[:limit]
+
+
+def _dataset_storage_row(row: sqlite3.Row) -> dict[str, Any]:
+    features = _json_loads(row["feature_json"]) or {}
+    return {
+        "datasetRowId": row["dataset_row_id"],
+        "datasetRunId": row["dataset_run_id"],
+        "historyLegId": row["history_leg_id"],
+        "ticketId": row["ticket_id"],
+        "betDate": row["bet_date"],
+        "marketKey": row["market_key"],
+        "side": row["side"],
+        "line": row["line"],
+        "odds": row["odds"],
+        "ticketOdds": row["ticket_odds"],
+        "resultStatus": row["result_status"],
+        "actualStat": row["actual_stat"],
+        "label": row["label"],
+        "underOnly": bool(row["under_only"]),
+        "enriched": bool(row["enriched"]),
+        "contextQuality": row["context_quality"],
+        "features": features,
+    }
+
+
+def _model_feature_value(row: dict[str, Any], feature: str) -> str:
+    features = row.get("features") or {}
+    value = features.get(feature)
+    if value in (None, ""):
+        value = row.get(feature)
+    if value in (None, ""):
+        return "unknown"
+    return str(value)
+
+
+def _model_feature_weight(feature: str, *, count: int, usable: bool) -> float:
+    if not usable:
+        return 0.0
+    base = MODEL_FEATURE_WEIGHTS.get(feature, 0.5)
+    sample_weight = min(2.0, math.log1p(max(1, count)) / math.log(50))
+    return round(base * sample_weight, 4)
+
+
+def _smooth_rate(wins: int, count: int, *, prior: float, strength: float) -> float:
+    return round((wins + prior * strength) / (count + strength), 4) if count + strength else round(prior, 4)
+
+
+def _log_loss(probability: float, label: int) -> float:
+    clipped = max(0.001, min(0.999, probability))
+    return -(label * math.log(clipped) + (1 - label) * math.log(1 - clipped))
+
+
+def _probability_bucket(probability: float) -> str:
+    if probability >= 0.80:
+        return "0.80+"
+    if probability >= 0.70:
+        return "0.70-0.79"
+    if probability >= 0.60:
+        return "0.60-0.69"
+    if probability >= 0.50:
+        return "0.50-0.59"
+    return "under 0.50"
+
+
+def _clean_model_side(side: str | None) -> str:
+    clean = str(side or "under").strip().lower()
+    return clean if clean in {"under", "over", "all"} else "under"
+
+
+def _clean_holdout_ratio(value: Any) -> float:
+    ratio = _float_or_none(value)
+    if ratio is None:
+        return 0.25
+    return round(max(0.10, min(0.40, ratio)), 2)
+
+
+def _clean_min_model_bucket(value: Any) -> int:
+    numeric = _int_or_none(value)
+    if numeric is None:
+        return 5
+    return max(3, min(30, numeric))
 
 
 def _backtest_groups(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:

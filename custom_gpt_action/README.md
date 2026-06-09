@@ -36,7 +36,7 @@ Use `custom-gpt-instructions.md` as the primary Custom GPT instruction file. It 
 
 Attach or upload `custom-gpt-operational-reference.md` as the secondary reference file. It keeps the heavier glossary, probability engine, risk flags, playbooks, validation rules, lineup/opponent/game-context usage, and Stake SGM metadata guidance out of the main instruction stream while still preserving the full operating manual.
 
-Historic-analysis, derived-dataset, and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from Supabase-backed imported bet history, with SQLite as cache/backup fallback. Historic update imports new files, enriches missing frozen MLB context, builds the derived dataset, and then shows analysis/readiness. The dataset is for future offline ML, not a trained live model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
+Historic-analysis, derived-dataset, and offline-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from Supabase-backed imported bet history, with SQLite as cache/backup fallback. Historic update imports new files, enriches missing frozen MLB context, builds the derived dataset, and then shows analysis/readiness. The Model workflow can train a local offline baseline against chronological holdout data, but it is informational unless the backend explicitly returns held-out validation with `canInfluenceBuilds: true`. ML fields must not override Stake truth, current MLB context, validation, or review-only safety.
 
 ## Main Actions
 

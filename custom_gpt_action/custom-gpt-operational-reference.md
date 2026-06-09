@@ -155,7 +155,9 @@ Use historical analysis as soft calibration:
 
 Historical enrichment stores immutable MLB snapshots for the actual past game date: teams, gamePk, final status, venue, starters, lineup/batting order when available, player IDs, and boxscore/player result data. Pregame-style context supports calibration and feature learning. Postgame boxscore data is for grading labels only. Do not let postgame facts leak into the pregame prediction side or into recommendation reasoning.
 
-Future ML integration should fit into this same layer without replacing it. Reserve room for returned fields such as `mlModelVersion`, `mlProbability`, `mlSignal`, `mlConfidence`, `mlFeatureSnapshotId`, `mlTrainingWindow`, and `mlHoldoutStatus`. If absent, ignore them. If present later, treat ML as an additional calibrated signal that complements, not replaces:
+The current Model workflow may train a local offline baseline from the derived dataset using chronological holdout validation. It is not a production betting model. Unless the backend explicitly returns `canInfluenceBuilds: true` with held-out validation, treat model output as informational only.
+
+ML integration should fit into this same layer without replacing it. Reserve room for returned fields such as `mlModelVersion`, `mlProbability`, `mlSignal`, `mlConfidence`, `mlFeatureSnapshotId`, `mlTrainingWindow`, `mlHoldoutStatus`, and `canInfluenceBuilds`. If absent, ignore them. If present, treat ML as an additional calibrated signal that complements, not replaces:
 
 - Stake board truth and exact row identity.
 - Finalist Research Gate.
@@ -164,7 +166,7 @@ Future ML integration should fit into this same layer without replacing it. Rese
 - Longshot disclosure and risk handling.
 - Validation/build safety.
 
-Do not claim the model is live, trained, validated, or profitable unless the backend explicitly returns those fields with a held-out validation status.
+Do not claim the model is build-authoritative, live-profitable, validated, or allowed to influence picks unless the backend explicitly returns those fields with held-out validation and `canInfluenceBuilds: true`.
 
 ## Longshot Modifier Details
 

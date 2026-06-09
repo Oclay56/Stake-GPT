@@ -1087,7 +1087,7 @@ if TEXTUAL_AVAILABLE:
                 self.cli.status = "ready" if code == 0 else "historic failed"
             elif action.action_id == "model":
                 self.cli.status = "model"
-                code, output = self._run_module_command_capture(["-m", "app.bet_history", "dataset", "show", "--json"])
+                code, output = self._run_module_command_capture(["-m", "app.bet_history", "model", "train", "--json"])
                 if code == 0:
                     try:
                         report = json.loads(output)
@@ -1095,15 +1095,20 @@ if TEXTUAL_AVAILABLE:
                         for line in output.splitlines():
                             self._append_output(line)
                     else:
-                        readiness = report.get("readiness") or {}
-                        self._append_output("Model training is not enabled yet.")
+                        validation = report.get("validation") or {}
+                        holdout = ((report.get("metrics") or {}).get("holdout") or {})
+                        self._append_output("Offline model baseline updated.")
                         self._append_output(
-                            f"Dataset: {int(report.get('rows') or 0)} rows | "
-                            f"Train: {int(report.get('trainingRows') or 0)} | "
-                            f"Enriched: {int(report.get('enrichedRows') or 0)}"
+                            f"Train/Holdout: {int(report.get('trainingRows') or 0)}/"
+                            f"{int(report.get('holdoutRows') or 0)} | "
+                            f"Prior: {_percent_label(report.get('globalPrior'))}"
                         )
-                        self._append_output(f"Readiness: {readiness.get('label') or 'unknown'}")
-                        self._append_output("Next phase: train and validate an offline baseline before it can influence builds.")
+                        self._append_output(
+                            f"Holdout Brier lift: {holdout.get('brierImprovement') if holdout.get('brierImprovement') is not None else 'n/a'} | "
+                            f"Rank spread: {_percent_label(holdout.get('rankSpread'))}"
+                        )
+                        self._append_output(f"Validation: {validation.get('label') or 'unknown'}")
+                        self._append_output(f"Can influence builds: {bool(validation.get('canInfluenceBuilds'))}")
                 else:
                     for line in output.splitlines() or ["Model readiness lookup failed."]:
                         self._append_output(line)

@@ -78,6 +78,7 @@ HELP_EXTRA_ROWS = [
     ("historic enrich", "Store frozen historical MLB snapshots"),
     ("historic enrich --missing-only", "Enrich only historic legs not yet linked"),
     ("historic dataset", "Build or inspect the derived ML dataset"),
+    ("historic model", "Train or inspect the offline ML baseline"),
     ("historic storage", "Sync Supabase history source and SQLite backup"),
     ("analysis", "Open historic analysis dashboard"),
     ("analysis tickets", "Show ticket-level SGM performance"),
@@ -1167,6 +1168,9 @@ class StakeGptCli:
             elif subcommand == "dataset":
                 history_args = ["dataset", *clean_args[1:]]
                 self.status = "historic dataset"
+            elif subcommand == "model":
+                history_args = ["model", *clean_args[1:]]
+                self.status = "historic model"
             elif subcommand in {"analysis", "backtest"}:
                 history_args = ["analysis", *clean_args[1:]]
                 self.status = "historic analysis"

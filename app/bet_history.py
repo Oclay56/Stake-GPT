@@ -1828,6 +1828,62 @@ def format_dataset_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_model_report(report: dict[str, Any]) -> str:
+    validation = report.get("validation") or {}
+    metrics = report.get("metrics") or {}
+    holdout = metrics.get("holdout") or {}
+    train = metrics.get("train") or {}
+    lines = [
+        "Bet Historic Model",
+        "------------------",
+        f"Model version: {report.get('modelVersion') or 'unknown'}",
+        f"Generated: {report.get('generatedAt') or 'not built'}",
+        f"Strategy profile: {report.get('strategyProfile') or 'unknown'}",
+        f"Target: {report.get('target') or 'unknown'}",
+        f"Side filter: {report.get('sideFilter') or 'unknown'}",
+        f"Rows: {report.get('rows') or 0}",
+        f"Train/Holdout: {report.get('trainingRows') or 0}/{report.get('holdoutRows') or 0}",
+        f"Global prior: {_percent(report.get('globalPrior'))}",
+        f"Validation: {validation.get('label') or 'unknown'}",
+        f"Can influence builds: {bool(validation.get('canInfluenceBuilds'))}",
+        f"Reason: {validation.get('reason') or 'n/a'}",
+        "",
+        "Holdout:",
+        f"Hit rate: {_percent(holdout.get('hitRate'))}",
+        f"Average probability: {_percent(holdout.get('averageProbability'))}",
+        f"Brier: {holdout.get('brier') if holdout.get('brier') is not None else 'n/a'}",
+        f"Baseline Brier: {holdout.get('baselineBrier') if holdout.get('baselineBrier') is not None else 'n/a'}",
+        f"Brier improvement: {holdout.get('brierImprovement') if holdout.get('brierImprovement') is not None else 'n/a'}",
+        f"Top/bottom quartile hit: {_percent(holdout.get('topQuartileHitRate'))}/"
+        f"{_percent(holdout.get('bottomQuartileHitRate'))}",
+        "",
+        "Train:",
+        f"Hit rate: {_percent(train.get('hitRate'))}",
+        f"Brier improvement: {train.get('brierImprovement') if train.get('brierImprovement') is not None else 'n/a'}",
+    ]
+    positives = report.get("topPositiveBuckets") or []
+    negatives = report.get("topNegativeBuckets") or []
+    if positives:
+        lines.extend(["", "Top positive buckets:"])
+        lines.extend(
+            f"- {row.get('feature')}={row.get('value')} | n={row.get('count')} | "
+            f"rate {_percent(row.get('rate'))} | impact {_signed_percent(row.get('impact'))}"
+            for row in positives[:6]
+        )
+    if negatives:
+        lines.extend(["", "Top negative buckets:"])
+        lines.extend(
+            f"- {row.get('feature')}={row.get('value')} | n={row.get('count')} | "
+            f"rate {_percent(row.get('rate'))} | impact {_signed_percent(row.get('impact'))}"
+            for row in negatives[:6]
+        )
+    notes = report.get("notes") or []
+    if notes:
+        lines.extend(["", "Notes:"])
+        lines.extend(f"- {note}" for note in notes)
+    return "\n".join(lines)
+
+
 def format_storage_sync_report(report: dict[str, Any]) -> str:
     lines = [
         "Bet Historic Storage",
@@ -2283,6 +2339,18 @@ def main() -> int:
     dataset_parser.add_argument("--limit", type=int, default=50000)
     dataset_parser.add_argument("--json", action="store_true", dest="as_json")
 
+    model_parser = subparsers.add_parser(
+        "model",
+        help="Train or inspect the offline historic ML baseline.",
+    )
+    model_parser.add_argument("action", nargs="?", choices=["train", "show"], default="train")
+    model_parser.add_argument("--db-path", default=None)
+    model_parser.add_argument("--side", choices=["under", "over", "all"], default="under")
+    model_parser.add_argument("--holdout-ratio", type=float, default=0.25)
+    model_parser.add_argument("--min-bucket", type=int, default=5)
+    model_parser.add_argument("--limit", type=int, default=50000)
+    model_parser.add_argument("--json", action="store_true", dest="as_json")
+
     backtest_parser = subparsers.add_parser(
         "analysis",
         aliases=["backtest"],
@@ -2434,6 +2502,30 @@ def main() -> int:
             print(json.dumps(report, indent=2, ensure_ascii=True, default=str))
         else:
             print(format_dataset_report(report))
+        return 0
+
+    if args.command == "model":
+        store = GptActionStore(args.db_path)
+        if args.action == "show":
+            report = store.latest_bet_history_model()
+            if report is None:
+                report = store.build_bet_history_model(
+                    side=args.side,
+                    holdout_ratio=args.holdout_ratio,
+                    min_bucket=args.min_bucket,
+                    limit=args.limit,
+                )
+        else:
+            report = store.build_bet_history_model(
+                side=args.side,
+                holdout_ratio=args.holdout_ratio,
+                min_bucket=args.min_bucket,
+                limit=args.limit,
+            )
+        if args.as_json:
+            print(json.dumps(report, indent=2, ensure_ascii=True, default=str))
+        else:
+            print(format_model_report(report))
         return 0
 
     if args.command in {"analysis", "backtest"}:

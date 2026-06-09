@@ -268,7 +268,7 @@ def test_gpt_schema_exposes_gpt_owned_data_actions_only():
     assert path_ids["/mlb/player/{playerId}/context"] == "getPlayerMlbContext"
     assert path_ids["/mlb/prop-context-batch"] == "getPropContextBatch"
     assert path_ids["/mlb/validate-selections"] == "validateSelections"
-    assert path_ids["/mlb/save-gpt-decision"] == "saveGptDecision"
+    assert "/mlb/save-gpt-decision" not in schema["paths"]
     assert "/gpt/mlb/matchup-picks" not in schema["paths"]
     sgm_pool_props = schema["paths"]["/mlb/stake-ui/sgm-candidate-pool"]["post"]["requestBody"]["content"][
         "application/json"
@@ -284,7 +284,7 @@ def test_openapi_stays_under_custom_gpt_operation_cap():
         for operation in methods.values()
     ]
 
-    assert len(operations) == 29
+    assert len(operations) == 28
     assert len(operations) <= 30
 
 
@@ -784,6 +784,9 @@ def test_save_gpt_decision_route_persists_gpt_choice_without_azp_ledger():
     assert body["decisionOwner"] == "custom_gpt"
     assert body["validation"]["valid"] is True
     assert body["gptDecisionLedger"]["saved"] is True
+    assert body["gptDecisionLedger"]["localOnly"] is True
+    assert "legsSaved" not in body["gptDecisionLedger"]
+    assert "supabaseSynced" not in body["gptDecisionLedger"]
     assert "recommendationLedger" not in body
 
 

@@ -65,7 +65,6 @@ from .stake_sgm_browser import make_sgm_selection_row_id, sgm_market_filter_matc
 from .storage import GptActionStore
 from .supabase_ledger import (
     supabase_ledger_enabled,
-    sync_gpt_decision_to_supabase,
     sync_market_mappings_to_supabase,
 )
 
@@ -132,7 +131,7 @@ async def gpt_privacy_policy() -> dict[str, Any]:
         ),
         "dataUse": [
             "Requests may include matchup names, player ids, prop ids, dates, markets, and GPT-selected props.",
-            "Validated GPT decisions may be stored in Supabase or local SQLite if configured.",
+            "Validated GPT decision snapshots may be kept in local/archive storage for compatibility; Supabase is used for UI jobs, market mappings, and Historic data.",
             "No Stake account login, wallet, password, or bet-placement action is supported.",
         ],
     }
@@ -1901,27 +1900,13 @@ async def mlb_save_gpt_decision(
     response["gptDecisionLedger"] = {
         "saved": True,
         "decisionId": saved["decisionId"],
-        "legsSaved": saved["gptDecisionLegsInserted"],
+        "localOnly": True,
         "localArchive": archive_gpt_decision(
             response,
             request_body=payload,
             decision_id=saved["decisionId"],
         ),
-        "supabaseSynced": False,
     }
-    if supabase_ledger_enabled():
-        try:
-            supabase_result = await sync_gpt_decision_to_supabase(
-                response,
-                decision_id=saved["decisionId"],
-                request_body=payload,
-            )
-            response["gptDecisionLedger"]["supabaseSynced"] = bool(
-                supabase_result.get("synced")
-            )
-        except Exception as exc:
-            response["gptDecisionLedger"]["supabaseSynced"] = False
-            response["gptDecisionLedger"]["supabaseWarning"] = str(exc)
     return response
 
 

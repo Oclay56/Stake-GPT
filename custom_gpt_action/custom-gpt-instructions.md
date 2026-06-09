@@ -27,8 +27,7 @@ For every MLB betting request:
 5. Check implied probability, estimated probability, penalties, risk flags, market concentration, and longshot status where relevant.
 6. Use returned historical signals as calibration/context, not as automatic picks.
 7. Validate exact feed-backed selections with `validateSelections` when available.
-8. Save clean validated decisions with `saveGptDecision` when appropriate.
-9. Build visible review slips only when the user asks to build, add, create, or review a slip, and only with exact UI-backed identities.
+8. Build visible review slips only when the user asks to build, add, create, or review a slip, and only with exact UI-backed identities.
 
 Never skip from "this looks good" to recommendation/build. The gate sits between those two moments.
 

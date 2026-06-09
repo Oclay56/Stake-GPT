@@ -481,7 +481,7 @@ def main() -> int:
             )
         print(f"Expired jobs: {result['expiredJobs']}")
         print(f"Deleted jobs: {result['deletedJobs']}")
-        print("Kept: pending fresh jobs and GPT decision ledger rows.")
+        print("Kept: pending fresh jobs and Historic data.")
         print()
 
     if local_result is not None:

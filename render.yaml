@@ -22,8 +22,6 @@ services:
         value: /tmp/gpt_action.sqlite
       - key: AZP_MIN_PLAYABLE_ODDS
         value: "1.10"
-      - key: AZP_FAIL_ON_SUPABASE_LEDGER_ERROR
-        value: "0"
       - key: AZP_BET_HISTORY_STORE
         value: supabase
       - key: AZP_FAIL_ON_SUPABASE_HISTORY_ERROR

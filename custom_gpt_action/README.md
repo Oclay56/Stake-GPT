@@ -61,7 +61,6 @@ Historic-analysis and future-ML guidance now lives in all three Custom GPT instr
 - `getProbablePitchers`: return probable pitchers from MLB Stats API
 - `getMarketMap`: map Stake display market names to backend stat keys
 - `validateSelections`: confirm GPT-selected props still match Stake, with strict odds/line validation options
-- `saveGptDecision`: store the GPT-authored validated decision
 
 ## Required GPT Flow
 
@@ -74,11 +73,10 @@ Historic-analysis and future-ML guidance now lives in all three Custom GPT instr
 7. Make the decision inside the GPT.
 8. For target-odds or mega-parlay requests, call `buildSlipCandidates` before choosing finalists.
 9. Call `validateSelections` with the exact `selectionId`, side, line, and odds. Use `validationMode: strict` unless you are only doing loose research.
-10. If validation passes, call `saveGptDecision`.
-11. For Same Game Multi review slips, pass the selected rows' `rowIds` to `buildStakeUiReviewSlip` or `buildStakeUiReviewSlipBatch`. Do not reconstruct the build request from player name, line, and odds when a `rowId` exists.
-12. For multi-game Same Game Multi review slips, use `buildStakeUiReviewSlipBatch` once instead of separate one-game slip builds.
-13. Use `readStakeUiState` or `clearStakeUiSgmSelections` only after a UI helper failure, unclear status, or stuck pending SGM selection. Use `clearStakeUiSidebar` only when the user explicitly asks to clear the whole visible slip. Do not spend action calls on diagnostics during a successful normal flow.
-14. Do not recommend props that fail validation.
+10. For Same Game Multi review slips, pass the selected rows' `rowIds` to `buildStakeUiReviewSlip` or `buildStakeUiReviewSlipBatch`. Do not reconstruct the build request from player name, line, and odds when a `rowId` exists.
+11. For multi-game Same Game Multi review slips, use `buildStakeUiReviewSlipBatch` once instead of separate one-game slip builds.
+12. Use `readStakeUiState` or `clearStakeUiSgmSelections` only after a UI helper failure, unclear status, or stuck pending SGM selection. Use `clearStakeUiSidebar` only when the user explicitly asks to clear the whole visible slip. Do not spend action calls on diagnostics during a successful normal flow.
+13. Do not recommend props that fail validation.
 
 Stake availability comes first. MLB context can support or reject a pick, but it cannot create a pick that Stake does not currently offer. Feed validation is not the same as a final Stake bet-slip quote; if a line or price differs in the UI, the UI/quote wins.
 

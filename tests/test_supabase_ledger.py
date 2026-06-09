@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.supabase_ledger import _gpt_decision_payloads, supabase_ledger_enabled
+from app.supabase_ledger import supabase_ledger_enabled
 
 
 def test_supabase_ledger_enabled_requires_url_and_service_key(monkeypatch):
@@ -15,57 +15,12 @@ def test_supabase_ledger_enabled_requires_url_and_service_key(monkeypatch):
     assert supabase_ledger_enabled() is True
 
 
-def test_gpt_decision_payloads_match_supabase_tables():
-    requests, legs = _gpt_decision_payloads(
-        response={
-            "generatedAt": "2026-05-10T00:00:00Z",
-            "matchup": "Blue Jays vs Angels",
-            "date": "2026-05-08",
-            "validation": {"valid": True},
-            "selections": [
-                {
-                    "selectionId": "prop-1:under",
-                    "propId": "prop-1",
-                    "fixtureSlug": "blue-jays-angels",
-                    "player": {"name": "George Springer"},
-                    "team": {"name": "Toronto Blue Jays"},
-                    "market": {"key": "hits", "name": "hits"},
-                    "side": "under",
-                    "line": 0.5,
-                    "odds": 2.9,
-                    "playable": True,
-                    "availability": {"status": "active"},
-                    "decisionProfile": {
-                        "finalStatus": "playable",
-                        "riskFlags": ["recent_and_season_agree"],
-                    },
-                }
-            ],
-        },
-        decision_id="decision-1",
-        request_body={"prompt": "Pick under hits."},
-    )
-
-    assert requests[0]["decision_id"] == "decision-1"
-    assert requests[0]["source"] == "custom_gpt"
-    assert legs[0]["leg_id"] == "decision-1:1"
-    assert legs[0]["selection_id"] == "prop-1:under"
-    assert legs[0]["market_key"] == "hits"
-    assert legs[0]["playable"] is True
-    assert legs[0]["decision_profile_json"]["finalStatus"] == "playable"
-    assert legs[0]["risk_flags_json"] == ["recent_and_season_agree"]
-    assert legs[0]["settlement_status"] == "unsettled"
-
-
-def test_supabase_schema_can_upgrade_existing_decision_tables():
+def test_supabase_schema_keeps_market_mapping_and_history_tables():
     sql = Path("supabase/gpt_action.sql").read_text(encoding="utf-8").lower()
 
-    assert "alter table public.gpt_decision_requests" in sql
-    assert "add column if not exists request_json" in sql
-    assert "add column if not exists response_json" in sql
-    assert "add column if not exists validation_json" in sql
-    assert "add column if not exists decision_profile_json" in sql
-    assert "add column if not exists settlement_status" in sql
+    assert "create table if not exists public.market_mappings" in sql
+    assert "create table if not exists public.gpt_decision_requests" not in sql
+    assert "create table if not exists public.gpt_decision_legs" not in sql
     assert "create table if not exists public.bet_history_imports" in sql
     assert "create table if not exists public.bet_history_raw" in sql
     assert "create table if not exists public.bet_history_legs" in sql

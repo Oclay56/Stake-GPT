@@ -394,14 +394,6 @@ def build_gpt_action_openapi_schema(server_url: str) -> dict[str, Any]:
                     request_body=_selection_request_body(),
                 )
             },
-            "/mlb/save-gpt-decision": {
-                "post": _operation(
-                    "saveGptDecision",
-                    "Save a GPT-authored decision",
-                    "Stores what the GPT chose after validation. This is not an AZP recommendation.",
-                    request_body=_selection_request_body(include_prompt=True),
-                )
-            },
         },
     }
     if os.getenv("AZP_GPT_API_KEY"):

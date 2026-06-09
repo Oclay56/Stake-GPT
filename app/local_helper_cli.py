@@ -1236,7 +1236,7 @@ class StakeGptCli:
         if not assume_yes:
             self.emit(
                 "This will delete old Supabase local-helper job rows and rebuildable local cache files.\n"
-                "It keeps GPT decision ledger rows, Chrome login/session data, logs, and never places/cancels bets.\n",
+                "It keeps Chrome login/session data, logs, Historic data, and never places/cancels bets.\n",
                 role="warn",
             )
             confirm = self.input(colorize("Continue? [y/N]: ", SEMANTIC_COLORS["warn"])).strip().lower()

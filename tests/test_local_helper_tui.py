@@ -36,14 +36,14 @@ def test_tui_actions_cover_existing_helper_shortcuts():
     assert shortcuts == {
         "ctrl+r": "review",
         "ctrl+b": "build",
-        "ctrl+t": "backtest",
         "ctrl+i": "historic",
+        "ctrl+t": "backtest",
+        "ctrl+m": "model",
         "ctrl+l": "logs",
         "ctrl+d": "doctor",
         "ctrl+c": "clean",
         "ctrl+q": "domain",
         "ctrl+s": "stop",
-        "ctrl+p": "palette",
         "ctrl+e": "exit",
     }
 
@@ -71,17 +71,21 @@ def test_tui_action_rows_use_single_bracket_pair_and_include_shortcuts():
     assert "Build" in rows[1]
     assert "Build slip" not in rows[1]
     assert "ctrl+b" in rows[1]
-    assert "Analysis" in rows[2]
-    assert "Backtest" not in rows[2]
-    assert "ctrl+t" in rows[2]
-    assert "Historic" in rows[3]
-    assert "History" not in rows[3]
-    assert "Palette" in rows[-2]
-    assert "ctrl+p" in rows[-2]
+    assert "Historic" in rows[2]
+    assert "History" not in rows[2]
+    assert "ctrl+i" in rows[2]
+    assert "Analysis" in rows[3]
+    assert "Backtest" not in rows[3]
+    assert "ctrl+t" in rows[3]
+    assert "Model" in rows[4]
+    assert "ctrl+m" in rows[4]
+    assert all("Palette" not in row for row in rows)
+    assert all("ctrl+p" not in row for row in rows)
 
 
 def test_tui_does_not_expose_classic_cli_action():
     assert find_tui_action("classic") is None
+    assert find_tui_action("palette") is None
 
 
 def test_tui_running_status_keeps_dots_after_bracketed_text():
@@ -188,6 +192,12 @@ def test_tui_historic_update_summary_shows_pipeline_without_file_names():
             },
         },
         "enrich": {"targets": 100, "legsEnriched": 90},
+        "dataset": {
+            "rows": 241,
+            "trainingRows": 200,
+            "enrichedRows": 90,
+            "readiness": {"label": "ML dataset forming"},
+        },
         "analysis": {
             "enrichment": {"coverageRate": 0.75},
             "finalOutcome": {
@@ -204,6 +214,7 @@ def test_tui_historic_update_summary_shows_pipeline_without_file_names():
     text = "\n".join(lines)
 
     assert "Enriched: 90 | Targets: 100 | Coverage: 75.0%" in text
+    assert "Dataset: 241 rows | Train: 200 | Ready: ML dataset forming" in text
     assert "Tickets: 24/25 | ROI: -12.0%" in text
     assert "Import files (8)" in text
     assert "p1.txt" not in text

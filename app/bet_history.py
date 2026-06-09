@@ -1738,11 +1738,12 @@ def format_sync_report(report: dict[str, Any], *, storage_path: str | Path | Non
 def format_update_report(report: dict[str, Any], *, rich_analysis: bool = False) -> str:
     sync = report.get("sync") or {}
     enrich = report.get("enrich") or {}
+    dataset = report.get("dataset") or {}
     analysis = report.get("analysis") or {}
     lines = [
         "Bet Historic Update",
         "------------------",
-        "Flow: sync imports -> enrich missing MLB snapshots -> analyze updated history",
+        "Flow: sync imports -> enrich missing MLB snapshots -> build dataset -> analyze updated history",
         f"Files checked: {sync.get('filesConsidered') or 0}",
         f"Imported: {sync.get('filesImported') or 0}",
         f"Skipped duplicates: {sync.get('filesSkippedDuplicate') or 0}",
@@ -1755,6 +1756,18 @@ def format_update_report(report: dict[str, Any], *, rich_analysis: bool = False)
         f"Result mismatches: {enrich.get('resultMismatches') or 0}",
     ]
     lines.extend(_format_persistence_lines(enrich.get("persistence") or sync.get("persistence")))
+    readiness = dataset.get("readiness") or {}
+    lines.extend(
+        [
+            "",
+            "Updated dataset:",
+            f"Rows: {dataset.get('rows') or 0}, training rows: {dataset.get('trainingRows') or 0}, "
+            f"enriched: {dataset.get('enrichedRows') or 0} ({_percent(dataset.get('enrichmentCoverage'))})",
+            f"Under rows: {dataset.get('underRows') or 0} ({_percent(dataset.get('underRate'))}), "
+            f"tickets: {dataset.get('ticketRows') or 0}",
+            f"Dataset readiness: {readiness.get('label') or 'unknown'}",
+        ]
+    )
     enrichment = analysis.get("enrichment") or {}
     outcome = analysis.get("finalOutcome") or {}
     ticket_sample = outcome.get("ticketSample") or {}
@@ -1774,6 +1787,44 @@ def format_update_report(report: dict[str, Any], *, rich_analysis: bool = False)
         lines.extend(["", "Rich analysis:", format_backtest_rich_report(analysis)])
     else:
         lines.extend(["", "Analysis:", format_backtest_report(analysis)])
+    return "\n".join(lines)
+
+
+def format_dataset_report(report: dict[str, Any]) -> str:
+    readiness = report.get("readiness") or {}
+    missing = report.get("missing") or {}
+    buckets = report.get("buckets") or {}
+    lines = [
+        "Bet Historic Dataset",
+        "-------------------",
+        f"Dataset version: {report.get('datasetVersion') or 'unknown'}",
+        f"Generated: {report.get('generatedAt') or 'not built'}",
+        f"Source: {report.get('source') or 'unknown'}",
+        f"Rows: {report.get('rows') or 0}",
+        f"Training rows: {report.get('trainingRows') or 0}",
+        f"Graded rows: {report.get('gradedRows') or 0}",
+        f"Enriched rows: {report.get('enrichedRows') or 0} ({_percent(report.get('enrichmentCoverage'))})",
+        f"Under rows: {report.get('underRows') or 0} ({_percent(report.get('underRate'))})",
+        f"Ticket rows: {report.get('ticketRows') or 0}",
+        f"Readiness: {readiness.get('label') or 'unknown'}",
+        f"Reason: {readiness.get('reason') or 'n/a'}",
+        "",
+        "Missing feature coverage:",
+        f"Odds: {missing.get('odds') or 0}",
+        f"Ticket odds: {missing.get('ticketOdds') or 0}",
+        f"Enrichment: {missing.get('enrichment') or 0}",
+        f"Lineup spot: {missing.get('lineupSpot') or 0}",
+        f"Pitch hand: {missing.get('pitchHand') or 0}",
+        f"Venue: {missing.get('venue') or 0}",
+    ]
+    markets = buckets.get("markets") or []
+    if markets:
+        lines.extend(["", "Top markets:"])
+        lines.extend(f"- {row.get('label')}: {row.get('count')}" for row in markets[:8])
+    notes = report.get("notes") or []
+    if notes:
+        lines.extend(["", "Notes:"])
+        lines.extend(f"- {note}" for note in notes)
     return "\n".join(lines)
 
 
@@ -2194,7 +2245,7 @@ def main() -> int:
     update_parser = subparsers.add_parser(
         "update",
         aliases=["auto", "pipeline"],
-        help="Sync new historic files, enrich missing MLB snapshots, then run updated analysis.",
+        help="Sync new historic files, enrich missing MLB snapshots, build the dataset, then run updated analysis.",
     )
     update_parser.add_argument("--db-path", default=None)
     update_parser.add_argument("--import-dir", dest="import_dir", default=None)
@@ -2221,6 +2272,16 @@ def main() -> int:
     enrich_parser.add_argument("--missing-only", action="store_true")
     enrich_parser.add_argument("--limit", type=int, default=500)
     enrich_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    dataset_parser = subparsers.add_parser(
+        "dataset",
+        help="Build or inspect the derived historic ML dataset from imported/enriched rows.",
+    )
+    dataset_parser.add_argument("action", nargs="?", choices=["build", "show"], default="build")
+    dataset_parser.add_argument("--db-path", default=None)
+    dataset_parser.add_argument("--from-date", dest="from_date", default=None)
+    dataset_parser.add_argument("--limit", type=int, default=50000)
+    dataset_parser.add_argument("--json", action="store_true", dest="as_json")
 
     backtest_parser = subparsers.add_parser(
         "analysis",
@@ -2342,20 +2403,37 @@ def main() -> int:
                     )
 
             enrich_report = asyncio.run(_run_update_enrichment())
+        dataset_report = store.build_bet_history_dataset(from_date=args.from_date)
         analysis_report = store.bet_history_backtest(from_date=args.from_date)
         update_report = {
             "sync": sync_report,
             "enrich": enrich_report,
+            "dataset": dataset_report,
             "analysis": analysis_report,
             "notes": [
                 "This deterministic update flow never uses live MLB context inside analysis; enrichment snapshots are stored first.",
                 "Imported ticket results remain canonical. Enriched boxscore grades are verification/offline-learning fields.",
+                "The dataset is derived and rebuildable. Supabase-backed bet history remains the source of truth.",
             ],
         }
         if args.as_json:
             print(json.dumps(update_report, indent=2, ensure_ascii=True, default=str))
         else:
             print(format_update_report(update_report, rich_analysis=args.rich))
+        return 0
+
+    if args.command == "dataset":
+        store = GptActionStore(args.db_path)
+        if args.action == "show":
+            report = store.latest_bet_history_dataset()
+            if report is None:
+                report = store.build_bet_history_dataset(from_date=args.from_date, limit=args.limit)
+        else:
+            report = store.build_bet_history_dataset(from_date=args.from_date, limit=args.limit)
+        if args.as_json:
+            print(json.dumps(report, indent=2, ensure_ascii=True, default=str))
+        else:
+            print(format_dataset_report(report))
         return 0
 
     if args.command in {"analysis", "backtest"}:

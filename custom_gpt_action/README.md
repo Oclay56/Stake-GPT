@@ -11,7 +11,7 @@ The Custom GPT makes the final decision. The Render backend only:
 - validates GPT-selected props against the current Stake board
 - creates local-helper jobs for UI-verified Stake Same Game Multi boards
 - returns decision profiles, market heatmaps, and constrained slip candidates for GPT review
-- returns historic-analysis signals from imported settled bet history when available
+- returns historic-analysis signals and derived dataset readiness from imported settled bet history when available
 - saves GPT-authored decisions and market mappings when storage is configured
 
 It does not place bets, log in to Stake, scrape account pages, or run an old analyzer as the final pick engine.
@@ -36,7 +36,7 @@ Use `custom-gpt-instructions.md` as the primary Custom GPT instruction file. It 
 
 Attach or upload `custom-gpt-operational-reference.md` as the secondary reference file. It keeps the heavier glossary, probability engine, risk flags, playbooks, validation rules, lineup/opponent/game-context usage, and Stake SGM metadata guidance out of the main instruction stream while still preserving the full operating manual.
 
-Historic-analysis and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from Supabase-backed imported bet history, with SQLite as cache/backup fallback, not a trained model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
+Historic-analysis, derived-dataset, and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from Supabase-backed imported bet history, with SQLite as cache/backup fallback. Historic update imports new files, enriches missing frozen MLB context, builds the derived dataset, and then shows analysis/readiness. The dataset is for future offline ML, not a trained live model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
 
 ## Main Actions
 

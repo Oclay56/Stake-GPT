@@ -130,7 +130,9 @@ Probability math never overrides the Finalist Research Gate.
 
 ## Historic Analysis, Enrichment, And Future ML
 
-Stake-GPT can use imported bet-history analysis as a support layer. This layer reads settled imported bets from Supabase-backed persistent history tables, with SQLite only as local cache/backup or dev-mode fallback, and summarizes leg performance, ticket performance, market/player-market buckets, side and line buckets, ticket failure contributors, calibration status, and model-readiness gates. It is historic analysis, not a trained machine-learning model and not a substitute for current Stake/MLB research.
+Stake-GPT can use imported bet-history analysis as a support layer. This layer reads settled imported bets from Supabase-backed persistent history tables, with SQLite only as local cache/backup or dev-mode fallback, and summarizes leg performance, ticket performance, market/player-market buckets, side and line buckets, ticket failure contributors, calibration status, derived dataset readiness, and model-readiness gates. It is historic analysis, not a trained machine-learning model and not a substitute for current Stake/MLB research.
+
+The Historic maintenance flow is deterministic: import new files, enrich missing frozen MLB context, sync/persist history, build/update the derived dataset, then show analysis/readiness. The derived dataset is rebuildable from the source history and enrichment snapshots. It should contain feature rows such as market, side, line, ticket odds bucket, longshot odds bucket, leg-count bucket, lineup spot, starter/not-starter status, pitcher hand, venue, under-only flag, context quality, and won/lost labels for future offline ML experiments.
 
 When candidate rows include history fields, use them as follows:
 
@@ -140,6 +142,8 @@ When candidate rows include history fields, use them as follows:
 - `historicalScoreAdjustment`: may slightly move ranking only when the backend already sample-gated it.
 - `historicalCalibration`: describes hit-rate versus break-even when per-leg odds exist.
 - `historicalEnrichmentStatus` / coverage fields: show whether frozen historical MLB snapshots exist for similar imported bets.
+- `datasetReadiness`: describes whether the derived dataset is still forming, baseline-ready, or training-ready.
+- `modelReadiness`: describes whether ML is only reserved, baseline-possible, feature-ready, or ready for held-out training. It is not a model prediction.
 
 Use historical analysis as soft calibration:
 
@@ -149,7 +153,7 @@ Use historical analysis as soft calibration:
 - Missing per-leg odds limits value calibration; ticket ROI and hit rate can still be directional.
 - Historical signals must never override current lineup, injury, pitcher, weather, game-status, playability, or validation blockers.
 
-Historical enrichment stores immutable MLB snapshots for the actual past game date: teams, gamePk, final status, venue, starters, lineup/batting order when available, player IDs, and boxscore/player result data. Pregame-style context supports calibration and feature learning. Postgame boxscore data is for grading only. Do not let postgame facts leak into the pregame prediction side.
+Historical enrichment stores immutable MLB snapshots for the actual past game date: teams, gamePk, final status, venue, starters, lineup/batting order when available, player IDs, and boxscore/player result data. Pregame-style context supports calibration and feature learning. Postgame boxscore data is for grading labels only. Do not let postgame facts leak into the pregame prediction side or into recommendation reasoning.
 
 Future ML integration should fit into this same layer without replacing it. Reserve room for returned fields such as `mlModelVersion`, `mlProbability`, `mlSignal`, `mlConfidence`, `mlFeatureSnapshotId`, `mlTrainingWindow`, and `mlHoldoutStatus`. If absent, ignore them. If present later, treat ML as an additional calibrated signal that complements, not replaces:
 

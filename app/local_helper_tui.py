@@ -96,14 +96,14 @@ class TuiAction:
 TUI_ACTIONS: tuple[TuiAction, ...] = (
     TuiAction("review", "Review", "ctrl+r", "Review the visible Stake board.", "review", "Reviewing"),
     TuiAction("build", "Build", "ctrl+b", "Open builder mode for validated slips.", "build", "Building"),
-    TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),
     TuiAction("history", "Historic", "ctrl+i", "Auto-import new historic files and show status.", "historic", "Loading historic"),
+    TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),
+    TuiAction("model", "Model", "ctrl+m", "Reserved ML model workspace.", "model", "Loading model"),
     TuiAction("logs", "Logs", "ctrl+l", "Show the latest helper logs.", "logs", "Loading logs"),
     TuiAction("doctor", "Doctor", "ctrl+d", "Run diagnostics.", "doctor", "Diagnosing"),
     TuiAction("clean", "Clean", "ctrl+c", "Clear rebuildable cache.", "clean", "Cleaning"),
     TuiAction("domain", "Domain", "ctrl+q", "Toggle Stake domain profile.", "domain", "Switching domain"),
     TuiAction("stop", "Stop", "ctrl+s", "Stop the active helper task.", "stop", "Stop"),
-    TuiAction("palette", "Palette", "ctrl+p", "View theme config.", "palette", "Loading palette"),
     TuiAction("exit", "Exit", "ctrl+e", "Close the TUI.", "exit", "Exiting"),
 )
 MENU_ROW_COUNT = len(TUI_ACTIONS)
@@ -325,6 +325,8 @@ def format_historic_update_tui_summary(update_report: dict[str, Any]) -> list[st
     history = (sync.get("history") or {})
     files = list(history.get("importFiles") or [])
     enrich = update_report.get("enrich") or {}
+    dataset = update_report.get("dataset") or {}
+    dataset_readiness = dataset.get("readiness") or {}
     analysis = update_report.get("analysis") or {}
     enrichment = analysis.get("enrichment") or {}
     outcome = analysis.get("finalOutcome") or {}
@@ -345,6 +347,11 @@ def format_historic_update_tui_summary(update_report: dict[str, Any]) -> list[st
             f"Enriched: {int(enrich.get('legsEnriched') or 0)} | "
             f"Targets: {int(enrich.get('targets') or 0)} | "
             f"Coverage: {_percent_label(enrichment.get('coverageRate'))}"
+        ),
+        (
+            f"Dataset: {int(dataset.get('rows') or 0)} rows | "
+            f"Train: {int(dataset.get('trainingRows') or 0)} | "
+            f"Ready: {dataset_readiness.get('label') or 'unknown'}"
         ),
         (
             f"Tickets: {int(ticket_sample.get('gradedTickets') or 0)}/"
@@ -613,25 +620,25 @@ if TEXTUAL_AVAILABLE:
         BINDINGS = [
             ("ctrl+r", "run_action('review')", "Review"),
             ("ctrl+b", "run_action('build')", "Build"),
-            ("ctrl+t", "run_action('backtest')", "Analysis"),
             ("ctrl+i", "run_action('history')", "Historic"),
+            ("ctrl+t", "run_action('backtest')", "Analysis"),
+            ("ctrl+m", "run_action('model')", "Model"),
             ("ctrl+l", "run_action('logs')", "Logs"),
             ("ctrl+d", "run_action('doctor')", "Doctor"),
             ("ctrl+c", "run_action('clean')", "Clean"),
             ("ctrl+q", "run_action('domain')", "Domain"),
             ("ctrl+s", "run_action('stop')", "Stop"),
-            ("ctrl+p", "run_action('palette')", "Palette"),
             ("ctrl+e", "run_action('exit')", "Exit"),
             ("r", "run_action('review')", "Review"),
             ("b", "run_action('build')", "Build"),
-            ("t", "run_action('backtest')", "Analysis"),
             ("i", "run_action('history')", "Historic"),
+            ("t", "run_action('backtest')", "Analysis"),
+            ("m", "run_action('model')", "Model"),
             ("l", "run_action('logs')", "Logs"),
             ("d", "run_action('doctor')", "Doctor"),
             ("c", "run_action('clean')", "Clean"),
             ("q", "run_action('domain')", "Domain"),
             ("s", "run_action('stop')", "Stop"),
-            ("p", "run_action('palette')", "Palette"),
             ("e", "run_action('exit')", "Exit"),
             ("escape", "back", "Back"),
         ]
@@ -1078,6 +1085,29 @@ if TEXTUAL_AVAILABLE:
                     for line in output.splitlines() or ["Historic update failed."]:
                         self._append_output(line)
                 self.cli.status = "ready" if code == 0 else "historic failed"
+            elif action.action_id == "model":
+                self.cli.status = "model"
+                code, output = self._run_module_command_capture(["-m", "app.bet_history", "dataset", "show", "--json"])
+                if code == 0:
+                    try:
+                        report = json.loads(output)
+                    except json.JSONDecodeError:
+                        for line in output.splitlines():
+                            self._append_output(line)
+                    else:
+                        readiness = report.get("readiness") or {}
+                        self._append_output("Model training is not enabled yet.")
+                        self._append_output(
+                            f"Dataset: {int(report.get('rows') or 0)} rows | "
+                            f"Train: {int(report.get('trainingRows') or 0)} | "
+                            f"Enriched: {int(report.get('enrichedRows') or 0)}"
+                        )
+                        self._append_output(f"Readiness: {readiness.get('label') or 'unknown'}")
+                        self._append_output("Next phase: train and validate an offline baseline before it can influence builds.")
+                else:
+                    for line in output.splitlines() or ["Model readiness lookup failed."]:
+                        self._append_output(line)
+                self.cli.status = "ready" if code == 0 else "model failed"
             elif action.action_id == "logs":
                 self.cli.run_logs({"--tail"})
                 self.cli.status = "ready"
@@ -1089,8 +1119,6 @@ if TEXTUAL_AVAILABLE:
                 self.cli.status = "ready" if code == 0 else "cleanup failed"
             elif action.action_id == "domain":
                 self.cli.toggle_stake_site()
-            elif action.action_id == "palette":
-                self._append_output(f"Theme config: {tui_theme_path(root_dir=self.root_dir)}")
             else:
                 self._append_output(f"No handler for {action.label}.")
 

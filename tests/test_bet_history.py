@@ -7,6 +7,7 @@ import sqlite3
 from app.bet_history import (
     format_backtest_report,
     format_backtest_rich_report,
+    format_dataset_report,
     format_report,
     format_review_report,
     format_sync_report,
@@ -1410,6 +1411,22 @@ def test_bet_history_enrichment_stores_snapshots_and_feeds_backtest(tmp_path):
     assert signal["enrichment"]["status"] == "available"
     assert signal["enrichment"]["enrichedLegs"] == 1
     assert "historical_enrichment_available" in signal["notes"]
+
+    dataset = store.build_bet_history_dataset()
+    assert dataset["datasetVersion"] == "historic_dataset_v1"
+    assert dataset["rows"] == 1
+    assert dataset["trainingRows"] == 1
+    assert dataset["enrichedRows"] == 1
+    assert dataset["underRows"] == 1
+    assert dataset["buckets"]["lineupSpots"][0]["label"] == "top third | batting 1"
+    assert dataset["preview"][0]["marketKey"] == "hits"
+    assert dataset["readiness"]["status"] == "ml_dataset_forming"
+    assert "Bet Historic Dataset" in format_dataset_report(dataset)
+
+    latest = store.latest_bet_history_dataset()
+    assert latest is not None
+    assert latest["datasetRunId"] == dataset["datasetRunId"]
+    assert latest["trainingRows"] == 1
 
 
 def test_bet_history_enrichment_missing_only_skips_existing_rows(tmp_path):

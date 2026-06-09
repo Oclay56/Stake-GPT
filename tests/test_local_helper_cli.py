@@ -344,6 +344,7 @@ def test_bet_history_command_runs_import_and_report(monkeypatch, tmp_path):
     cli.run_bet_history(["report"])
     cli.run_bet_history(["review", "--limit", "10"])
     cli.run_bet_history(["enrich", "--missing-only"])
+    cli.run_bet_history(["dataset", "show"])
     cli.run_bet_history(["analysis", "--market", "hits"])
     cli.run_bet_history(["imports"])
     cli.run_bet_history(["delete-import", "abc", "--yes"])
@@ -357,6 +358,7 @@ def test_bet_history_command_runs_import_and_report(monkeypatch, tmp_path):
         [python_exe, "-m", "app.bet_history", "report"],
         [python_exe, "-m", "app.bet_history", "review", "--limit", "10"],
         [python_exe, "-m", "app.bet_history", "enrich", "--missing-only"],
+        [python_exe, "-m", "app.bet_history", "dataset", "show"],
         [python_exe, "-m", "app.bet_history", "analysis", "--market", "hits"],
         [python_exe, "-m", "app.bet_history", "imports"],
         [python_exe, "-m", "app.bet_history", "delete-import", "abc", "--yes"],

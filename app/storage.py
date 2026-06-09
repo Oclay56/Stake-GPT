@@ -642,6 +642,44 @@ class GptActionStore:
         limit: int = 10000,
         view: str = "dashboard",
     ) -> dict[str, Any]:
+        clean_market = _clean_market_filter(market_key)
+        clean_player = _clean_text_filter(player_name)
+        clean_from_date = _clean_text_filter(from_date)
+        clean_ticket = _clean_text_filter(ticket_id)
+        rows = self.bet_history_analysis_rows(
+            market_key=clean_market,
+            side=side,
+            player_name=clean_player,
+            from_date=clean_from_date,
+            ticket_id=clean_ticket,
+            import_id=import_id,
+            limit=limit,
+        )
+        return _bet_history_backtest_report(
+            rows,
+            filters={
+                "marketKey": clean_market,
+                "side": side,
+                "playerName": clean_player,
+                "fromDate": clean_from_date,
+                "ticketId": clean_ticket,
+                "importId": import_id,
+                "limit": limit,
+                "view": _clean_backtest_view(view),
+            },
+        )
+
+    def bet_history_analysis_rows(
+        self,
+        *,
+        market_key: str | None = None,
+        side: str | None = None,
+        player_name: str | None = None,
+        from_date: str | None = None,
+        ticket_id: str | None = None,
+        import_id: str | None = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
         self._load_remote_bet_history_once()
         clean_market = _clean_market_filter(market_key)
         clean_player = _clean_text_filter(player_name)
@@ -697,20 +735,152 @@ class GptActionStore:
         sql += " ORDER BY l.bet_date DESC, l.created_at DESC, l.leg_index ASC LIMIT ?"
         params.append(_clean_history_limit(limit))
         with self._connect() as conn:
-            rows = [_bet_history_leg_row(row) for row in conn.execute(sql, params).fetchall()]
-        return _bet_history_backtest_report(
+            return [_bet_history_leg_row(row) for row in conn.execute(sql, params).fetchall()]
+
+    def build_bet_history_dataset(
+        self,
+        *,
+        from_date: str | None = None,
+        limit: int = 50000,
+    ) -> dict[str, Any]:
+        rows = self.bet_history_analysis_rows(from_date=from_date, limit=limit)
+        analysis = _bet_history_backtest_report(
             rows,
             filters={
-                "marketKey": clean_market,
-                "side": side,
-                "playerName": clean_player,
-                "fromDate": clean_from_date,
-                "ticketId": clean_ticket,
-                "importId": import_id,
+                "marketKey": None,
+                "side": None,
+                "playerName": None,
+                "fromDate": _clean_text_filter(from_date),
+                "ticketId": None,
+                "importId": None,
                 "limit": limit,
-                "view": _clean_backtest_view(view),
+                "view": "dashboard",
             },
         )
+        dataset = _bet_history_dataset_report(
+            rows,
+            analysis=analysis,
+            from_date=_clean_text_filter(from_date),
+            source=self.bet_history_source_label(),
+        )
+        self._replace_bet_history_dataset(dataset)
+        return dataset
+
+    def latest_bet_history_dataset(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            run = conn.execute(
+                """
+                SELECT *
+                FROM bet_history_dataset_runs
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not run:
+            return None
+        summary = _json_loads(run["summary_json"]) or {}
+        readiness = _json_loads(run["readiness_json"]) or {}
+        return {
+            **summary,
+            "datasetRunId": run["dataset_run_id"],
+            "datasetVersion": run["dataset_version"],
+            "generatedAt": run["generated_at"],
+            "source": run["source"],
+            "fromDate": run["from_date"],
+            "rows": int(run["row_count"] or 0),
+            "trainingRows": int(run["training_rows"] or 0),
+            "gradedRows": int(run["graded_rows"] or 0),
+            "enrichedRows": int(run["enriched_rows"] or 0),
+            "underRows": int(run["under_rows"] or 0),
+            "ticketRows": int(run["ticket_rows"] or 0),
+            "readiness": readiness,
+        }
+
+    def _replace_bet_history_dataset(self, dataset: dict[str, Any]) -> None:
+        run_id = dataset["datasetRunId"]
+        generated_at = dataset["generatedAt"]
+        rows = list(dataset.pop("_rowsForStorage", []))
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bet_history_dataset_rows")
+            conn.execute("DELETE FROM bet_history_dataset_runs")
+            conn.execute(
+                """
+                INSERT INTO bet_history_dataset_runs (
+                    dataset_run_id,
+                    dataset_version,
+                    generated_at,
+                    source,
+                    from_date,
+                    row_count,
+                    training_rows,
+                    graded_rows,
+                    enriched_rows,
+                    under_rows,
+                    ticket_rows,
+                    readiness_json,
+                    summary_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    dataset["datasetVersion"],
+                    generated_at,
+                    dataset["source"],
+                    dataset.get("fromDate"),
+                    int(dataset.get("rows") or 0),
+                    int(dataset.get("trainingRows") or 0),
+                    int(dataset.get("gradedRows") or 0),
+                    int(dataset.get("enrichedRows") or 0),
+                    int(dataset.get("underRows") or 0),
+                    int(dataset.get("ticketRows") or 0),
+                    _json_dumps(dataset.get("readiness") or {}),
+                    _json_dumps(dataset),
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO bet_history_dataset_rows (
+                    dataset_row_id,
+                    dataset_run_id,
+                    history_leg_id,
+                    import_id,
+                    ticket_id,
+                    bet_date,
+                    market_key,
+                    side,
+                    line,
+                    odds,
+                    ticket_odds,
+                    result_status,
+                    actual_stat,
+                    label,
+                    player_name,
+                    team_name,
+                    matchup,
+                    lineup_spot,
+                    lineup_spot_bucket,
+                    confirmed_starter,
+                    starter_bucket,
+                    pitcher_hand,
+                    venue,
+                    market_side,
+                    market_line_bucket,
+                    player_market,
+                    longshot_odds_bucket,
+                    leg_count_bucket,
+                    under_only,
+                    enriched,
+                    context_quality,
+                    feature_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    _dataset_row_insert_values(row, dataset_run_id=run_id, created_at=generated_at)
+                    for row in rows
+                ],
+            )
+            conn.commit()
 
     def bet_history_candidate_signal(
         self,
@@ -1045,6 +1215,66 @@ class GptActionStore:
 
                 CREATE INDEX IF NOT EXISTS bet_history_leg_enrichments_game_idx
                     ON bet_history_leg_enrichments (game_pk);
+
+                CREATE TABLE IF NOT EXISTS bet_history_dataset_runs (
+                    dataset_run_id TEXT PRIMARY KEY,
+                    dataset_version TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    from_date TEXT,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    training_rows INTEGER NOT NULL DEFAULT 0,
+                    graded_rows INTEGER NOT NULL DEFAULT 0,
+                    enriched_rows INTEGER NOT NULL DEFAULT 0,
+                    under_rows INTEGER NOT NULL DEFAULT 0,
+                    ticket_rows INTEGER NOT NULL DEFAULT 0,
+                    readiness_json TEXT NOT NULL DEFAULT '{}',
+                    summary_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS bet_history_dataset_rows (
+                    dataset_row_id TEXT PRIMARY KEY,
+                    dataset_run_id TEXT NOT NULL,
+                    history_leg_id TEXT NOT NULL,
+                    import_id TEXT,
+                    ticket_id TEXT,
+                    bet_date TEXT,
+                    market_key TEXT,
+                    side TEXT,
+                    line REAL,
+                    odds REAL,
+                    ticket_odds REAL,
+                    result_status TEXT,
+                    actual_stat REAL,
+                    label INTEGER,
+                    player_name TEXT,
+                    team_name TEXT,
+                    matchup TEXT,
+                    lineup_spot INTEGER,
+                    lineup_spot_bucket TEXT,
+                    confirmed_starter INTEGER,
+                    starter_bucket TEXT,
+                    pitcher_hand TEXT,
+                    venue TEXT,
+                    market_side TEXT,
+                    market_line_bucket TEXT,
+                    player_market TEXT,
+                    longshot_odds_bucket TEXT,
+                    leg_count_bucket TEXT,
+                    under_only INTEGER NOT NULL DEFAULT 0,
+                    enriched INTEGER NOT NULL DEFAULT 0,
+                    context_quality TEXT,
+                    feature_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(dataset_run_id) REFERENCES bet_history_dataset_runs(dataset_run_id) ON DELETE CASCADE,
+                    FOREIGN KEY(history_leg_id) REFERENCES bet_history_legs(history_leg_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS bet_history_dataset_rows_run_idx
+                    ON bet_history_dataset_rows (dataset_run_id);
+
+                CREATE INDEX IF NOT EXISTS bet_history_dataset_rows_market_idx
+                    ON bet_history_dataset_rows (market_key, side);
 
                 """
             )
@@ -1573,6 +1803,277 @@ def _bet_history_backtest_report(rows: list[dict[str, Any]], *, filters: dict[st
             "Enriched buckets are deterministic stored-context slices. Postgame boxscore fields remain grading-only and do not become pregame prediction evidence.",
         ],
     }
+
+
+def _bet_history_dataset_report(
+    rows: list[dict[str, Any]],
+    *,
+    analysis: dict[str, Any],
+    from_date: str | None,
+    source: str,
+) -> dict[str, Any]:
+    ticket_counts = Counter(
+        str(row.get("ticketId") or "").strip()
+        for row in rows
+        if str(row.get("ticketId") or "").strip()
+    )
+    dataset_rows = [_dataset_feature_row(row, ticket_counts=ticket_counts) for row in rows]
+    graded_rows = [row for row in dataset_rows if row.get("label") in {0, 1}]
+    training_rows = [row for row in dataset_rows if row.get("trainingReady")]
+    enriched_rows = [row for row in dataset_rows if row.get("enriched")]
+    under_rows = [row for row in dataset_rows if row.get("underOnly")]
+    ticket_ids = {
+        str(row.get("ticketId") or "").strip()
+        for row in dataset_rows
+        if str(row.get("ticketId") or "").strip()
+    }
+    missing = {
+        "odds": sum(1 for row in dataset_rows if row.get("odds") is None),
+        "ticketOdds": sum(1 for row in dataset_rows if row.get("ticketOdds") is None),
+        "enrichment": len(dataset_rows) - len(enriched_rows),
+        "lineupSpot": sum(1 for row in dataset_rows if row.get("lineupSpot") is None),
+        "pitchHand": sum(1 for row in dataset_rows if not row.get("pitcherHand")),
+        "venue": sum(1 for row in dataset_rows if row.get("venue") == "venue unknown"),
+    }
+    summary = {
+        "markets": _dataset_top_counts(row.get("marketKey") for row in dataset_rows),
+        "sides": _dataset_top_counts(row.get("side") for row in dataset_rows),
+        "marketLineBuckets": _dataset_top_counts(row.get("marketLineBucket") for row in dataset_rows),
+        "lineupSpots": _dataset_top_counts(row.get("lineupSpotBucket") for row in dataset_rows),
+        "starterRoles": _dataset_top_counts(row.get("starterBucket") for row in dataset_rows),
+        "pitchHands": _dataset_top_counts(row.get("pitcherHand") or "pitch hand unknown" for row in dataset_rows),
+        "venues": _dataset_top_counts(row.get("venue") for row in dataset_rows),
+        "longshotOdds": _dataset_top_counts(row.get("longshotOddsBucket") for row in dataset_rows),
+        "legCounts": _dataset_top_counts(row.get("legCountBucket") for row in dataset_rows),
+    }
+    readiness = _dataset_readiness(
+        rows=len(dataset_rows),
+        training_rows=len(training_rows),
+        graded_rows=len(graded_rows),
+        ticket_rows=len(ticket_ids),
+        enrichment_coverage=_round_rate(len(enriched_rows), len(dataset_rows)) or 0.0,
+    )
+    return {
+        "datasetRunId": str(uuid.uuid4()),
+        "datasetVersion": "historic_dataset_v1",
+        "generatedAt": _utc_now(),
+        "source": source,
+        "fromDate": from_date,
+        "rows": len(dataset_rows),
+        "trainingRows": len(training_rows),
+        "gradedRows": len(graded_rows),
+        "enrichedRows": len(enriched_rows),
+        "enrichmentCoverage": _round_rate(len(enriched_rows), len(dataset_rows)),
+        "underRows": len(under_rows),
+        "underRate": _round_rate(len(under_rows), len(dataset_rows)),
+        "ticketRows": len(ticket_ids),
+        "missing": missing,
+        "buckets": summary,
+        "readiness": readiness,
+        "analysisReadiness": (analysis.get("finalOutcome") or {}).get("modelReadiness") or {},
+        "preview": [
+            {
+                "historyLegId": row.get("historyLegId"),
+                "playerName": row.get("playerName"),
+                "marketKey": row.get("marketKey"),
+                "side": row.get("side"),
+                "line": row.get("line"),
+                "label": row.get("label"),
+                "featureKeys": sorted((row.get("features") or {}).keys()),
+            }
+            for row in dataset_rows[:5]
+        ],
+        "notes": [
+            "This dataset is a rebuildable derived artifact from imported historic rows and frozen MLB enrichment snapshots.",
+            "Won/lost labels are training labels. Push/void rows remain historical facts but are excluded from supervised labels.",
+            "Boxscore fields are grading labels only; pregame snapshot fields are the model feature side.",
+        ],
+        "_rowsForStorage": dataset_rows,
+    }
+
+
+def _dataset_feature_row(row: dict[str, Any], *, ticket_counts: Counter[str]) -> dict[str, Any]:
+    enrichment = row.get("historicalEnrichment") or {}
+    result_status = row.get("resultStatus")
+    label = 1 if result_status == "won" else 0 if result_status == "lost" else None
+    lineup_spot = _int_or_none(enrichment.get("battingOrder"))
+    confirmed_starter = None
+    if enrichment:
+        confirmed_starter = 1 if enrichment.get("confirmedStarter") is True else 0
+    ticket_odds = _ticket_odds([row])
+    market_side = _market_side_label(row)
+    market_line_bucket = _line_bucket_label(row)
+    player_market = _player_market_label(row)
+    longshot_bucket = _longshot_odds_label(row)
+    leg_count_bucket = _leg_count_label(row, ticket_counts)
+    venue = _venue_label(row)
+    under_only = str(row.get("side") or "").lower() == "under"
+    context_quality = enrichment.get("contextQuality") if enrichment else "missing"
+    features = {
+        "marketKey": row.get("marketKey"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "ticketOdds": ticket_odds,
+        "ticketLegCount": ticket_counts.get(str(row.get("ticketId") or "").strip()),
+        "playerName": row.get("playerName"),
+        "teamName": row.get("teamName"),
+        "opponentName": row.get("opponentName"),
+        "matchup": row.get("matchup"),
+        "lineupSpot": lineup_spot,
+        "lineupSpotBucket": _lineup_spot_label(row),
+        "confirmedStarter": confirmed_starter,
+        "starterBucket": _starter_role_label(row),
+        "pitcherHand": enrichment.get("pitchHand"),
+        "batSide": enrichment.get("batSide"),
+        "venue": venue,
+        "marketSide": market_side,
+        "marketLineBucket": market_line_bucket,
+        "playerMarket": player_market,
+        "longshotOddsBucket": longshot_bucket,
+        "legCountBucket": leg_count_bucket,
+        "underOnly": under_only,
+        "enriched": bool(enrichment),
+        "contextQuality": context_quality,
+        "gamePk": enrichment.get("gamePk"),
+        "playerMlbId": enrichment.get("playerMlbId"),
+    }
+    return {
+        "datasetRowId": str(uuid.uuid4()),
+        "historyLegId": row.get("historyLegId"),
+        "importId": row.get("importId"),
+        "ticketId": row.get("ticketId"),
+        "betDate": row.get("betDate"),
+        "marketKey": row.get("marketKey"),
+        "side": row.get("side"),
+        "line": row.get("line"),
+        "odds": row.get("odds"),
+        "ticketOdds": ticket_odds,
+        "resultStatus": result_status,
+        "actualStat": row.get("actualStat"),
+        "label": label,
+        "playerName": row.get("playerName"),
+        "teamName": row.get("teamName"),
+        "matchup": row.get("matchup"),
+        "lineupSpot": lineup_spot,
+        "lineupSpotBucket": features["lineupSpotBucket"],
+        "confirmedStarter": confirmed_starter,
+        "starterBucket": features["starterBucket"],
+        "pitcherHand": enrichment.get("pitchHand"),
+        "venue": venue,
+        "marketSide": market_side,
+        "marketLineBucket": market_line_bucket,
+        "playerMarket": player_market,
+        "longshotOddsBucket": longshot_bucket,
+        "legCountBucket": leg_count_bucket,
+        "underOnly": under_only,
+        "enriched": bool(enrichment),
+        "contextQuality": context_quality,
+        "trainingReady": bool(row.get("trainingEligible") and label in {0, 1}),
+        "features": features,
+    }
+
+
+def _dataset_row_insert_values(
+    row: dict[str, Any],
+    *,
+    dataset_run_id: str,
+    created_at: str,
+) -> tuple[Any, ...]:
+    return (
+        row.get("datasetRowId"),
+        dataset_run_id,
+        row.get("historyLegId"),
+        row.get("importId"),
+        row.get("ticketId"),
+        row.get("betDate"),
+        row.get("marketKey"),
+        row.get("side"),
+        _float_or_none(row.get("line")),
+        _float_or_none(row.get("odds")),
+        _float_or_none(row.get("ticketOdds")),
+        row.get("resultStatus"),
+        _float_or_none(row.get("actualStat")),
+        row.get("label"),
+        row.get("playerName"),
+        row.get("teamName"),
+        row.get("matchup"),
+        row.get("lineupSpot"),
+        row.get("lineupSpotBucket"),
+        row.get("confirmedStarter"),
+        row.get("starterBucket"),
+        row.get("pitcherHand"),
+        row.get("venue"),
+        row.get("marketSide"),
+        row.get("marketLineBucket"),
+        row.get("playerMarket"),
+        row.get("longshotOddsBucket"),
+        row.get("legCountBucket"),
+        1 if row.get("underOnly") else 0,
+        1 if row.get("enriched") else 0,
+        row.get("contextQuality"),
+        _json_dumps(row.get("features") or {}),
+        created_at,
+    )
+
+
+def _dataset_readiness(
+    *,
+    rows: int,
+    training_rows: int,
+    graded_rows: int,
+    ticket_rows: int,
+    enrichment_coverage: float,
+) -> dict[str, Any]:
+    gates = {
+        "rows": rows,
+        "trainingRows": training_rows,
+        "gradedRows": graded_rows,
+        "ticketRows": ticket_rows,
+        "enrichmentCoverage": enrichment_coverage,
+    }
+    if rows <= 0:
+        return {
+            "status": "empty",
+            "label": "No dataset rows",
+            "reason": "Import settled history first.",
+            "gates": gates,
+        }
+    if training_rows < 250 or ticket_rows < 40:
+        return {
+            "status": "ml_dataset_forming",
+            "label": "ML dataset forming",
+            "reason": "The derived dataset exists, but supervised training still needs more won/lost legs and tickets.",
+            "gates": gates,
+        }
+    if enrichment_coverage < 0.50:
+        return {
+            "status": "needs_more_enrichment",
+            "label": "Dataset built, enrichment thin",
+            "reason": "Build more frozen MLB context before model training so features are not mostly unknown.",
+            "gates": gates,
+        }
+    if training_rows < 1000 or ticket_rows < 100 or enrichment_coverage < 0.75:
+        return {
+            "status": "ml_baseline_dataset_ready",
+            "label": "ML baseline dataset ready",
+            "reason": "Enough data exists for offline baseline experiments, not production influence.",
+            "gates": gates,
+        }
+    return {
+        "status": "ml_training_dataset_ready",
+        "label": "ML training dataset ready",
+        "reason": "The sample and enrichment coverage are strong enough for held-out model training.",
+        "gates": gates,
+    }
+
+
+def _dataset_top_counts(values) -> list[dict[str, Any]]:
+    counter = Counter(str(value or "unknown") for value in values)
+    return [
+        {"label": label, "count": count}
+        for label, count in counter.most_common(12)
+    ]
 
 
 def _backtest_groups(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:

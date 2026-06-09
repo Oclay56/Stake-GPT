@@ -71,12 +71,13 @@ HELP_EXTRA_ROWS = [
     ("logs --errors", "Show warnings and errors"),
     ("historic --dry-run <file>", "Preview a historic import"),
     ("historic", "Auto-import new historic files and show status"),
-    ("historic update", "Sync, enrich, and analyze historic data"),
+    ("historic update", "Sync, enrich, build dataset, and analyze historic data"),
     ("historic report", "Show imported historic summary without syncing"),
     ("historic sync", "Import new files from the historic import folder"),
     ("historic review", "Show rows needing review"),
     ("historic enrich", "Store frozen historical MLB snapshots"),
     ("historic enrich --missing-only", "Enrich only historic legs not yet linked"),
+    ("historic dataset", "Build or inspect the derived ML dataset"),
     ("historic storage", "Sync Supabase history source and SQLite backup"),
     ("analysis", "Open historic analysis dashboard"),
     ("analysis tickets", "Show ticket-level SGM performance"),
@@ -1163,6 +1164,9 @@ class StakeGptCli:
             elif subcommand == "enrich":
                 history_args = ["enrich", *clean_args[1:]]
                 self.status = "historic enrich"
+            elif subcommand == "dataset":
+                history_args = ["dataset", *clean_args[1:]]
+                self.status = "historic dataset"
             elif subcommand in {"analysis", "backtest"}:
                 history_args = ["analysis", *clean_args[1:]]
                 self.status = "historic analysis"

@@ -98,7 +98,7 @@ TUI_ACTIONS: tuple[TuiAction, ...] = (
     TuiAction("build", "Build", "ctrl+b", "Open builder mode for validated slips.", "build", "Building"),
     TuiAction("history", "Historic", "ctrl+i", "Auto-import new historic files and show status.", "historic", "Loading historic"),
     TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),
-    TuiAction("model", "Model", "ctrl+m", "Reserved ML model workspace.", "model", "Loading model"),
+    TuiAction("model", "M/L", "ctrl+m", "Reserved ML model workspace.", "model", "Loading M/L"),
     TuiAction("logs", "Logs", "ctrl+l", "Show the latest helper logs.", "logs", "Loading logs"),
     TuiAction("doctor", "Doctor", "ctrl+d", "Run diagnostics.", "doctor", "Diagnosing"),
     TuiAction("clean", "Clean", "ctrl+c", "Clear rebuildable cache.", "clean", "Cleaning"),
@@ -622,7 +622,7 @@ if TEXTUAL_AVAILABLE:
             ("ctrl+b", "run_action('build')", "Build"),
             ("ctrl+i", "run_action('history')", "Historic"),
             ("ctrl+t", "run_action('backtest')", "Analysis"),
-            ("ctrl+m", "run_action('model')", "Model"),
+            ("ctrl+m", "run_action('model')", "M/L"),
             ("ctrl+l", "run_action('logs')", "Logs"),
             ("ctrl+d", "run_action('doctor')", "Doctor"),
             ("ctrl+c", "run_action('clean')", "Clean"),
@@ -633,7 +633,7 @@ if TEXTUAL_AVAILABLE:
             ("b", "run_action('build')", "Build"),
             ("i", "run_action('history')", "Historic"),
             ("t", "run_action('backtest')", "Analysis"),
-            ("m", "run_action('model')", "Model"),
+            ("m", "run_action('model')", "M/L"),
             ("l", "run_action('logs')", "Logs"),
             ("d", "run_action('doctor')", "Doctor"),
             ("c", "run_action('clean')", "Clean"),
@@ -1086,7 +1086,7 @@ if TEXTUAL_AVAILABLE:
                         self._append_output(line)
                 self.cli.status = "ready" if code == 0 else "historic failed"
             elif action.action_id == "model":
-                self.cli.status = "model"
+                self.cli.status = "m/l"
                 code, output = self._run_module_command_capture(["-m", "app.bet_history", "model", "train", "--json"])
                 if code == 0:
                     try:
@@ -1110,9 +1110,9 @@ if TEXTUAL_AVAILABLE:
                         self._append_output(f"Validation: {validation.get('label') or 'unknown'}")
                         self._append_output(f"Can influence builds: {bool(validation.get('canInfluenceBuilds'))}")
                 else:
-                    for line in output.splitlines() or ["Model readiness lookup failed."]:
+                    for line in output.splitlines() or ["M/L readiness lookup failed."]:
                         self._append_output(line)
-                self.cli.status = "ready" if code == 0 else "model failed"
+                self.cli.status = "ready" if code == 0 else "m/l failed"
             elif action.action_id == "logs":
                 self.cli.run_logs({"--tail"})
                 self.cli.status = "ready"

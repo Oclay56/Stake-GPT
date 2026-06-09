@@ -77,7 +77,7 @@ def test_tui_action_rows_use_single_bracket_pair_and_include_shortcuts():
     assert "Analysis" in rows[3]
     assert "Backtest" not in rows[3]
     assert "ctrl+t" in rows[3]
-    assert "Model" in rows[4]
+    assert "M/L" in rows[4]
     assert "ctrl+m" in rows[4]
     assert all("Palette" not in row for row in rows)
     assert all("ctrl+p" not in row for row in rows)

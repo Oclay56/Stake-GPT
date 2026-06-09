@@ -97,7 +97,7 @@ class TuiAction:
 TUI_ACTIONS: tuple[TuiAction, ...] = (
     TuiAction("review", "Review", "ctrl+r", "Review the visible Stake board.", "review", "Reviewing"),
     TuiAction("build", "Build", "ctrl+b", "Open builder mode for validated slips.", "build", "Building"),
-    TuiAction("flow", "Flow", "ctrl+f", "Run Historic, Analysis, and M/L with local AI summary.", "flow", "Running flow"),
+    TuiAction("flow", "Flow", "ctrl+f", "Let local AI plan safe Historic, Analysis, and M/L maintenance.", "flow", "Running flow"),
     TuiAction("ai", "AI", "ctrl+a", "Open local Ollama chat.", "ai", "Opening AI"),
     TuiAction("history", "Historic", "ctrl+i", "Auto-import new historic files and show status.", "historic", "Loading historic"),
     TuiAction("backtest", "Analysis", "ctrl+t", "Run the automated historic analysis.", "backtest", "Analyzing"),

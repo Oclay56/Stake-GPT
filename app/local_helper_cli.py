@@ -57,7 +57,7 @@ ERROR_LOG_PATTERNS = ("error", "fail", "missing", "traceback", "warn")
 COMMAND_ROWS = [
     ("review, r", "Scan board"),
     ("build, b", "Build validated slip"),
-    ("flow, f", "Run local AI flow"),
+    ("flow, f", "Run AI-planned flow"),
     ("ai, a", "Open local AI chat"),
     ("status, s", "Show status"),
     ("domain, q", "Toggle Stake site"),
@@ -90,7 +90,7 @@ HELP_EXTRA_ROWS = [
     ("analysis --ticket <id>", "Analyze only one ticket"),
     ("historic analysis --import-id <id>", "Analyze only one import/session"),
     ("historic imports", "List saved historic imports"),
-    ("flow", "Run Historic, Analysis, M/L, then summarize with local AI"),
+    ("flow", "Let local AI choose safe Historic, Analysis, and M/L steps"),
     ("flow --skip-ai", "Run the same flow with deterministic summary only"),
     ("ai", "Open a normal Ollama chat window"),
     ("ai <model>", "Open chat with a specific local model"),

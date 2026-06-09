@@ -178,7 +178,7 @@ def test_main_menu_uses_polished_status_and_commands():
     assert "Commands:" in menu
     assert "review, r" in menu and "Scan board" in menu
     assert "build, b" in menu and "Build validated slip" in menu
-    assert "flow, f" in menu and "Run local AI flow" in menu
+    assert "flow, f" in menu and "Run AI-planned flow" in menu
     assert "ai, a" in menu and "Open local AI chat" in menu
     assert "status, s" in menu and "Show status" in menu
     assert "domain, q" in menu and "Toggle Stake site" in menu

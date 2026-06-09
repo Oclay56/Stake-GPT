@@ -71,11 +71,13 @@ HELP_EXTRA_ROWS = [
     ("logs --errors", "Show warnings and errors"),
     ("historic --dry-run <file>", "Preview a historic import"),
     ("historic", "Auto-import new historic files and show status"),
+    ("historic update", "Sync, enrich, and analyze historic data"),
     ("historic report", "Show imported historic summary without syncing"),
     ("historic sync", "Import new files from the historic import folder"),
     ("historic review", "Show rows needing review"),
     ("historic enrich", "Store frozen historical MLB snapshots"),
     ("historic enrich --missing-only", "Enrich only historic legs not yet linked"),
+    ("historic storage", "Sync Supabase history source and SQLite backup"),
     ("analysis", "Open historic analysis dashboard"),
     ("analysis tickets", "Show ticket-level SGM performance"),
     ("analysis signals", "Show market/player/line signals"),
@@ -596,6 +598,7 @@ def format_help_screen(*, use_color: bool = False) -> str:
         "  build",
         "  status",
         "  historic C:\\path\\bets.csv --dry-run",
+        "  historic update",
         "  historic sync",
         "  historic report",
         "  historic review",
@@ -1151,6 +1154,9 @@ class StakeGptCli:
             elif subcommand == "sync":
                 history_args = ["sync", *clean_args[1:]]
                 self.status = "historic sync"
+            elif subcommand in {"update", "auto", "pipeline"}:
+                history_args = ["update", *clean_args[1:]]
+                self.status = "historic update"
             elif subcommand == "review":
                 history_args = ["review", *clean_args[1:]]
                 self.status = "historic review"

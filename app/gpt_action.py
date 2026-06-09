@@ -2735,9 +2735,10 @@ def _stake_ui_sgm_candidate_pool_request_body() -> dict[str, Any]:
                         "useBetHistorySignals": {
                             "type": "boolean",
                             "description": (
-                                "Defaults true. When enabled, dynamically reads imported local bet historic "
-                                "and stored historical MLB enrichment snapshots, then applies sample-gated "
-                                "historical signals as soft candidate scoring context."
+                                "Defaults true. When enabled, dynamically reads imported Supabase-backed "
+                                "bet historic with SQLite cache/fallback and stored historical MLB enrichment "
+                                "snapshots, then applies sample-gated historical signals as soft candidate "
+                                "scoring context."
                             ),
                         },
                         "compact": {

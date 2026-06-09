@@ -16,6 +16,7 @@ Recommended flow:
 ```powershell
 historic data\bet-history\imports\your-file.csv --dry-run
 historic data\bet-history\imports\your-file.csv
+historic update
 historic report
 historic review
 historic imports
@@ -26,7 +27,9 @@ analysis signals
 analysis calibration
 ```
 
-Parsed rows are stored in `data/gpt_action.sqlite` in the `bet_history_*` tables.
+Parsed rows are stored in the `bet_history_*` tables. In normal configured mode, Supabase is
+the persistent source of truth and `data/gpt_action.sqlite` is a local cache/backup. In dev
+or offline mode, SQLite can still run the full parser, enrichment, and analysis loop by itself.
 Files placed in `imports/` are ignored by git so private bet history does not get committed.
 
 The parser only normalizes canonical betting fields. Extra Stake UI text, promo
@@ -50,6 +53,9 @@ historic delete-import <import-id> --yes
 
 - `historic report` - overall status of everything imported.
 - `historic review` - rows that are blocked from automatic training, with reasons and repair policy.
+- `historic update` - the normal automation flow: import new files, enrich missing MLB snapshots, then run updated analysis.
+- `historic enrich --missing-only` - lower-level enrichment-only command for frozen MLB context snapshots.
+- `historic storage` - explicit Supabase <-> SQLite sync. Use `historic storage pull` to hydrate local cache, `historic storage push` to upload local history, or `historic storage sync` for both.
 - `historic analysis` / `analysis` / `z` - automated historic analysis flow across training-eligible legs, SGM tickets, signals, calibration, and one final outcome.
 - `analysis legs` - leg-level hit rate + stake-aware ROI.
 - `analysis tickets` - ticket-level SGM/multi results grouped by `ticketId`.
@@ -75,12 +81,24 @@ Filter behavior is shared across dashboard, legs, tickets, signals, and calibrat
 
 The default `z` command runs the full automated flow:
 
-1. Load imported SQLite history.
+1. Load imported history from Supabase when configured, with SQLite as the local cache/fallback.
 2. Run leg-level performance analysis.
 3. Run ticket-level SGM/multi performance analysis.
 4. Build market/player/side/line signals.
 5. Build calibration buckets.
 6. Print a final outcome with history quality, ticket sample, strongest/weakest markets, calibration status, model readiness, warnings, and next action.
+
+The default `Historic` TUI action and `historic update` command run the full update flow:
+
+1. Sync new files from `data/bet-history/imports`.
+2. Skip duplicate imports and refresh duplicate metadata when needed.
+3. Run `historic enrich --missing-only` against the same normalized history cache.
+4. Store frozen MLB game snapshots and leg enrichment rows.
+5. Push normalized imports/snapshots/enrichments to Supabase when configured.
+6. Run updated analysis from the normalized history layer.
+
+Use `historic update --from-date YYYY-MM-DD` to scope a recent slice, or
+`historic update --enrich-limit 500` to control how many missing legs are enriched in one run.
 
 ## Market Coverage
 
@@ -139,7 +157,9 @@ The recommended adjustment is capped between `-0.15` and `+0.08`, and buckets be
 
 ## Builder Signal Integration
 
-The SGM candidate pool dynamically reads imported SQLite history when scoring rows.
+The SGM candidate pool dynamically reads imported historic results when scoring rows. In
+production, it hydrates the local SQLite cache from Supabase first; in dev/offline mode it reads
+the SQLite fallback directly.
 
 - History is a soft signal, never a hard pick/reject rule.
 - Low-sample history is shown but cannot move score.
@@ -156,6 +176,8 @@ historicalAppliedBucket
 historicalHitRate
 historicalSampleSize
 historicalScoreAdjustment
+historicalEnrichmentStatus
+historicalEnrichmentCoverage
 ```
 
 Default behavior is enabled. To debug without local history influence, call the SGM candidate pool with:

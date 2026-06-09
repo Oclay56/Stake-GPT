@@ -73,6 +73,9 @@ async def enrich_bet_history(
 
     summary["skipReasons"] = dict(Counter(row.get("reason") for row in summary["rows"] if row.get("reason")))
     summary["storeSummary"] = store.bet_history_enrichment_report()
+    summary["persistence"] = store.sync_bet_history_to_supabase(
+        table_names=("bet_history_game_snapshots", "bet_history_leg_enrichments")
+    )
     return summary
 
 

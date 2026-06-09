@@ -130,7 +130,7 @@ Probability math never overrides the Finalist Research Gate.
 
 ## Historic Analysis, Enrichment, And Future ML
 
-Stake-GPT can use imported bet-history analysis as a support layer. This layer reads settled imported bets from local SQLite and summarizes leg performance, ticket performance, market/player-market buckets, side and line buckets, ticket failure contributors, calibration status, and model-readiness gates. It is historic analysis, not a trained machine-learning model and not a substitute for current Stake/MLB research.
+Stake-GPT can use imported bet-history analysis as a support layer. This layer reads settled imported bets from Supabase-backed persistent history tables, with SQLite only as local cache/backup or dev-mode fallback, and summarizes leg performance, ticket performance, market/player-market buckets, side and line buckets, ticket failure contributors, calibration status, and model-readiness gates. It is historic analysis, not a trained machine-learning model and not a substitute for current Stake/MLB research.
 
 When candidate rows include history fields, use them as follows:
 

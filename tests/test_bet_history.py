@@ -1127,9 +1127,17 @@ def test_bet_history_backtest_dashboard_includes_automated_final_outcome(tmp_pat
     assert report["flow"][-1]["step"] == "final_outcome"
     assert report["finalOutcome"]["legSample"]["gradedLegs"] == 12
     assert report["finalOutcome"]["ticketSample"]["tickets"] == 6
+    assert report["signals"]["byMarketLine"][0]["label"] in {
+        "singles | line 0.5",
+        "batter_strikeouts | line 1.5",
+    }
+    assert report["signals"]["underOnly"]["overall"]["gradedLegs"] == 12
+    assert report["enrichedBuckets"]["byLongshotOdds"][0]["label"] == "ticket odds under 10"
+    assert report["enrichedBuckets"]["byLegCount"][0]["label"] == "2-5 legs"
     assert report["finalOutcome"]["modelReadiness"]["status"] == "backtest_ready_ml_dataset_forming"
     assert "Automated flow:" in screen
     assert "Final Outcome" in screen
+    assert "Enriched / ticket-structure buckets:" in screen
     assert "Verdict:" in screen
     assert "Next action:" in screen
 
@@ -1164,6 +1172,7 @@ def test_bet_history_backtest_rich_report_uses_boxed_dashboard(tmp_path):
     assert "Ticket Sample" in screen
     assert "Strongest Markets" in screen
     assert "Calibration Preview" in screen
+    assert "Context Buckets" in screen
     assert any(char in screen for char in ("╭", "┌"))
 
 
@@ -1387,6 +1396,9 @@ def test_bet_history_enrichment_stores_snapshots_and_feeds_backtest(tmp_path):
     assert backtest["enrichment"]["status"] == "enriched"
     assert backtest["enrichment"]["enrichedLegs"] == 1
     assert backtest["enrichment"]["gradedBySnapshot"] == 1
+    assert backtest["enrichedBuckets"]["byLineupSpot"][0]["label"] == "top third | batting 1"
+    assert backtest["enrichedBuckets"]["byStarterRole"][0]["label"] == "confirmed starter"
+    assert backtest["enrichedBuckets"]["byVenue"][0]["label"] == "Rogers Centre"
     assert "Historical enrichment: enriched" in format_backtest_report(backtest)
 
     signal = store.bet_history_candidate_signal(

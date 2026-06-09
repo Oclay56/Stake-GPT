@@ -18,6 +18,7 @@ from app.local_helper_tui import (
     console_input_mode_without_text_selection,
     find_tui_action,
     format_historic_tui_summary,
+    format_historic_update_tui_summary,
     format_running_status,
     format_tui_action_row,
     rich_stake_site_row,
@@ -170,6 +171,43 @@ def test_tui_historic_summary_shows_more_than_five_import_files():
     assert "p1.txt" not in text
     assert "p6.txt" not in text
     assert "p7.txt" not in text
+
+
+def test_tui_historic_update_summary_shows_pipeline_without_file_names():
+    report = {
+        "sync": {
+            "filesConsidered": 8,
+            "filesImported": 1,
+            "filesSkippedDuplicate": 7,
+            "refreshedLegs": 0,
+            "filesFailed": 0,
+            "history": {
+                "parsedLegs": 241,
+                "trainingEligible": 241,
+                "importFiles": [f"p{index}.txt" for index in range(1, 9)],
+            },
+        },
+        "enrich": {"targets": 100, "legsEnriched": 90},
+        "analysis": {
+            "enrichment": {"coverageRate": 0.75},
+            "finalOutcome": {
+                "ticketSample": {
+                    "tickets": 25,
+                    "gradedTickets": 24,
+                    "roi": -0.12,
+                }
+            },
+        },
+    }
+
+    lines = format_historic_update_tui_summary(report)
+    text = "\n".join(lines)
+
+    assert "Enriched: 90 | Targets: 100 | Coverage: 75.0%" in text
+    assert "Tickets: 24/25 | ROI: -12.0%" in text
+    assert "Import files (8)" in text
+    assert "p1.txt" not in text
+    assert "p8.txt" not in text
 
 
 def test_tui_dependency_status_is_explicit():

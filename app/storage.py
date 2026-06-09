@@ -3,23 +3,36 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .bet_history_fingerprint import FINGERPRINT_VERSION, history_fingerprint
 from .market_normalization import SUPPORTED_MLB_PROP_MARKETS, normalize_mlb_prop_market_key
+from .supabase_history import (
+    delete_supabase_history_import,
+    supabase_history_enabled,
+    sync_sqlite_history_to_supabase,
+    sync_supabase_history_to_sqlite,
+)
 
 
 DEFAULT_DB_PATH = Path("data") / "gpt_action.sqlite"
+_REMOTE_HISTORY_PULL_CACHE: dict[str, float] = {}
 
 
 class GptActionStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
+        explicit_db_path = db_path is not None
         configured_path = db_path or os.getenv("AZP_DB_PATH") or DEFAULT_DB_PATH
         self.db_path = Path(configured_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._history_remote_enabled = supabase_history_enabled(explicit_db_path=explicit_db_path)
+        self._history_remote_loaded = False
+        self._history_remote_last_error: str | None = None
         self._ensure_schema()
 
     def save_gpt_decision_result(
@@ -132,6 +145,7 @@ class GptActionStore:
         return {"marketMappingsSaved": len(mappings), "capturedAt": now}
 
     def save_bet_history_import(self, parsed: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         import_id = str(uuid.uuid4())
         imported_at = _utc_now()
         report = parsed.get("report") or {}
@@ -179,6 +193,9 @@ class GptActionStore:
                         "duplicateSkipped": True,
                         "duplicateReason": "same_normalized_history",
                         "refreshedLegs": refreshed_legs,
+                        "supabaseHistorySync": self.sync_bet_history_to_supabase(
+                            table_names=("bet_history_imports", "bet_history_legs")
+                        ),
                     }
             conn.execute(
                 """
@@ -250,7 +267,7 @@ class GptActionStore:
                 )
             conn.commit()
 
-        return {
+        result = {
             "importId": import_id,
             "importedAt": imported_at,
             "rawRowsImported": len(raw_rows),
@@ -258,6 +275,10 @@ class GptActionStore:
             "needsReview": int(report.get("needsReview") or 0),
             "force": bool(force),
         }
+        result["supabaseHistorySync"] = self.sync_bet_history_to_supabase(
+            table_names=("bet_history_imports", "bet_history_raw", "bet_history_legs")
+        )
+        return result
 
     def list_bet_history_legs(
         self,
@@ -267,6 +288,7 @@ class GptActionStore:
         training_eligible: bool | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        self._load_remote_bet_history_once()
         sql = "SELECT * FROM bet_history_legs"
         params: list[Any] = []
         where: list[str] = []
@@ -313,6 +335,7 @@ class GptActionStore:
         }
 
     def list_bet_history_imports(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        self._load_remote_bet_history_once()
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -326,6 +349,7 @@ class GptActionStore:
         return [_bet_history_import_row(row) for row in rows]
 
     def delete_bet_history_import(self, import_id: str) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         clean_id = str(import_id or "").strip()
         if not clean_id:
             return {"deleted": False, "reason": "missing_import_id"}
@@ -348,14 +372,26 @@ class GptActionStore:
             conn.execute("DELETE FROM bet_history_raw WHERE import_id = ?", (clean_id,))
             conn.execute("DELETE FROM bet_history_imports WHERE import_id = ?", (clean_id,))
             conn.commit()
-        return {
+        remote_delete: dict[str, Any] | None = None
+        if self._history_remote_enabled:
+            try:
+                remote_delete = delete_supabase_history_import(clean_id)
+            except Exception as exc:
+                if _fail_on_supabase_history_error():
+                    raise
+                remote_delete = {"deleted": False, "error": str(exc)}
+        result = {
             "deleted": True,
             "importId": clean_id,
             "legsDeleted": int(leg_count or 0),
             "rawRowsDeleted": int(raw_count or 0),
         }
+        if remote_delete is not None:
+            result["supabaseHistoryDelete"] = remote_delete
+        return result
 
     def bet_history_report(self, *, review_limit: int = 25) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         with self._connect() as conn:
             totals = conn.execute(
                 """
@@ -414,6 +450,7 @@ class GptActionStore:
         missing_only: bool = False,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
+        self._load_remote_bet_history_once()
         sql = """
             SELECT
                 l.*,
@@ -450,6 +487,7 @@ class GptActionStore:
         return [_bet_history_leg_row(row) for row in rows]
 
     def get_bet_history_game_snapshot(self, game_pk: int) -> dict[str, Any] | None:
+        self._load_remote_bet_history_once()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM bet_history_game_snapshots WHERE game_pk = ?",
@@ -567,6 +605,7 @@ class GptActionStore:
         return _bet_history_enrichment_row(row)
 
     def bet_history_enrichment_report(self) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         with self._connect() as conn:
             snapshots = conn.execute(
                 "SELECT COUNT(*) AS count FROM bet_history_game_snapshots"
@@ -603,6 +642,7 @@ class GptActionStore:
         limit: int = 10000,
         view: str = "dashboard",
     ) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         clean_market = _clean_market_filter(market_key)
         clean_player = _clean_text_filter(player_name)
         clean_from_date = _clean_text_filter(from_date)
@@ -681,6 +721,7 @@ class GptActionStore:
         line: float | int | str | None = None,
         limit: int = 50000,
     ) -> dict[str, Any]:
+        self._load_remote_bet_history_once()
         clean_market = _clean_market_filter(market_key)
         clean_player = _clean_text_filter(player_name)
         clean_side = str(side or "").strip().lower() or None
@@ -694,6 +735,7 @@ class GptActionStore:
                 side=clean_side,
                 line=clean_line,
                 status="missing_candidate_market_or_side",
+                source=self.bet_history_source_label(),
             )
 
         market_side_rows = self._bet_history_signal_rows(
@@ -746,7 +788,7 @@ class GptActionStore:
             player_market_rows=player_market_rows,
         )
         return {
-            "source": "local_sqlite_bet_history",
+            "source": self.bet_history_source_label(),
             "status": applied.get("status"),
             "playerName": clean_player,
             "marketKey": clean_market,
@@ -758,6 +800,11 @@ class GptActionStore:
             "applied": applied,
             "notes": _candidate_history_signal_notes(buckets, applied, enrichment=enrichment),
         }
+
+    def bet_history_source_label(self) -> str:
+        if self._history_remote_enabled:
+            return "supabase_bet_history_with_sqlite_cache"
+        return "local_sqlite_bet_history_fallback"
 
     def _bet_history_signal_rows(
         self,
@@ -806,6 +853,7 @@ class GptActionStore:
         return [_bet_history_leg_row(row) for row in rows]
 
     def _bet_history_raw_count(self) -> int:
+        self._load_remote_bet_history_once()
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM bet_history_raw").fetchone()
         return int(row["count"] or 0)
@@ -1023,6 +1071,71 @@ class GptActionStore:
                 """
             )
             _normalize_legacy_live_history_flags(conn)
+
+    def sync_bet_history_from_supabase(self, *, force: bool = False) -> dict[str, Any]:
+        if not self._history_remote_enabled:
+            return {"enabled": False, "reason": "supabase_history_disabled"}
+        cache_key = str(self.db_path.resolve())
+        ttl = _remote_history_pull_ttl()
+        now = time.monotonic()
+        if (
+            not force
+            and self._history_remote_loaded
+            and ttl > 0
+            and now - _REMOTE_HISTORY_PULL_CACHE.get(cache_key, 0.0) < ttl
+        ):
+            return {"enabled": True, "skipped": True, "reason": "already_loaded"}
+        if (
+            not force
+            and ttl > 0
+            and now - _REMOTE_HISTORY_PULL_CACHE.get(cache_key, 0.0) < ttl
+        ):
+            self._history_remote_loaded = True
+            return {"enabled": True, "skipped": True, "reason": "pull_ttl_active"}
+        try:
+            result = sync_supabase_history_to_sqlite(self.db_path)
+            self._history_remote_loaded = True
+            self._history_remote_last_error = None
+            _REMOTE_HISTORY_PULL_CACHE[cache_key] = now
+            return result
+        except Exception as exc:
+            self._history_remote_loaded = True
+            self._history_remote_last_error = str(exc)
+            if _fail_on_supabase_history_error():
+                raise
+            return {
+                "enabled": True,
+                "error": str(exc),
+                "fallback": "sqlite_local_cache",
+            }
+
+    def sync_bet_history_to_supabase(
+        self,
+        *,
+        table_names: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        if not self._history_remote_enabled:
+            return {"enabled": False, "reason": "supabase_history_disabled"}
+        try:
+            result = sync_sqlite_history_to_supabase(self.db_path, table_names=table_names)
+            self._history_remote_last_error = None
+            return result
+        except Exception as exc:
+            self._history_remote_last_error = str(exc)
+            if _fail_on_supabase_history_error():
+                raise
+            return {
+                "enabled": True,
+                "error": str(exc),
+                "fallback": "sqlite_local_cache",
+            }
+
+    def _load_remote_bet_history_once(self) -> dict[str, Any]:
+        if not self._history_remote_enabled:
+            return {"enabled": False, "reason": "supabase_history_disabled"}
+        if self._history_remote_loaded:
+            return {"enabled": True, "skipped": True, "reason": "already_loaded"}
+        return self.sync_bet_history_from_supabase()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -1444,6 +1557,7 @@ def _bet_history_backtest_report(rows: list[dict[str, Any]], *, filters: dict[st
         "byLineBucket": _backtest_computed_groups(rows, _line_bucket_label, limit=30),
         "tickets": ticket_report,
         "enrichment": enrichment,
+        "enrichedBuckets": _history_enriched_bucket_report(rows, ticket_report=ticket_report),
         "signals": signals,
         "calibration": calibration,
         "notes": [
@@ -1456,6 +1570,7 @@ def _bet_history_backtest_report(rows: list[dict[str, Any]], *, filters: dict[st
             "Ticket performance groups correlated SGM/multi legs by ticketId. Ticket ROI requires ticketOdds and excludes winning tickets with push/void legs because payout odds were likely adjusted.",
             "Calibration is descriptive history, not machine learning. Use hit-rate adjustments when sample size is sufficient; use value/EV adjustments only when odds quality is sufficient.",
             "Historical enrichment uses stored MLB snapshots only; historic analysis does not call live MLB APIs.",
+            "Enriched buckets are deterministic stored-context slices. Postgame boxscore fields remain grading-only and do not become pregame prediction evidence.",
         ],
     }
 
@@ -1649,11 +1764,19 @@ def _history_signal_report(rows: list[dict[str, Any]], *, ticket_report: dict[st
     by_player_market = _signal_groups(rows, _player_market_label, limit=50)
     by_side = _signal_groups(rows, lambda row: str(row.get("side") or "unknown"))
     by_line_bucket = _signal_groups(rows, _line_bucket_label, limit=50)
+    by_market_line = _signal_groups(rows, _market_line_label, limit=50)
+    under_rows = [row for row in rows if str(row.get("side") or "").lower() == "under"]
     return {
         "byMarket": by_market,
         "byPlayerMarket": by_player_market,
         "bySide": by_side,
         "byLineBucket": by_line_bucket,
+        "byMarketLine": by_market_line,
+        "underOnly": {
+            "overall": _backtest_bucket(under_rows),
+            "byMarket": _signal_groups(under_rows, lambda row: str(row.get("marketKey") or "unknown"), limit=50),
+            "byMarketLine": _signal_groups(under_rows, _market_line_label, limit=50),
+        },
         "ticketFailureContributors": ticket_report.get("failureContributors") or {},
         "warnings": _signal_warnings(by_market, by_player_market, by_line_bucket),
     }
@@ -1734,6 +1857,52 @@ def _history_enrichment_backtest_summary(rows: list[dict[str, Any]]) -> dict[str
         "notes": [
             "Historic analysis reads stored enrichment snapshots only and does not call live MLB APIs.",
             "Imported resultStatus remains canonical; enrichedResultStatus is a frozen verification/feature field.",
+        ],
+    }
+
+
+def _history_enriched_bucket_report(
+    rows: list[dict[str, Any]],
+    *,
+    ticket_report: dict[str, Any],
+) -> dict[str, Any]:
+    enriched_rows = [row for row in rows if row.get("historicalEnrichment")]
+    ticket_leg_counts = Counter(
+        str(row.get("ticketId") or "").strip()
+        for row in rows
+        if str(row.get("ticketId") or "").strip()
+    )
+    return {
+        "source": "stored_historical_mlb_enrichment",
+        "coverage": _round_rate(len(enriched_rows), len(rows)),
+        "enrichedLegs": len(enriched_rows),
+        "byLineupSpot": _signal_groups(enriched_rows, _lineup_spot_label, limit=30),
+        "byStarterRole": _signal_groups(enriched_rows, _starter_role_label, limit=20),
+        "byPitchHand": _signal_groups(enriched_rows, _pitch_hand_label, limit=20),
+        "byVenue": _signal_groups(enriched_rows, _venue_label, limit=30),
+        "byLongshotOdds": _signal_groups(rows, _longshot_odds_label, limit=20),
+        "byLegCount": _signal_groups(rows, lambda row: _leg_count_label(row, ticket_leg_counts), limit=20),
+        "underOnly": {
+            "byLineupSpot": _signal_groups(
+                [row for row in enriched_rows if str(row.get("side") or "").lower() == "under"],
+                _lineup_spot_label,
+                limit=30,
+            ),
+            "byVenue": _signal_groups(
+                [row for row in enriched_rows if str(row.get("side") or "").lower() == "under"],
+                _venue_label,
+                limit=30,
+            ),
+            "byLongshotOdds": _signal_groups(
+                [row for row in rows if str(row.get("side") or "").lower() == "under"],
+                _longshot_odds_label,
+                limit=20,
+            ),
+        },
+        "notes": [
+            "Lineup, starter, pitch-hand, and venue buckets require historic enrich coverage.",
+            "Longshot and leg-count buckets use imported ticket metadata and work before enrichment.",
+            "Use ticket-level buckets as the primary strategy read for high-odds SGM history.",
         ],
     }
 
@@ -2134,9 +2303,10 @@ def _empty_candidate_history_signal(
     side: str | None,
     line: float | None,
     status: str,
+    source: str = "local_sqlite_bet_history_fallback",
 ) -> dict[str, Any]:
     return {
-        "source": "local_sqlite_bet_history",
+        "source": source,
         "status": status,
         "playerName": player_name,
         "marketKey": market_key,
@@ -2581,6 +2751,84 @@ def _line_bucket_label(row: dict[str, Any]) -> str:
     )
 
 
+def _market_line_label(row: dict[str, Any]) -> str:
+    return f"{row.get('marketKey') or 'unknown'} | line {_format_number(row.get('line'))}"
+
+
+def _lineup_spot_label(row: dict[str, Any]) -> str:
+    enrichment = row.get("historicalEnrichment") or {}
+    order = _int_or_none(enrichment.get("battingOrder"))
+    if order is None:
+        return "lineup spot unknown"
+    if order <= 3:
+        bucket = "top third"
+    elif order <= 6:
+        bucket = "middle third"
+    else:
+        bucket = "bottom third"
+    return f"{bucket} | batting {order}"
+
+
+def _starter_role_label(row: dict[str, Any]) -> str:
+    enrichment = row.get("historicalEnrichment") or {}
+    if enrichment.get("confirmedStarter") is True:
+        return "confirmed starter"
+    if enrichment.get("confirmedStarter") is False:
+        return "not confirmed starter"
+    return "starter status unknown"
+
+
+def _pitch_hand_label(row: dict[str, Any]) -> str:
+    enrichment = row.get("historicalEnrichment") or {}
+    pitch_hand = str(enrichment.get("pitchHand") or "").strip().upper()
+    if pitch_hand in {"L", "LEFT"}:
+        return "pitch hand L"
+    if pitch_hand in {"R", "RIGHT"}:
+        return "pitch hand R"
+    return "pitch hand unknown"
+
+
+def _venue_label(row: dict[str, Any]) -> str:
+    enrichment = row.get("historicalEnrichment") or {}
+    pregame = enrichment.get("pregameContext") or {}
+    venue = pregame.get("venue") or {}
+    name = str(venue.get("name") or "").strip()
+    return name or "venue unknown"
+
+
+def _longshot_odds_label(row: dict[str, Any]) -> str:
+    odds = _float_or_none(_ticket_odds([row]))
+    if odds is None:
+        return "ticket odds unknown"
+    if odds >= 100000:
+        return "ticket odds 100000+"
+    if odds >= 10000:
+        return "ticket odds 10000-99999"
+    if odds >= 1000:
+        return "ticket odds 1000-9999"
+    if odds >= 100:
+        return "ticket odds 100-999"
+    if odds >= 10:
+        return "ticket odds 10-99"
+    return "ticket odds under 10"
+
+
+def _leg_count_label(row: dict[str, Any], ticket_leg_counts: dict[str, int]) -> str:
+    ticket_id = str(row.get("ticketId") or "").strip()
+    count = ticket_leg_counts.get(ticket_id) if ticket_id else None
+    if count is None:
+        return "leg count unknown"
+    if count >= 20:
+        return "20+ legs"
+    if count >= 10:
+        return "10-19 legs"
+    if count >= 6:
+        return "6-9 legs"
+    if count >= 2:
+        return "2-5 legs"
+    return "single leg"
+
+
 def _format_number(value: Any) -> str:
     numeric = _float_or_none(value)
     if numeric is None:
@@ -3022,6 +3270,22 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _remote_history_pull_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("AZP_SUPABASE_HISTORY_PULL_TTL_SECONDS", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _fail_on_supabase_history_error() -> bool:
+    return str(os.getenv("AZP_FAIL_ON_SUPABASE_HISTORY_ERROR") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
 
@@ -3037,6 +3301,13 @@ def _row_has_column(row: sqlite3.Row, column: str) -> bool:
 def _float_or_none(value: Any) -> float | None:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
     except (TypeError, ValueError):
         return None
 

@@ -89,7 +89,7 @@ Probability math never overrides the Finalist Research Gate.
 
 ## Historic Analysis And Future ML Window
 
-Stake-GPT may return imported bet-history signals from local SQLite. Treat this as historic analysis: past leg/ticket performance, market/player-market hit rates, ticket failure contributors, calibration buckets, and frozen MLB enrichment snapshots. It is not a live API lookup and not a trained ML model.
+Stake-GPT may return imported bet-history signals from Supabase-backed persistent history, with SQLite only as cache/backup or dev fallback. Treat this as historic analysis: past leg/ticket performance, market/player-market hit rates, ticket failure contributors, calibration buckets, and frozen MLB enrichment snapshots. It is not a live API lookup and not a trained ML model.
 
 When rows include `historicalSignal`, `historicalSignalStatus`, `historicalAppliedBucket`, `historicalHitRate`, `historicalSampleSize`, `historicalScoreAdjustment`, `historicalCalibration`, or `historicalEnrichmentStatus`, use them as soft calibration. Low-sample history can be shown but must not move a pick by itself. A negative historical signal is a risk flag, not an automatic rejection unless it combines with current blockers. A positive historical signal never bypasses Stake truth, the Finalist Research Gate, current MLB context, or validation.
 

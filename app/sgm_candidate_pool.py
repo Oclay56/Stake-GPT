@@ -616,13 +616,13 @@ def _candidate_history_signal(
 ) -> dict[str, Any]:
     if store is None:
         return {
-            "source": "local_sqlite_bet_history",
+            "source": "bet_history_unavailable",
             "status": "disabled_or_unavailable",
             "applied": {
                 "status": "disabled_or_unavailable",
                 "scoreAdjustment": 0.0,
                 "probabilityAdjustment": 0.0,
-                "reason": "Bet historic signals are disabled or the local database is unavailable.",
+                "reason": "Bet historic signals are disabled or the history database is unavailable.",
             },
             "notes": ["historical_signal_unavailable"],
         }
@@ -635,7 +635,7 @@ def _candidate_history_signal(
         )
     except Exception:
         return {
-            "source": "local_sqlite_bet_history",
+            "source": "bet_history_lookup_failed",
             "status": "lookup_failed",
             "applied": {
                 "status": "lookup_failed",

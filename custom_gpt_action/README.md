@@ -36,7 +36,7 @@ Use `custom-gpt-instructions.md` as the primary Custom GPT instruction file. It 
 
 Attach or upload `custom-gpt-operational-reference.md` as the secondary reference file. It keeps the heavier glossary, probability engine, risk flags, playbooks, validation rules, lineup/opponent/game-context usage, and Stake SGM metadata guidance out of the main instruction stream while still preserving the full operating manual.
 
-Historic-analysis and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from imported SQLite bet history, not a trained model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
+Historic-analysis and future-ML guidance now lives in all three Custom GPT instruction files. The current history layer is a soft calibration signal from Supabase-backed imported bet history, with SQLite as cache/backup fallback, not a trained model. Future ML fields have a reserved slot but must not override Stake truth, current MLB context, validation, or review-only safety.
 
 ## Main Actions
 

@@ -438,6 +438,9 @@ def sync_import_folder(
 
     history_report = store.bet_history_report(review_limit=review_limit)
     history_report["importFiles"] = file_names
+    persistence = store.sync_bet_history_to_supabase(
+        table_names=("bet_history_imports", "bet_history_raw", "bet_history_legs")
+    )
     return {
         "sourcePath": str(directory),
         "filesConsidered": len(file_names),
@@ -445,6 +448,7 @@ def sync_import_folder(
         "filesSkippedDuplicate": duplicate_files,
         "filesFailed": failed_files,
         "refreshedLegs": refreshed_legs,
+        "persistence": persistence,
         "rows": rows,
         "history": history_report,
     }
@@ -1287,7 +1291,7 @@ def format_backtest_report(report: dict[str, Any]) -> str:
             "Top leg signals:",
         ]
     )
-    by_market = list(report.get("byMarket") or [])
+    by_market = list(((report.get("signals") or {}).get("byMarket")) or report.get("byMarket") or [])
     if by_market:
         for row in by_market[:12]:
             lines.append(_format_signal_row(row))
@@ -1299,6 +1303,10 @@ def format_backtest_report(report: dict[str, Any]) -> str:
         lines.extend(["", "Ticket failure contributors:"])
         for row in contributors[:8]:
             lines.append(f"- {row.get('label')}: losing legs {row.get('losingLegs') or 0}")
+
+    enriched_bucket_lines = _format_enriched_bucket_preview(report.get("enrichedBuckets") or {})
+    if enriched_bucket_lines:
+        lines.extend(["", "Enriched / ticket-structure buckets:", *enriched_bucket_lines])
 
     calibration_rows = ((report.get("calibration") or {}).get("marketSideLine") or [])
     if calibration_rows:
@@ -1357,6 +1365,7 @@ def build_backtest_rich_renderable(report: dict[str, Any]) -> Any:
     ticket_sample = outcome.get("ticketSample") or {}
     ticket_overall = tickets.get("overall") or {}
     enrichment = report.get("enrichment") or {}
+    enriched_buckets = report.get("enrichedBuckets") or {}
     signals = report.get("signals") or {}
     calibration = report.get("calibration") or {}
     contributors = (signals.get("ticketFailureContributors") or {}).get("byMarket") or []
@@ -1371,7 +1380,7 @@ def build_backtest_rich_renderable(report: dict[str, Any]) -> Any:
     )
     title.add_row(
         Text("Historic performance dashboard", style="#7F7F7F"),
-        Text(f"Generated from local SQLite", style="#7F7F7F"),
+        Text("Generated from history storage", style="#7F7F7F"),
     )
 
     header = Panel(
@@ -1464,6 +1473,11 @@ def build_backtest_rich_renderable(report: dict[str, Any]) -> Any:
         _rich_lines(outcome.get("warnings") or ["No active warnings."]),
         width=column_width,
     )
+    context_panel = _rich_panel(
+        "Context Buckets",
+        _rich_context_bucket_table(enriched_buckets),
+        width=column_width,
+    )
     next_action_panel = _rich_panel(
         "Next Action",
         _rich_lines([outcome.get("nextAction") or "No next action available."]),
@@ -1476,7 +1490,9 @@ def build_backtest_rich_renderable(report: dict[str, Any]) -> Any:
         "",
         Columns([strongest_panel, failure_panel, calibration_panel], equal=True, expand=True),
         "",
-        Columns([filters_panel, enrichment_panel, warnings_panel], equal=True, expand=True),
+        Columns([filters_panel, enrichment_panel, context_panel], equal=True, expand=True),
+        "",
+        warnings_panel,
         "",
         next_action_panel,
     )
@@ -1578,6 +1594,33 @@ def _rich_calibration_table(rows: list[dict[str, Any]]) -> Any:
     return table
 
 
+def _rich_context_bucket_table(report: dict[str, Any]) -> Any:
+    from rich.table import Table
+
+    table = Table(box=None, expand=True, show_edge=False, header_style="#A46214")
+    table.add_column("Bucket", style="#7F7F7F", no_wrap=True)
+    table.add_column("Top", style="#B8B19C")
+    table.add_column("Hit", justify="right", style="#F1EED0", no_wrap=True)
+    rows = [
+        ("Lineup", report.get("byLineupSpot") or []),
+        ("Starter", report.get("byStarterRole") or []),
+        ("Pitch", report.get("byPitchHand") or []),
+        ("Venue", report.get("byVenue") or []),
+        ("Longshot", report.get("byLongshotOdds") or []),
+        ("Legs", report.get("byLegCount") or []),
+    ]
+    added = False
+    for label, bucket_rows in rows:
+        if not bucket_rows:
+            continue
+        top = bucket_rows[0]
+        table.add_row(label, str(top.get("label") or "unknown"), _percent(top.get("hitRate")))
+        added = True
+    if not added:
+        table.add_row("Coverage", f"{_percent(report.get('coverage'))} enriched", "")
+    return table
+
+
 def _rich_lines(lines: list[str]) -> Any:
     from rich.text import Text
 
@@ -1657,6 +1700,7 @@ def format_sync_report(report: dict[str, Any], *, storage_path: str | Path | Non
         f"Refreshed duplicate legs: {report.get('refreshedLegs') or 0}",
         f"Failed: {report.get('filesFailed') or 0}",
     ]
+    lines.extend(_format_persistence_lines(report.get("persistence")))
     rows = list(report.get("rows") or [])
     if rows:
         lines.extend(["", "Files:"])
@@ -1689,6 +1733,79 @@ def format_sync_report(report: dict[str, Any], *, storage_path: str | Path | Non
         ]
     )
     return "\n".join(lines)
+
+
+def format_update_report(report: dict[str, Any], *, rich_analysis: bool = False) -> str:
+    sync = report.get("sync") or {}
+    enrich = report.get("enrich") or {}
+    analysis = report.get("analysis") or {}
+    lines = [
+        "Bet Historic Update",
+        "------------------",
+        "Flow: sync imports -> enrich missing MLB snapshots -> analyze updated history",
+        f"Files checked: {sync.get('filesConsidered') or 0}",
+        f"Imported: {sync.get('filesImported') or 0}",
+        f"Skipped duplicates: {sync.get('filesSkippedDuplicate') or 0}",
+        f"Refreshed duplicate legs: {sync.get('refreshedLegs') or 0}",
+        f"Import failures: {sync.get('filesFailed') or 0}",
+        f"Enrichment targets: {enrich.get('targets') or 0}",
+        f"Legs enriched: {enrich.get('legsEnriched') or 0}",
+        f"Legs skipped: {enrich.get('legsSkipped') or 0}",
+        f"Snapshots created/reused: {enrich.get('snapshotsCreated') or 0}/{enrich.get('snapshotsReused') or 0}",
+        f"Result mismatches: {enrich.get('resultMismatches') or 0}",
+    ]
+    lines.extend(_format_persistence_lines(enrich.get("persistence") or sync.get("persistence")))
+    enrichment = analysis.get("enrichment") or {}
+    outcome = analysis.get("finalOutcome") or {}
+    ticket_sample = outcome.get("ticketSample") or {}
+    lines.extend(
+        [
+            "",
+            "Updated analysis:",
+            f"Historical enrichment: {enrichment.get('status') or 'unknown'} "
+            f"({_percent(enrichment.get('coverageRate'))} coverage)",
+            f"Tickets: {ticket_sample.get('gradedTickets') or 0}/{ticket_sample.get('tickets') or 0} graded, "
+            f"hit {_percent(ticket_sample.get('hitRate'))}, ROI {_percent(ticket_sample.get('roi'))}",
+            f"Readiness: {(outcome.get('modelReadiness') or {}).get('label') or 'unknown'}",
+            f"Next action: {outcome.get('nextAction') or 'none'}",
+        ]
+    )
+    if rich_analysis:
+        lines.extend(["", "Rich analysis:", format_backtest_rich_report(analysis)])
+    else:
+        lines.extend(["", "Analysis:", format_backtest_report(analysis)])
+    return "\n".join(lines)
+
+
+def format_storage_sync_report(report: dict[str, Any]) -> str:
+    lines = [
+        "Bet Historic Storage",
+        "-------------------",
+        f"Action: {report.get('action') or 'unknown'}",
+    ]
+    if report.get("pull"):
+        lines.extend(_format_persistence_lines(report["pull"], label="Supabase pull"))
+    if report.get("push"):
+        lines.extend(_format_persistence_lines(report["push"], label="Supabase push"))
+    if not report.get("pull") and not report.get("push"):
+        lines.append("No storage operation ran.")
+    return "\n".join(lines)
+
+
+def _format_persistence_lines(report: Any, *, label: str = "Supabase history") -> list[str]:
+    if not isinstance(report, dict):
+        return []
+    if report.get("enabled") is False:
+        return [f"{label}: disabled ({report.get('reason') or 'not configured'})"]
+    if report.get("error"):
+        return [f"{label}: failed ({report.get('error')})"]
+    if report.get("skipped"):
+        return [f"{label}: skipped ({report.get('reason') or 'already current'})"]
+    if report.get("direction") == "sqlite_to_supabase":
+        return [f"{label}: pushed {report.get('rowsPushed') or 0} rows"]
+    if report.get("direction") == "supabase_to_sqlite":
+        return [f"{label}: pulled {report.get('rowsPulled') or 0} rows"]
+    return []
 
 
 def format_review_report(report: dict[str, Any]) -> str:
@@ -1914,6 +2031,17 @@ def _format_signal_section(report: dict[str, Any], *, detailed: bool = False) ->
     else:
         lines.append("- No line-bucket signals yet.")
 
+    market_line = list(report.get("byMarketLine") or [])
+    if market_line:
+        lines.extend(["", "Signals by market + line:"])
+        lines.extend(_format_signal_row(row) for row in market_line[:25 if detailed else 8])
+
+    under_only = report.get("underOnly") or {}
+    under_market = list(under_only.get("byMarket") or [])
+    if under_market:
+        lines.extend(["", "Under-only market signals:"])
+        lines.extend(_format_signal_row(row) for row in under_market[:25 if detailed else 8])
+
     contributors = (report.get("ticketFailureContributors") or {}).get("byPlayerMarket") or []
     if contributors:
         lines.extend(["", "Ticket failure contributors by player-market:"])
@@ -1976,6 +2104,33 @@ def _format_calibration_row(row: dict[str, Any]) -> str:
     )
 
 
+def _format_enriched_bucket_preview(report: dict[str, Any]) -> list[str]:
+    if not report:
+        return []
+    lines = [
+        (
+            f"- enrichment coverage {_percent(report.get('coverage'))}; "
+            f"enriched legs {report.get('enrichedLegs') or 0}"
+        )
+    ]
+    groups = [
+        ("lineup", report.get("byLineupSpot") or []),
+        ("starter", report.get("byStarterRole") or []),
+        ("pitch hand", report.get("byPitchHand") or []),
+        ("venue", report.get("byVenue") or []),
+        ("longshot odds", report.get("byLongshotOdds") or []),
+        ("leg count", report.get("byLegCount") or []),
+    ]
+    for label, rows in groups:
+        if rows:
+            top = rows[0]
+            lines.append(
+                f"- {label}: {top.get('label')} | graded {top.get('gradedLegs') or 0}, "
+                f"hit {_percent(top.get('hitRate'))}, signal {top.get('signal') or 'n/a'}"
+            )
+    return lines
+
+
 def _signed_percent(value: Any) -> str:
     if value is None:
         return "n/a"
@@ -2036,6 +2191,20 @@ def main() -> int:
     sync_parser.add_argument("--review-limit", type=int, default=25)
     sync_parser.add_argument("--json", action="store_true", dest="as_json")
 
+    update_parser = subparsers.add_parser(
+        "update",
+        aliases=["auto", "pipeline"],
+        help="Sync new historic files, enrich missing MLB snapshots, then run updated analysis.",
+    )
+    update_parser.add_argument("--db-path", default=None)
+    update_parser.add_argument("--import-dir", dest="import_dir", default=None)
+    update_parser.add_argument("--from-date", dest="from_date", default=None)
+    update_parser.add_argument("--review-limit", type=int, default=25)
+    update_parser.add_argument("--enrich-limit", type=int, default=500)
+    update_parser.add_argument("--skip-enrich", action="store_true")
+    update_parser.add_argument("--rich", action="store_true", help="Include a Rich boxed analysis dashboard.")
+    update_parser.add_argument("--json", action="store_true", dest="as_json")
+
     review_parser = subparsers.add_parser("review", help="Show rows that need manual review before training.")
     review_parser.add_argument("--db-path", default=None)
     review_parser.add_argument("--import-id", dest="import_id", default=None)
@@ -2081,6 +2250,14 @@ def main() -> int:
     imports_parser.add_argument("--db-path", default=None)
     imports_parser.add_argument("--limit", type=int, default=50)
     imports_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    storage_parser = subparsers.add_parser(
+        "storage",
+        help="Sync Supabase-backed historic storage with the local SQLite backup/cache.",
+    )
+    storage_parser.add_argument("action", nargs="?", choices=["pull", "push", "sync"], default="sync")
+    storage_parser.add_argument("--db-path", default=None)
+    storage_parser.add_argument("--json", action="store_true", dest="as_json")
 
     delete_parser = subparsers.add_parser("delete-import", help="Delete one saved bet historic import.")
     delete_parser.add_argument("import_id")
@@ -2133,6 +2310,52 @@ def main() -> int:
             print(json.dumps(report, indent=2, ensure_ascii=True, default=str))
         else:
             print(format_sync_report(report, storage_path=store.db_path))
+        return 0
+
+    if args.command in {"update", "auto", "pipeline"}:
+        store = GptActionStore(args.db_path)
+        import_dir = Path(args.import_dir) if args.import_dir else bet_history_imports_dir(Path.cwd())
+        sync_report = sync_import_folder(store, import_dir, review_limit=args.review_limit)
+        enrich_report: dict[str, Any]
+        if args.skip_enrich:
+            enrich_report = {
+                "targets": 0,
+                "legsEnriched": 0,
+                "legsSkipped": 0,
+                "snapshotsCreated": 0,
+                "snapshotsReused": 0,
+                "resultMismatches": 0,
+                "skipReasons": {},
+                "notes": ["Historical enrichment was skipped by request."],
+                "storeSummary": store.bet_history_enrichment_report(),
+            }
+        else:
+            async def _run_update_enrichment() -> dict[str, Any]:
+                async with build_mlb_http_client() as http_client:
+                    engine = MLBDataEngine(MLBStatsClient(http_client))
+                    return await enrich_bet_history(
+                        store=store,
+                        mlb_engine=engine,
+                        from_date=args.from_date,
+                        missing_only=True,
+                        limit=args.enrich_limit,
+                    )
+
+            enrich_report = asyncio.run(_run_update_enrichment())
+        analysis_report = store.bet_history_backtest(from_date=args.from_date)
+        update_report = {
+            "sync": sync_report,
+            "enrich": enrich_report,
+            "analysis": analysis_report,
+            "notes": [
+                "This deterministic update flow never uses live MLB context inside analysis; enrichment snapshots are stored first.",
+                "Imported ticket results remain canonical. Enriched boxscore grades are verification/offline-learning fields.",
+            ],
+        }
+        if args.as_json:
+            print(json.dumps(update_report, indent=2, ensure_ascii=True, default=str))
+        else:
+            print(format_update_report(update_report, rich_analysis=args.rich))
         return 0
 
     if args.command in {"analysis", "backtest"}:
@@ -2193,6 +2416,19 @@ def main() -> int:
             print(json.dumps(imports, indent=2, ensure_ascii=True, default=str))
         else:
             print(format_imports_report(imports))
+        return 0
+
+    if args.command == "storage":
+        store = GptActionStore(args.db_path)
+        result: dict[str, Any] = {"action": args.action}
+        if args.action in {"pull", "sync"}:
+            result["pull"] = store.sync_bet_history_from_supabase(force=True)
+        if args.action in {"push", "sync"}:
+            result["push"] = store.sync_bet_history_to_supabase()
+        if args.as_json:
+            print(json.dumps(result, indent=2, ensure_ascii=True, default=str))
+        else:
+            print(format_storage_sync_report(result))
         return 0
 
     if args.command == "delete-import":

@@ -340,6 +340,7 @@ def test_bet_history_command_runs_import_and_report(monkeypatch, tmp_path):
     cli.run_bet_history([])
     cli.run_bet_history(["C:\\bets.csv", "--dry-run"])
     cli.run_bet_history(["sync"])
+    cli.run_bet_history(["update", "--skip-enrich"])
     cli.run_bet_history(["report"])
     cli.run_bet_history(["review", "--limit", "10"])
     cli.run_bet_history(["enrich", "--missing-only"])
@@ -352,6 +353,7 @@ def test_bet_history_command_runs_import_and_report(monkeypatch, tmp_path):
         [python_exe, "-m", "app.bet_history", "sync"],
         [python_exe, "-m", "app.bet_history", "import", "C:\\bets.csv", "--dry-run"],
         [python_exe, "-m", "app.bet_history", "sync"],
+        [python_exe, "-m", "app.bet_history", "update", "--skip-enrich"],
         [python_exe, "-m", "app.bet_history", "report"],
         [python_exe, "-m", "app.bet_history", "review", "--limit", "10"],
         [python_exe, "-m", "app.bet_history", "enrich", "--missing-only"],

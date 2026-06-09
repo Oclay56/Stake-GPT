@@ -320,6 +320,50 @@ def format_historic_tui_summary(sync_report: dict[str, Any]) -> list[str]:
     ]
 
 
+def format_historic_update_tui_summary(update_report: dict[str, Any]) -> list[str]:
+    sync = update_report.get("sync") or {}
+    history = (sync.get("history") or {})
+    files = list(history.get("importFiles") or [])
+    enrich = update_report.get("enrich") or {}
+    analysis = update_report.get("analysis") or {}
+    enrichment = analysis.get("enrichment") or {}
+    outcome = analysis.get("finalOutcome") or {}
+    ticket_sample = outcome.get("ticketSample") or {}
+    return [
+        f"Files checked: {int(sync.get('filesConsidered') or 0)}",
+        (
+            f"Imported: {int(sync.get('filesImported') or 0)} | "
+            f"Skipped: {int(sync.get('filesSkippedDuplicate') or 0)} | "
+            f"Refreshed: {int(sync.get('refreshedLegs') or 0)} | "
+            f"Failed: {int(sync.get('filesFailed') or 0)}"
+        ),
+        (
+            f"Parsed legs: {int(history.get('parsedLegs') or 0)} | "
+            f"Training eligible: {int(history.get('trainingEligible') or 0)}"
+        ),
+        (
+            f"Enriched: {int(enrich.get('legsEnriched') or 0)} | "
+            f"Targets: {int(enrich.get('targets') or 0)} | "
+            f"Coverage: {_percent_label(enrichment.get('coverageRate'))}"
+        ),
+        (
+            f"Tickets: {int(ticket_sample.get('gradedTickets') or 0)}/"
+            f"{int(ticket_sample.get('tickets') or 0)} | "
+            f"ROI: {_percent_label(ticket_sample.get('roi'))}"
+        ),
+        f"Import files ({len(files)})",
+    ]
+
+
+def _percent_label(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
 def format_running_status(action: TuiAction, *, frame: int = 2) -> str:
     dots = "." * ((frame % 3) + 1)
     return f"[ {action.running_label} ]{dots:<3}"
@@ -1019,8 +1063,8 @@ if TEXTUAL_AVAILABLE:
                 self._append_output("Close that window when finished.")
                 self.cli.status = "ready"
             elif action.action_id == "history":
-                self.cli.status = "historic sync"
-                code, output = self._run_module_command_capture(["-m", "app.bet_history", "sync", "--json"])
+                self.cli.status = "historic update"
+                code, output = self._run_module_command_capture(["-m", "app.bet_history", "update", "--json"])
                 if code == 0:
                     try:
                         report = json.loads(output)
@@ -1028,10 +1072,10 @@ if TEXTUAL_AVAILABLE:
                         for line in output.splitlines():
                             self._append_output(line)
                     else:
-                        for line in format_historic_tui_summary(report):
+                        for line in format_historic_update_tui_summary(report):
                             self._append_output(line)
                 else:
-                    for line in output.splitlines() or ["Historic sync failed."]:
+                    for line in output.splitlines() or ["Historic update failed."]:
                         self._append_output(line)
                 self.cli.status = "ready" if code == 0 else "historic failed"
             elif action.action_id == "logs":

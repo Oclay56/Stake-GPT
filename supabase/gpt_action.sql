@@ -168,6 +168,8 @@ create table if not exists public.bet_history_imports (
     report_json jsonb not null default '{}'::jsonb
 );
 
+alter table public.bet_history_imports enable row level security;
+
 alter table public.bet_history_imports
     add column if not exists source_fingerprint text;
 
@@ -190,6 +192,8 @@ create table if not exists public.bet_history_raw (
     parse_status text not null default 'parsed',
     parse_notes_json jsonb not null default '[]'::jsonb
 );
+
+alter table public.bet_history_raw enable row level security;
 
 create table if not exists public.bet_history_legs (
     history_leg_id text primary key,
@@ -227,6 +231,8 @@ create table if not exists public.bet_history_legs (
     raw_json jsonb not null,
     created_at timestamptz not null
 );
+
+alter table public.bet_history_legs enable row level security;
 
 alter table public.bet_history_legs
     add column if not exists training_eligible boolean not null default false;
@@ -275,6 +281,8 @@ create table if not exists public.bet_history_game_snapshots (
     fetched_at timestamptz not null
 );
 
+alter table public.bet_history_game_snapshots enable row level security;
+
 create index if not exists bet_history_game_snapshots_date_idx
     on public.bet_history_game_snapshots (official_date);
 
@@ -300,6 +308,8 @@ create table if not exists public.bet_history_leg_enrichments (
     source text not null default 'mlb_stats_api_snapshot',
     enriched_at timestamptz not null
 );
+
+alter table public.bet_history_leg_enrichments enable row level security;
 
 create index if not exists bet_history_leg_enrichments_game_idx
     on public.bet_history_leg_enrichments (game_pk);
